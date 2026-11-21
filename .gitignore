@@ -1,0 +1,30 @@
+# Python bytecode and tooling caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments & secrets
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Gravity runtime locks, logs, verified patches & eval reports
+*.lock
+runs.jsonl
+last_verified.patch
+evals/report.json
+evals/report.md
+
+# OS & editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

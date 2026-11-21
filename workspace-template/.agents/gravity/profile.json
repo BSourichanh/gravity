@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "mode": "evo",
+  "current_level": "medium",
+  "locked": false,
+  "pace": "slow",
+  "verification": "safe",
+  "caveman": "lite",
+  "caveman_locked": false,
+  "suggested_level": "medium",
+  "allow_pro": true,
+  "model_overrides": {},
+  "sessions_analyzed": 0,
+  "clean_streak": 0,
+  "last_score": 40,
+  "last_reason": "Initialisation par défaut (mode evo au palier medium).",
+  "last_evaluated_conversation_id": null,
+  "last_updated": null,
+  "signals": {
+    "source_files": 0,
+    "rules_count": 0,
+    "has_tests": false,
+    "has_ci": false,
+    "mcp_servers": 0,
+    "progress_steps": 0,
+    "guard_deny_recent": 0,
+    "guard_ask_recent": 0,
+    "eval_pass_rate": null,
+    "session_error": false
+  },
+  "history": []
+}

@@ -1,0 +1,17 @@
+{
+  "stage": "idle",
+  "progress": "0/8",
+  "mode": "evo",
+  "level": "medium",
+  "pace": "slow",
+  "verification": "safe",
+  "caveman": "lite",
+  "caveman_locked": false,
+  "guard_status": "ON",
+  "nodes": {
+    "planner": "",
+    "builder": "",
+    "reviewer": ""
+  },
+  "events": []
+}
