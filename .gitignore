@@ -1,0 +1,14 @@
+# Cache et artefacts Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Dossiers runtime, éditeurs et OS
+.agents/
+.vscode/
+.idea/
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db

@@ -1,0 +1,61 @@
+# Gravity — Socle Central & Écosystème Modulaire
+
+**Gravity** (`BSourichanh/gravity`, v0.1.0, licence MIT) est le **plugin cœur** de l'écosystème modulaire **Gravity** pour **Google Antigravity**.
+Il unifie l'environnement centralisé (`~/.gemini/gravity/`), la découverte et validation des modules via `config/module.json` v1 (`core/modules.json`), ainsi que la future interface utilisateur MCP App unifiée (`v0.2.0`).
+
+> **Clarification importante :**
+> - **`gravity`** (`/gravity`) est le socle central et hôte du registre des modules.
+> - **`gravity-workflow`** (`/gravity-workflow`, `/caveman`) est l'ancien harnais renommé (multi-agents, workflows, garde-fous `PreToolUse`, evals).
+> - **`gravity-studio`** est l'espace séparé de conception, spécifications et suivi multi-projets (hors des dépôts produits).
+
+Tous les plugins de la suite reposent sur une pile **100 % bibliothèque standard Python 3.10+**, sans dépendance externe.
+
+## Écosystème des 5 plugins
+
+| Module (`id`) | Plugin & Dépôt | Commande(s) | Stockage centralisé (`$GRAVITY_HOME/...`) | Rôle |
+|---|---|---|---|---|
+| `core` | [**Gravity**](https://github.com/BSourichanh/gravity) (`gravity` v0.1.0) | `/gravity` | `core/` (`$GRAVITY_CORE_HOME`) | Initialisation environnement, registre `core/modules.json` et futur hôte UI unifié |
+| `architect` | [**Gravity Architect**](https://github.com/BSourichanh/gravity-architect) (`gravity-architect` v0.2.0) | `/gravity-architect` | `architect/` (`$GRAVITY_ARCHITECT_HOME`) | Conception, intégrité écosystème, stockage Hot/Cold, veille plateforme et mise à niveau |
+| `workflow` | [**Gravity Workflow**](https://github.com/BSourichanh/gravity-workflow) (`gravity-workflow` v0.2.0) | `/gravity-workflow`, `/caveman` | `workflow/` (`$GRAVITY_WORKFLOW_HOME`) | Harnais multi-agents, workflows orchestrateurs, garde-fous fail-closed, evals et routage adaptatif |
+| `bridge` | [**Gravity Bridge**](https://github.com/BSourichanh/gravity-bridge) (`gravity-bridge` v0.1.0) | `/gravity-bridge` | `bridge/` (`$GRAVITY_BRIDGE_HOME`) | Boîte aux lettres SQLite WAL inter-projets et conversations natives App via micro-sidecars `agentapi` |
+| `metrics` | [**Gravity Metrics**](https://github.com/BSourichanh/gravity-metrics) (`gravity-metrics` v0.2.0) | `/gravity-metrics` | `metrics/` (`$GRAVITY_METRICS_HOME`) | Collecte de métriques Antigravity, coûts/tokens et signaux pour le mode `auto` |
+
+## Installation & prise en main
+
+```powershell
+# Vérifier l'environnement et l'état cible sans rien modifier
+python install.py --check
+
+# Installer globalement (~/.gemini/config/plugins/gravity)
+python install.py
+
+# Remplacer une ancienne installation du harnais 'gravity' par Gravity Core v0.1.0
+python install.py --force
+
+# Installer dans un workspace dédié (.agents/plugins/gravity)
+python install.py --scope workspace --workspace /chemin/vers/projet
+```
+
+### Initialiser et inspecter l'environnement Gravity
+
+```powershell
+# Initialiser ~/.gemini/gravity/core/modules.json et les sous-dossiers des modules découverts
+python plugin/scripts/init_env.py
+
+# Lecture seule : statut des modules et détection d'anciens dossiers legacy
+python plugin/scripts/init_env.py --status
+python plugin/scripts/init_env.py --check --json
+```
+
+Dans Antigravity, utiliser le skill **`/gravity [init|status|modules|doctor]`**.
+Les anciens répertoires éventuels (`~/.gemini/gravity-bridge`, `~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow`, `~/.gravity`) sont détectés en **lecture seule uniquement** : rien n'est jamais modifié ni supprimé automatiquement.
+
+## Documentation & vérifications
+
+- Index documentation : [`docs/README.md`](docs/README.md)
+- Architecture modulaire & signaux : [`docs/architecture.md`](docs/architecture.md)
+- Contrat module v1 : [`docs/module-contract.md`](docs/module-contract.md)
+- Standard des dépôts : [`docs/repo-standard.md`](docs/repo-standard.md)
+- Feuille de route : [`docs/roadmap.md`](docs/roadmap.md)
+- Historique des versions : [`CHANGELOG.md`](CHANGELOG.md)
+- Licence : [`LICENSE`](LICENSE)

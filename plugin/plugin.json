@@ -1,0 +1,17 @@
+{
+  "name": "gravity",
+  "displayName": "Gravity",
+  "version": "0.1.0",
+  "description": "Socle central de l'écosystème Gravity : environnement ~/.gemini/gravity/, registre de modules et future UI unifiée.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "/gravity init — Initialiser ~/.gemini/gravity/ et découvrir les modules",
+    "/gravity status — Inspecter l'environnement et le registre des modules",
+    "/gravity doctor — Diagnostiquer l'installation et détecter les anciens dossiers"
+  ],
+  "author": {
+    "name": "Gravity Contributors"
+  },
+  "homepage": "https://github.com/BSourichanh/gravity",
+  "repository": "https://github.com/BSourichanh/gravity.git"
+}

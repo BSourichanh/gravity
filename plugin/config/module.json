@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "core",
+  "plugin_name": "gravity",
+  "role": "Initialisation environnement Gravity, registre modules et future UI/UX unifiee",
+  "storage": {
+    "subdir": "core",
+    "env_override": "GRAVITY_CORE_HOME"
+  },
+  "commands": [
+    "/gravity"
+  ],
+  "capabilities": [
+    "env-init",
+    "module-registry",
+    "ui-host"
+  ],
+  "ui": {
+    "mode": "core",
+    "target": "gravity"
+  },
+  "signals": {
+    "produces": [
+      "environment-state"
+    ],
+    "consumes": [
+      "*"
+    ]
+  }
+}
