@@ -31,8 +31,8 @@ OFFICIAL_PLUGIN_FIELDS = {
     "disabled",
 }
 REQUIRED_PLUGIN_FIELDS = OFFICIAL_PLUGIN_FIELDS - {"disabled"}
-ALLOWED_LOCAL_MODULES = {"core", "registry", "init_env", "validate"}
-REQUIRED_DIRS = ("assets", "config", "core", "rules", "scripts", "skills")
+ALLOWED_LOCAL_MODULES = {"core", "dashboard", "registry", "init_env", "validate"}
+REQUIRED_DIRS = ("assets", "config", "core", "dashboard", "rules", "scripts", "skills")
 RULES_EDITORIAL_TARGET_BYTES = 600
 RULES_MAX_BYTES = 1000
 SKILL_MAX_BYTES = 6000

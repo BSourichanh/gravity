@@ -66,6 +66,9 @@ class TestValidate(unittest.TestCase):
             (copy_dir / "core" / "extra_dep.py").write_text(
                 "import requests\n", encoding="utf-8"
             )
+            (copy_dir / "dashboard" / "bad_dep.py").write_text(
+                "import httpx\n", encoding="utf-8"
+            )
             (copy_dir / "config" / "module.json").write_text(
                 '{"schema_version": 2}', encoding="utf-8"
             )
@@ -78,7 +81,18 @@ class TestValidate(unittest.TestCase):
             self.assertIn("frontmatter", joined)
             self.assertIn("160", joined)
             self.assertIn("requests", joined)
+            self.assertIn("httpx", joined)
             self.assertIn("schema_version", joined)
+
+    def test_rejects_missing_dashboard_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            copy_dir = Path(tmp) / "plugin"
+            shutil.copytree(PLUGIN_ROOT, copy_dir, ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.rmtree(copy_dir / "dashboard")
+
+            report = self._validate_copy(copy_dir)
+            self.assertFalse(report.ok(strict=True))
+            self.assertTrue(any("dashboard/" in err for err in report.errors))
 
     def test_rules_agents_md_d4_thresholds_and_encoding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

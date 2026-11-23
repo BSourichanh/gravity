@@ -5,6 +5,11 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Added
+- **Socle dashboard lecture seule (`plugin/dashboard/`)** en 100 % stdlib Python 3.10+ (Phase 4 / Lot 1A) :
+  - Façade unifiée (`plugin/dashboard/api.py`, `plugin/dashboard/__init__.py`) et providers découplés OCP (`plugin/dashboard/providers/`) avec fast-path `since_signature` et plafond payload `< 450 KiB` : `core_provider` (lecture `core/modules.json` / repli `discover_modules`, enrichissement `resolved_home`/`home_exists`, `doctor`, `tabs`, `legacy_homes`), `generic_provider` (validation `MODULE_ID_RE`, métadonnées contrat, listing superficiel `<= 25` entrées sans suivi de symlinks), `workflow_provider` (schéma `gravity-workflow v0.3.0`, garde-fou `live_state.json`, replis central/local RO, bornage 50 événements) et `metrics_provider` (`history.jsonl` `v0.5.0`/`v0.4.3`, KPIs, lifecycle/pending sans scan `brain/`, audits `audits/agents/` hors `audits/code/` et `_*`, `get_session_detail` confiné dans `reports/` sans trajectoire brute).
+  - Mise à jour de `plugin/scripts/validate.py` (`"dashboard"` dans `ALLOWED_LOCAL_MODULES` et `REQUIRED_DIRS`) et ajout des suites isolées `tests/test_dashboard_providers.py` et `tests/test_validate.py`.
+
 ## [0.2.0] - 2026-11-23
 
 ### Added
