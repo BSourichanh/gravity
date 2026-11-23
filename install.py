@@ -231,6 +231,8 @@ def check_environment(
     target_dir: Optional[Path],
     scope: str,
     method: str,
+    *,
+    strict: bool = False,
 ) -> int:
     """Inspect prerequisites and target status without modifying anything."""
     src_manifest = read_plugin_manifest(plugin_src) or {}
@@ -266,6 +268,15 @@ def check_environment(
             print(f"  Target status   : not installed ({target_dir})")
     else:
         print("  Target status   : managed by 'agy plugin install'")
+
+    if strict:
+        val_proc = run_plugin_validation(plugin_src)
+        if val_proc.returncode != 0:
+            print("  Strict validation: FAILED", file=sys.stderr)
+            _print_process_output(val_proc)
+            return 1
+        print("  Strict validation: PASSED (0 error, 0 warning)")
+
     return 0
 
 
@@ -551,6 +562,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip strict validation during copy install.",
     )
     parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Enforce strict validation (enabled by default; overrides --skip-validate and validates source in --check).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Preview planned operations without modifying files.",
@@ -600,7 +616,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         target_dir = resolve_target_dir(args.scope, args.workspace, args.target)
 
     if args.check:
-        return check_environment(PLUGIN_SOURCE, target_dir, args.scope, args.method)
+        return check_environment(
+            PLUGIN_SOURCE,
+            target_dir,
+            args.scope,
+            args.method,
+            strict=args.strict,
+        )
 
     if args.uninstall:
         return uninstall_plugin(
@@ -609,6 +631,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             method=args.method,
             dry_run=args.dry_run,
         )
+
+    effective_skip_validate = bool(args.skip_validate and not args.strict)
 
     if args.method == "agy":
         rc = install_agy(PLUGIN_SOURCE, dry_run=args.dry_run)
@@ -619,7 +643,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             target_dir,
             force=args.force,
             no_fix_python=args.no_fix_python,
-            skip_validate=args.skip_validate,
+            skip_validate=effective_skip_validate,
             dry_run=args.dry_run,
         )
 

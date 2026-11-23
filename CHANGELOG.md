@@ -5,6 +5,9 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Changed
+- **Harmonisation CLI `install.py` (11/11) :** ajout du drapeau `--strict` dans `install.py` (prévaut sur `--skip-validate` et exécute `validate.py --strict` en lecture seule sous `--check`), avec couverture `tests/test_install.py`.
+
 ### Added
 - **Détecteur de dérive multi-dépôts en lecture seule (`scripts/audit_ecosystem.py`):**
   - Script autonome hors `plugin/` en 100 % stdlib Python 3.10+ (`--repos-root`, `--repos`, `--json`, `--strict`) contrôlant sans exécution ni écriture les 5 dépôts Gravity : contrat CLI à 11 drapeaux de `install.py` (inspection AST), contrat `plugin/scripts/validate.py` (`--strict`, `plugin.json`, `config/module.json`, `stdlib-only`, UTF-8/LF et `--fix-python-cmd` si manifeste exécutable), budgets `AGENTS.md` racine (`<= 2 500 o`, 3 sections `##`) et D4 `plugin/rules/AGENTS.md` (`> 600 o` warn, `> 1 000 o` error, 0 frontmatter YAML, exception `gravity-workflow`), synchronisation SemVer `plugin.json` ↔ `CHANGELOG.md` + `suggestedPrompts` (`<= 100` car., `/cmd — résumé`), et alerte dette monolithique `plugin/**/*.py` (`> 800 L` warn, `> 1 500 L` error, exemption `plugin/mcp/ui/*.py`).

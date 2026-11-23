@@ -58,6 +58,54 @@ class TestInstall(unittest.TestCase):
             self.assertIn("[DRY-RUN]", p_dry.stdout)
             self.assertFalse(target.exists())
 
+    def test_strict_flag_check_and_overrides_skip_validate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_home = tmp_path / "home"
+            fake_home.mkdir()
+            target = tmp_path / "target" / "gravity"
+
+            p_check_strict = _run_install(["--check", "--strict", "--target", str(target)], fake_home)
+            self.assertEqual(p_check_strict.returncode, 0, msg=p_check_strict.stderr)
+            self.assertIn("Strict validation: PASSED (0 error, 0 warning)", p_check_strict.stdout)
+            self.assertFalse(target.exists())
+
+            p_dry_skip = _run_install(
+                ["--dry-run", "--skip-validate", "--target", str(target)],
+                fake_home,
+            )
+            self.assertEqual(p_dry_skip.returncode, 0, msg=p_dry_skip.stderr)
+            self.assertNotIn("validate.py --strict", p_dry_skip.stdout)
+            self.assertFalse(target.exists())
+
+            p_dry_strict = _run_install(
+                ["--dry-run", "--strict", "--skip-validate", "--target", str(target)],
+                fake_home,
+            )
+            self.assertEqual(p_dry_strict.returncode, 0, msg=p_dry_strict.stderr)
+            self.assertIn(
+                "[DRY-RUN] Run validate.py --strict on staged copy before committing",
+                p_dry_strict.stdout,
+            )
+            self.assertFalse(target.exists())
+
+            failed_proc = subprocess.CompletedProcess(
+                args=["validate.py"],
+                returncode=1,
+                stdout="",
+                stderr="simulated validation error",
+            )
+            with mock.patch("install.run_plugin_validation", return_value=failed_proc):
+                rc_fail = installer.check_environment(
+                    installer.PLUGIN_SOURCE,
+                    target,
+                    "global",
+                    "copy",
+                    strict=True,
+                )
+            self.assertEqual(rc_fail, 1)
+            self.assertFalse(target.exists())
+
     def test_install_upgrade_and_uninstall_preserve_gravity_home(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
