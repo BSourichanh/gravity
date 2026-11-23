@@ -35,6 +35,7 @@ ALLOWED_LOCAL_MODULES = {"core", "registry", "init_env", "validate"}
 REQUIRED_DIRS = ("assets", "config", "core", "rules", "scripts", "skills")
 RULES_EDITORIAL_TARGET_BYTES = 600
 RULES_MAX_BYTES = 1000
+SKILL_MAX_BYTES = 6000
 REPO_AGENTS_MAX_BYTES = 2500
 
 FORBIDDEN_MOD_RE = re.compile(r"\bMod" + r"ule\s+0?\d\b", re.IGNORECASE)
@@ -240,7 +241,8 @@ def _validate_skills(root: Path, report: Report) -> None:
         report.error("skills/gravity/SKILL.md introuvable.")
         return
 
-    txt = skill_md.read_text(encoding="utf-8", errors="replace")
+    payload = _check_utf8_lf_budget(skill_md, "skills/gravity/SKILL.md", SKILL_MAX_BYTES, report)
+    txt = payload.decode("utf-8", errors="replace")
     fm_match = re.match(r"^\s*---\r?\n(.*?)\r?\n---\r?\n", txt, re.DOTALL)
     if not fm_match:
         report.error("skills/gravity/SKILL.md : frontmatter YAML manquant.")
@@ -265,7 +267,7 @@ def _validate_skills(root: Path, report: Report) -> None:
 def _check_utf8_lf_budget(
     file_path: Path, label: str, max_bytes: int, report: Report
 ) -> bytes:
-    """Validate UTF-8 without BOM, LF line endings, and byte budget for a markdown rule file."""
+    """Validate UTF-8 without BOM, LF line endings, and byte budget for a markdown file."""
     raw_bytes = file_path.read_bytes()
     if raw_bytes.startswith(b"\xef\xbb\xbf"):
         report.error(f"{label} ne doit pas contenir de BOM UTF-8.")
@@ -288,7 +290,7 @@ def _validate_rules(root: Path, report: Report) -> None:
     raw_bytes = rules_file.read_bytes()
     payload = _check_utf8_lf_budget(rules_file, "rules/AGENTS.md", RULES_MAX_BYTES, report)
     if RULES_EDITORIAL_TARGET_BYTES < len(raw_bytes) <= RULES_MAX_BYTES:
-        report.info(
+        report.warn(
             f"rules/AGENTS.md dépasse la cible éditoriale de {RULES_EDITORIAL_TARGET_BYTES} octets "
             f"(actuel : {len(raw_bytes)}, plafond strict : {RULES_MAX_BYTES})."
         )

@@ -5,21 +5,21 @@ description: "Initialiser ~/.gemini/gravity/, découvrir les modules Gravity ins
 
 # Gravity Core (`/gravity`)
 
-Skill d'administration de l'environnement unifié **Gravity** (`$GRAVITY_HOME`, défaut `~/.gemini/gravity/`).
+Administration de l'environnement unifié **Gravity** (`$GRAVITY_HOME`, défaut `~/.gemini/gravity/`).
 
 ## Sous-commandes
 
-Exécuter `python scripts/init_env.py` depuis la racine du plugin `gravity` :
+Exécuter depuis la racine du plugin `gravity` (sortie texte compacte par défaut ; réserver `--json` à `/gravity modules` et aux appels scriptés) :
 
 | Commande | Action CLI | Effet |
 |---|---|---|
-| `/gravity init` | `python scripts/init_env.py --json` | Crée `<gravity_home>/core/` et les sous-dossiers des modules valides découverts, puis écrit `core/modules.json`. |
-| `/gravity` ou `/gravity status` | `python scripts/init_env.py --status --json` | Lecture seule : affiche l'état de `$GRAVITY_HOME`, de `core/modules.json`, des modules détectés et d'éventuels dossiers legacy. |
-| `/gravity modules` | `python scripts/init_env.py --status --json` | Présente les modules découverts (`id`, `plugin_name`, `version`, `commands`, `capabilities`, `ui`, `signals`, `valid`). |
-| `/gravity doctor` | `python scripts/init_env.py --check --json` | Audit en lecture seule : vérifie les contrats `config/module.json` v1, les surcharges `$GRAVITY_*_HOME` et signale les dossiers legacy sans rien modifier. Pour générer un plan de migration manuel en 4 étapes non destructives (zéro écriture disque), exécuter `python scripts/init_env.py --migration-plan [--shell auto|powershell|bash]`. |
+| `/gravity init` | `python scripts/init_env.py` | Crée `<gravity_home>/core/` et sous-dossiers des modules valides, puis écrit `core/modules.json`. |
+| `/gravity` ou `/gravity status` | `python scripts/init_env.py --status` | Lecture seule : état de `$GRAVITY_HOME`, `core/modules.json`, modules détectés et dossiers legacy. |
+| `/gravity modules` | `python scripts/init_env.py --status --json` | Liste complète des contrats découverts (`id`, `plugin_name`, `version`, `commands`, `capabilities`, `ui`, `signals`, `valid`). |
+| `/gravity doctor` | `python scripts/init_env.py --check` | Audit lecture seule (`config/module.json` v1, `$GRAVITY_*_HOME`, legacy). Plan manuel non destructif (0 écriture) : `python scripts/init_env.py --migration-plan [--shell auto|powershell|bash]`. |
 
 ## Règles d'exécution
 
-1. Ne jamais modifier, migrer ni supprimer les anciens dossiers (`~/.gemini/gravity-bridge`, `~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow`, `~/.gravity`) automatiquement ; se limiter au signalement lecture seule.
-2. Ne jamais créer de fichiers Gravity dans les workspaces cibles : tout l'état réside sous `$GRAVITY_HOME`.
-3. Pour l'orchestration multi-agents, les workflows ou les garde-fous de session, orienter l'utilisateur vers **`/gravity-workflow`** (plugin `gravity-workflow`).
+1. Ne jamais modifier, migrer ni supprimer les dossiers legacy (`~/.gemini/gravity-bridge`, `~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow`, `~/.gravity`) automatiquement ; signalement lecture seule uniquement.
+2. Zéro fichier Gravity dans les workspaces cibles : tout l'état vit sous `$GRAVITY_HOME`.
+3. Pour l'orchestration multi-agents, workflows ou garde-fous, orienter vers **`/gravity-workflow`**.

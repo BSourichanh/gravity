@@ -11,6 +11,11 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 - **Documentation & tests :** contrat CLI commun à 11 drapeaux sur les `install.py` dans `docs/repo-standard.md`, mention `--migration-plan` dans `plugin/skills/gravity/SKILL.md` sous `/gravity doctor`, mise à jour `README.md` / `plugin/README.md`, et suites `unittest` isolées `tests/test_ecosystem_install.py` et `tests/test_migration_plan.py`.
 
 ### Changed
+- **Note 6, compaction `rules/AGENTS.md` & durcissement D4 (`plugin/skills/gravity/SKILL.md`, `plugin/rules/AGENTS.md`, `docs/repo-standard.md`, `plugin/scripts/validate.py`) :**
+  - Note 6 dans `plugin/skills/gravity/SKILL.md` (`<= 1 800 o`) : bascule vers la sortie texte compacte par défaut (`init_env.py`, `--status`, `--check`) pour `/gravity init`, `/gravity` / `/gravity status` et `/gravity doctor` (avec `--migration-plan`), tout en réservant `--status --json` à `/gravity modules` et aux appels scriptés.
+  - Compaction de `plugin/rules/AGENTS.md` à `<= 520 o` sans perte d'invariant (`gravity` vs `gravity-workflow`, CLI non-interactif, `$GRAVITY_HOME` 100 % centralisé, legacy lecture seule stricte).
+  - Promotion de `600 < len <= 1 000 o` sur `plugin/rules/AGENTS.md` de `report.info` à `report.warn` dans `plugin/scripts/validate.py` (bloquant sous `--strict`) et ajout du contrôle `SKILL.md <= 6 000 o` UTF-8 sans BOM/LF dans `_validate_skills()`.
+  - Alignement de `docs/repo-standard.md` (§1 & §4), `tests/test_validate.py`, `README.md` et `plugin/README.md`.
 - **Standard `AGENTS.md` D4 & validateur (`docs/repo-standard.md`, `plugin/scripts/validate.py`, `AGENTS.md`) :**
   - Double seuil harmonisé pour `plugin/rules/AGENTS.md` : cible éditoriale `<= 600 o` (`report.info` entre `601` et `1 000 o`), plafond strict bloquant abaissé à `<= 1 000 o` UTF-8 sans BOM/LF et zéro frontmatter YAML.
   - Contrôle de `AGENTS.md` racine (`<= 2 500 o` UTF-8, sans BOM, LF) dans `validate_plugin()` via `_validate_repo_agents_md()` lorsque `root.name == "plugin"`.

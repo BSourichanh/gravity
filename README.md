@@ -61,9 +61,10 @@ python scripts/ecosystem_install.py --uninstall --dry-run
 # Initialiser ~/.gemini/gravity/core/modules.json et les sous-dossiers des modules découverts
 python plugin/scripts/init_env.py
 
-# Lecture seule : statut des modules et détection d'anciens dossiers legacy
+# Lecture seule : statut des modules et détection d'anciens dossiers legacy (texte compact ou --json)
 python plugin/scripts/init_env.py --status
-python plugin/scripts/init_env.py --check --json
+python plugin/scripts/init_env.py --check
+python plugin/scripts/init_env.py --status --json
 
 # Générer un plan de migration legacy en 4 étapes non destructives (100 % lecture seule)
 python plugin/scripts/init_env.py --migration-plan --shell auto
@@ -84,7 +85,7 @@ Les anciens répertoires éventuels (`~/.gemini/gravity-bridge`, `~/.gemini/grav
 - Licence : [`LICENSE`](LICENSE)
 
 ```powershell
-# Validation stricte du plugin et du standard AGENTS.md D4 (sans BOM, LF, budgets)
+# Validation stricte du plugin et du standard D4 / SKILL.md (sans BOM, LF, budgets)
 python plugin/scripts/validate.py --strict
 agy plugin validate ./plugin --strict
 python -m unittest discover -s tests -p "test_*.py" -v

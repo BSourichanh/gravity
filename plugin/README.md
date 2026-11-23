@@ -27,9 +27,10 @@ Plugin maître de l'écosystème **Gravity** pour **Google Antigravity**, 100 % 
 # Initialiser <gravity_home>/core/modules.json et les sous-dossiers des modules valides
 python scripts/init_env.py
 
-# Inspection et diagnostic en lecture seule
+# Inspection et diagnostic en lecture seule (texte compact par défaut ; --json pour scripts/modules)
+python scripts/init_env.py --status
+python scripts/init_env.py --check
 python scripts/init_env.py --status --json
-python scripts/init_env.py --check --json
 python scripts/init_env.py --migration-plan --shell auto
 
 # Validation stricte du plugin

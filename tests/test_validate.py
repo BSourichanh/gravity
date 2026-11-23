@@ -88,8 +88,9 @@ class TestValidate(unittest.TestCase):
 
             rules_path.write_bytes(b"# Regle\n" + (b"a" * 700) + b"\n")
             report_mid = self._validate_copy(copy_dir)
-            self.assertTrue(report_mid.ok(strict=True))
-            self.assertTrue(any("600" in info for info in report_mid.infos))
+            self.assertTrue(report_mid.ok(strict=False))
+            self.assertFalse(report_mid.ok(strict=True))
+            self.assertTrue(any("600" in warn for warn in report_mid.warnings))
 
             rules_path.write_bytes(b"# Regle\n" + (b"b" * 1005) + b"\n")
             report_over = self._validate_copy(copy_dir)
@@ -97,6 +98,28 @@ class TestValidate(unittest.TestCase):
             self.assertTrue(any("1000" in err for err in report_over.errors))
 
             rules_path.write_bytes(b"\xef\xbb\xbf# Regle\r\n- item\r\n")
+            report_enc = self._validate_copy(copy_dir)
+            self.assertFalse(report_enc.ok(strict=True))
+            joined_enc = "\n".join(report_enc.errors)
+            self.assertIn("BOM UTF-8", joined_enc)
+            self.assertIn("CRLF", joined_enc)
+
+    def test_skill_md_budget_and_encoding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            copy_dir = Path(tmp) / "plugin"
+            shutil.copytree(PLUGIN_ROOT, copy_dir, ignore=shutil.ignore_patterns("__pycache__"))
+            skill_path = copy_dir / "skills" / "gravity" / "SKILL.md"
+            base = (
+                "---\nname: gravity\ndescription: \"Skill test\"\n---\n"
+                "init status modules doctor\n"
+            )
+
+            skill_path.write_bytes((base + ("x" * 6000) + "\n").encode("utf-8"))
+            report_over = self._validate_copy(copy_dir)
+            self.assertFalse(report_over.ok(strict=True))
+            self.assertTrue(any("6000" in err for err in report_over.errors))
+
+            skill_path.write_bytes(b"\xef\xbb\xbf" + base.replace("\n", "\r\n").encode("utf-8"))
             report_enc = self._validate_copy(copy_dir)
             self.assertFalse(report_enc.ok(strict=True))
             joined_enc = "\n".join(report_enc.errors)

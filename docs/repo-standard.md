@@ -15,9 +15,9 @@ Ce document définit le socle technique et organisationnel uniforme applicable �
 │   ├── assets/
 │   │   └── logo.svg         # SVG carré 1:1
 │   ├── rules/
-│   │   └── AGENTS.md        # Règle légère (<= 600 o cible, <= 1 000 o strict, sans frontmatter, UTF-8 sans BOM, LF)
+│   │   └── AGENTS.md        # Règle légère (<= 600 o cible / avertissement --strict, <= 1 000 o erreur, sans frontmatter, UTF-8 sans BOM, LF)
 │   ├── skills/<skill>/
-│   │   └── SKILL.md         # Frontmatter YAML (name, description <= 160 car.)
+│   │   └── SKILL.md         # Frontmatter YAML (name, description <= 160 car.) et <= 6 000 o UTF-8 sans BOM, LF
 │   ├── scripts/
 │   │   └── validate.py      # Validateur autonome (--strict)
 │   └── README.md            # Aligné sur le README racine
@@ -68,7 +68,8 @@ Interdits : `$schema`, `license`, `keywords` ou tout champ non officiel, ainsi q
 | Surface | Budget maximal | Contraintes |
 |---|---|---|
 | `AGENTS.md` (racine dépôt) | **<= 2 500 octets UTF-8** *(contrôlé par `validate.py`)* | UTF-8 sans BOM, LF, strictement 3 sections (`## Périmètre & Architecture`, `## Invariants` citant KISS/YAGNI/DRY/SOLID/CUPID, `## Vérifications obligatoires`) |
-| `plugin/rules/AGENTS.md` *(D4)* | **<= 600 octets UTF-8** *(cible éditoriale ; note au-delà)* / **<= 1 000 octets UTF-8** *(plafond strict bloquant)* | UTF-8 sans BOM, LF, **zéro frontmatter YAML** (`---`) |
+| `plugin/rules/AGENTS.md` *(D4)* | **<= 600 octets UTF-8** *(cible éditoriale ; avertissement bloquant sous `--strict` au-delà)* / **<= 1 000 octets UTF-8** *(erreur bloquante)* | UTF-8 sans BOM, LF, **zéro frontmatter YAML** (`---`) |
+| `plugin/skills/<skill>/SKILL.md` *(routeur)* | **<= 6 000 octets UTF-8** *(contrôlé par `validate.py`)* | UTF-8 sans BOM, LF, frontmatter YAML (`name`, `description <= 160 car.`) |
 | `gravity-studio` Hot *(référence)* | `ECOSYSTEM.md <= 6 000 o`, fiches `<= 3 500 o`, `IMPACT.md <= 6 000 o` | Données froides (`archives/`, `specs/archive/`, `handoffs/archive/`) hors session courante |
 
 > **Exception SRP (`gravity-workflow`) :** `gravity-workflow/plugin/rules/` est volontairement absent afin de ne pas alourdir les sessions Antigravity hors harnais ; ses règles sont déployées uniquement dans `.agents/rules/` du workspace cible.
