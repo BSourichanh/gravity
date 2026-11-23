@@ -1,4 +1,4 @@
-# Gravity Core Plugin (`v0.1.0`)
+# Gravity Core Plugin (`v0.2.0`)
 
 Plugin maître de l'écosystème **Gravity** pour **Google Antigravity**, 100 % bibliothèque standard Python 3.10+.
 
@@ -15,11 +15,11 @@ Plugin maître de l'écosystème **Gravity** pour **Google Antigravity**, 100 % 
 
 | Module (`id`) | Plugin | Commande(s) | Rôle |
 |---|---|---|---|
-| `core` | `gravity` (`v0.1.0`) | `/gravity` | Environnement unifié, registre modules et futur hôte UI unifié |
-| `architect` | `gravity-architect` (`v0.2.0`) | `/gravity-architect` | Conception, intégrité écosystème, stockage Hot/Cold et veille |
-| `workflow` | `gravity-workflow` (`v0.2.0`) | `/gravity-workflow`, `/caveman` | Harnais multi-agents, workflows, garde-fous, evals et routage |
-| `bridge` | `gravity-bridge` (`v0.1.0`) | `/gravity-bridge` | Boîte aux lettres SQLite WAL inter-projets et sidecars `agentapi` |
-| `metrics` | `gravity-metrics` (`v0.2.0`) | `/gravity-metrics` | Métriques Antigravity, coûts/tokens et signaux d'optimisation |
+| `core` | `gravity` (`v0.2.0`) | `/gravity` | Environnement unifié, registre modules et futur hôte UI unifié |
+| `architect` | `gravity-architect` (`v0.5.0`) | `/gravity-architect` | Conception, intégrité écosystème, stockage Hot/Cold et veille |
+| `workflow` | `gravity-workflow` (`v0.3.0`) | `/gravity-workflow`, `/caveman` | Harnais multi-agents, workflows, garde-fous, evals et routage |
+| `bridge` | `gravity-bridge` (`v0.3.0`) | `/gravity-bridge` | Boîte aux lettres SQLite WAL inter-projets et sidecars `agentapi` |
+| `metrics` | `gravity-metrics` (`v0.5.0`) | `/gravity-metrics` | Métriques Antigravity, coûts/tokens et signaux d'optimisation |
 
 ## Utilisation CLI
 

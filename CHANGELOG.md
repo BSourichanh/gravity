@@ -5,6 +5,8 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-23
+
 ### Added
 - **Orchestrateur multi-dépôts hors-ligne (`scripts/ecosystem_install.py`)** en 100 % stdlib Python 3.10+ (`subprocess.run(..., shell=False)`, zéro appel réseau) : ordre topologique fixe (`gravity` 1er à l'installation/mise à jour, dernier à la désinstallation), sélection mutuellement exclusive `--tier {1,2,3}` / `--modules`, modes `--check` (défaut), `--install`, `--update` (`--force`), `--uninstall`, options propagées (`--dry-run`, `--scope`, `--workspace`, `--method`, `--strict`, `--skip-validate`), `--repos-root`, `--json`, contrôle fail-closed et rafraîchissement automatique de `$GRAVITY_HOME/core/modules.json`.
 - **Plan de migration legacy 100 % lecture seule (`plugin/scripts/init_env.py --migration-plan`)** avec `--shell {auto,powershell,bash}` : inventaire des fichiers/octets sans suivi de symlinks, détection des collisions avec `$GRAVITY_HOME/<target_module>/` et plan non destructif en 4 étapes (sauvegarde horodatée, copie sans écrasement `Copy-Item` / `cp -n`, vérification `--check`, nettoyage commenté `#`), zéro écriture disque.

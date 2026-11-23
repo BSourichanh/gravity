@@ -1,7 +1,7 @@
 # Gravity — Socle Central & Écosystème Modulaire
 
-**Gravity** (`BSourichanh/gravity`, v0.1.0, licence MIT) est le **plugin cœur** de l'écosystème modulaire **Gravity** pour **Google Antigravity**.
-Il unifie l'environnement centralisé (`~/.gemini/gravity/`), la découverte et validation des modules via `config/module.json` v1 (`core/modules.json`), ainsi que la future interface utilisateur MCP App unifiée (`v0.2.0`).
+**Gravity** (`BSourichanh/gravity`, v0.2.0, licence MIT) est le **plugin cœur** de l'écosystème modulaire **Gravity** pour **Google Antigravity**.
+Il unifie l'environnement centralisé (`~/.gemini/gravity/`), la découverte et validation des modules via `config/module.json` v1 (`core/modules.json`), ainsi que la future interface utilisateur MCP App unifiée (`v0.3.0`).
 
 > **Clarification importante :**
 > - **`gravity`** (`/gravity`) est le socle central et hôte du registre des modules.
@@ -14,11 +14,11 @@ Tous les plugins de la suite reposent sur une pile **100 % bibliothèque standar
 
 | Module (`id`) | Plugin & Dépôt | Commande(s) | Stockage centralisé (`$GRAVITY_HOME/...`) | Rôle |
 |---|---|---|---|---|
-| `core` | [**Gravity**](https://github.com/BSourichanh/gravity) (`gravity` v0.1.0) | `/gravity` | `core/` (`$GRAVITY_CORE_HOME`) | Initialisation environnement, registre `core/modules.json` et futur hôte UI unifié |
-| `architect` | [**Gravity Architect**](https://github.com/BSourichanh/gravity-architect) (`gravity-architect` v0.2.0) | `/gravity-architect` | `architect/` (`$GRAVITY_ARCHITECT_HOME`) | Conception, intégrité écosystème, stockage Hot/Cold, veille plateforme et mise à niveau |
-| `workflow` | [**Gravity Workflow**](https://github.com/BSourichanh/gravity-workflow) (`gravity-workflow` v0.2.0) | `/gravity-workflow`, `/caveman` | `workflow/` (`$GRAVITY_WORKFLOW_HOME`) | Harnais multi-agents, workflows orchestrateurs, garde-fous fail-closed, evals et routage adaptatif |
-| `bridge` | [**Gravity Bridge**](https://github.com/BSourichanh/gravity-bridge) (`gravity-bridge` v0.1.0) | `/gravity-bridge` | `bridge/` (`$GRAVITY_BRIDGE_HOME`) | Boîte aux lettres SQLite WAL inter-projets et conversations natives App via micro-sidecars `agentapi` |
-| `metrics` | [**Gravity Metrics**](https://github.com/BSourichanh/gravity-metrics) (`gravity-metrics` v0.2.0) | `/gravity-metrics` | `metrics/` (`$GRAVITY_METRICS_HOME`) | Collecte de métriques Antigravity, coûts/tokens et signaux pour le mode `auto` |
+| `core` | [**Gravity**](https://github.com/BSourichanh/gravity) (`gravity` v0.2.0) | `/gravity` | `core/` (`$GRAVITY_CORE_HOME`) | Initialisation environnement, registre `core/modules.json` et futur hôte UI unifié |
+| `architect` | [**Gravity Architect**](https://github.com/BSourichanh/gravity-architect) (`gravity-architect` v0.5.0) | `/gravity-architect` | `architect/` (`$GRAVITY_ARCHITECT_HOME`) | Conception, intégrité écosystème, stockage Hot/Cold, veille plateforme et mise à niveau |
+| `workflow` | [**Gravity Workflow**](https://github.com/BSourichanh/gravity-workflow) (`gravity-workflow` v0.3.0) | `/gravity-workflow`, `/caveman` | `workflow/` (`$GRAVITY_WORKFLOW_HOME`) | Harnais multi-agents, workflows orchestrateurs, garde-fous fail-closed, evals et routage adaptatif |
+| `bridge` | [**Gravity Bridge**](https://github.com/BSourichanh/gravity-bridge) (`gravity-bridge` v0.3.0) | `/gravity-bridge` | `bridge/` (`$GRAVITY_BRIDGE_HOME`) | Boîte aux lettres SQLite WAL inter-projets et conversations natives App via micro-sidecars `agentapi` |
+| `metrics` | [**Gravity Metrics**](https://github.com/BSourichanh/gravity-metrics) (`gravity-metrics` v0.5.0) | `/gravity-metrics` | `metrics/` (`$GRAVITY_METRICS_HOME`) | Collecte de métriques Antigravity, coûts/tokens et signaux pour le mode `auto` |
 
 ## Installation & prise en main
 
@@ -29,7 +29,7 @@ python install.py --check
 # Installer globalement (~/.gemini/config/plugins/gravity)
 python install.py
 
-# Remplacer une ancienne installation du harnais 'gravity' par Gravity Core v0.1.0
+# Remplacer une ancienne installation du harnais 'gravity' par Gravity Core v0.2.0
 python install.py --force
 
 # Installer dans un workspace dédié (.agents/plugins/gravity)
