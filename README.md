@@ -55,6 +55,18 @@ python scripts/ecosystem_install.py --update --modules gravity,gravity-metrics -
 python scripts/ecosystem_install.py --uninstall --dry-run
 ```
 
+### Auditeur de dérive multi-dépôts (`scripts/audit_ecosystem.py`)
+
+Contrôle en **lecture seule stricte** (100 % stdlib Python 3.10+, inspection AST/statique) l'alignement des 5 dépôts (`--repos-root`, `--repos`, `--json`, `--strict`) : contrat CLI `install.py` (11 drapeaux), contrat `validate.py`, budgets `AGENTS.md` / D4, synchronisation `plugin.json` ↔ `CHANGELOG.md` + `suggestedPrompts` et dette monolithique `plugin/**/*.py` (avec exemption `plugin/mcp/ui/*.py`) :
+
+```powershell
+# Audit synthétique de l'écosystème local
+python scripts/audit_ecosystem.py
+
+# Mode CI strict (échoue sur avertissement) avec sortie JSON
+python scripts/audit_ecosystem.py --strict --json
+```
+
 ### Initialiser et inspecter l'environnement Gravity
 
 ```powershell

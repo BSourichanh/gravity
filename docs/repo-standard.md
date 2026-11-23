@@ -114,3 +114,12 @@ python plugin/scripts/validate.py --strict
 agy plugin validate ./plugin --strict
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
+
+Pour contrôler la dérive inter-dépôts en **lecture seule stricte** (`gravity`, `gravity-workflow`, `gravity-metrics`, `gravity-architect`, `gravity-bridge`), exécuter depuis `gravity` :
+
+```powershell
+python scripts/audit_ecosystem.py
+python scripts/audit_ecosystem.py --strict --json
+```
+
+`scripts/audit_ecosystem.py` (`--repos-root`, `--repos`, `--json`, `--strict`) vérifie par inspection statique/AST sans exécution : le contrat CLI à 11 drapeaux de `install.py`, le contrat de `plugin/scripts/validate.py` (`--strict`, `plugin.json`, `config/module.json`, `stdlib-only`, UTF-8/LF et `--fix-python-cmd` si manifeste exécutable), les budgets `AGENTS.md` / D4 (exemption documentée `gravity-workflow/plugin/rules/`), la synchronisation `plugin.json` ↔ `CHANGELOG.md` + `suggestedPrompts` (`<= 100` car.) et la dette monolithique `plugin/**/*.py` (`> 800` L `warn`, `> 1 500` L `error`, exemption des bundles JS/CSS embarqués sous `plugin/mcp/ui/*.py`).
