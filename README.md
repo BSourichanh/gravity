@@ -82,3 +82,10 @@ Les anciens répertoires éventuels (`~/.gemini/gravity-bridge`, `~/.gemini/grav
 - Feuille de route : [`docs/roadmap.md`](docs/roadmap.md)
 - Historique des versions : [`CHANGELOG.md`](CHANGELOG.md)
 - Licence : [`LICENSE`](LICENSE)
+
+```powershell
+# Validation stricte du plugin et du standard AGENTS.md D4 (sans BOM, LF, budgets)
+python plugin/scripts/validate.py --strict
+agy plugin validate ./plugin --strict
+python -m unittest discover -s tests -p "test_*.py" -v
+```

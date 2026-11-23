@@ -74,11 +74,54 @@ class TestValidate(unittest.TestCase):
             self.assertFalse(report.ok(strict=True))
             joined = "\n".join(report.errors)
             self.assertIn("viewBox carré", joined)
-            self.assertIn("2048", joined)
+            self.assertIn("1000", joined)
             self.assertIn("frontmatter", joined)
             self.assertIn("160", joined)
             self.assertIn("requests", joined)
             self.assertIn("schema_version", joined)
+
+    def test_rules_agents_md_d4_thresholds_and_encoding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            copy_dir = Path(tmp) / "plugin"
+            shutil.copytree(PLUGIN_ROOT, copy_dir, ignore=shutil.ignore_patterns("__pycache__"))
+            rules_path = copy_dir / "rules" / "AGENTS.md"
+
+            rules_path.write_bytes(b"# Regle\n" + (b"a" * 700) + b"\n")
+            report_mid = self._validate_copy(copy_dir)
+            self.assertTrue(report_mid.ok(strict=True))
+            self.assertTrue(any("600" in info for info in report_mid.infos))
+
+            rules_path.write_bytes(b"# Regle\n" + (b"b" * 1005) + b"\n")
+            report_over = self._validate_copy(copy_dir)
+            self.assertFalse(report_over.ok(strict=True))
+            self.assertTrue(any("1000" in err for err in report_over.errors))
+
+            rules_path.write_bytes(b"\xef\xbb\xbf# Regle\r\n- item\r\n")
+            report_enc = self._validate_copy(copy_dir)
+            self.assertFalse(report_enc.ok(strict=True))
+            joined_enc = "\n".join(report_enc.errors)
+            self.assertIn("BOM UTF-8", joined_enc)
+            self.assertIn("CRLF", joined_enc)
+
+    def test_repo_root_agents_md_budget_and_encoding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_dir = Path(tmp) / "repo"
+            copy_dir = repo_dir / "plugin"
+            shutil.copytree(PLUGIN_ROOT, copy_dir, ignore=shutil.ignore_patterns("__pycache__"))
+            root_agents = repo_dir / "AGENTS.md"
+
+            root_agents.write_bytes(b"# Repo\n\n- ok\n")
+            report_ok = self._validate_copy(copy_dir)
+            self.assertTrue(report_ok.ok(strict=True))
+
+            root_agents.write_bytes(b"\xef\xbb\xbf# Repo\r\n" + (b"x" * 2550) + b"\r\n")
+            report_bad = self._validate_copy(copy_dir)
+            self.assertFalse(report_bad.ok(strict=True))
+            joined_bad = "\n".join(report_bad.errors)
+            self.assertIn("AGENTS.md", joined_bad)
+            self.assertIn("BOM UTF-8", joined_bad)
+            self.assertIn("CRLF", joined_bad)
+            self.assertIn("2500", joined_bad)
 
     def test_rejects_forbidden_jargon_and_personal_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

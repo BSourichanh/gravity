@@ -33,6 +33,9 @@ OFFICIAL_PLUGIN_FIELDS = {
 REQUIRED_PLUGIN_FIELDS = OFFICIAL_PLUGIN_FIELDS - {"disabled"}
 ALLOWED_LOCAL_MODULES = {"core", "registry", "init_env", "validate"}
 REQUIRED_DIRS = ("assets", "config", "core", "rules", "scripts", "skills")
+RULES_EDITORIAL_TARGET_BYTES = 600
+RULES_MAX_BYTES = 1000
+REPO_AGENTS_MAX_BYTES = 2500
 
 FORBIDDEN_MOD_RE = re.compile(r"\bMod" + r"ule\s+0?\d\b", re.IGNORECASE)
 PERSONAL_PATH_RE = re.compile(
@@ -259,6 +262,23 @@ def _validate_skills(root: Path, report: Report) -> None:
             report.error(f"skills/gravity/SKILL.md : sous-commande '/gravity {subcmd}' non documentée.")
 
 
+def _check_utf8_lf_budget(
+    file_path: Path, label: str, max_bytes: int, report: Report
+) -> bytes:
+    """Validate UTF-8 without BOM, LF line endings, and byte budget for a markdown rule file."""
+    raw_bytes = file_path.read_bytes()
+    if raw_bytes.startswith(b"\xef\xbb\xbf"):
+        report.error(f"{label} ne doit pas contenir de BOM UTF-8.")
+        payload = raw_bytes[3:]
+    else:
+        payload = raw_bytes
+    if b"\r\n" in raw_bytes:
+        report.error(f"{label} doit utiliser des fins de ligne LF (CRLF détecté).")
+    if len(raw_bytes) > max_bytes:
+        report.error(f"{label} doit faire <= {max_bytes} octets UTF-8 (actuel : {len(raw_bytes)}).")
+    return payload
+
+
 def _validate_rules(root: Path, report: Report) -> None:
     rules_file = root / "rules" / "AGENTS.md"
     if not rules_file.is_file():
@@ -266,12 +286,24 @@ def _validate_rules(root: Path, report: Report) -> None:
         return
 
     raw_bytes = rules_file.read_bytes()
-    if len(raw_bytes) >= 2048:
-        report.error(f"rules/AGENTS.md doit faire < 2048 octets (actuel : {len(raw_bytes)}).")
+    payload = _check_utf8_lf_budget(rules_file, "rules/AGENTS.md", RULES_MAX_BYTES, report)
+    if RULES_EDITORIAL_TARGET_BYTES < len(raw_bytes) <= RULES_MAX_BYTES:
+        report.info(
+            f"rules/AGENTS.md dépasse la cible éditoriale de {RULES_EDITORIAL_TARGET_BYTES} octets "
+            f"(actuel : {len(raw_bytes)}, plafond strict : {RULES_MAX_BYTES})."
+        )
 
-    rules_txt = raw_bytes.decode("utf-8", errors="replace")
+    rules_txt = payload.decode("utf-8", errors="replace")
     if rules_txt.lstrip().startswith("---"):
         report.error("rules/AGENTS.md ne doit pas contenir de frontmatter YAML.")
+
+
+def _validate_repo_agents_md(root: Path, report: Report) -> None:
+    """Validate root repository AGENTS.md when auditing a repo's plugin/ directory."""
+    agents_file = root.parent / "AGENTS.md"
+    if not agents_file.is_file():
+        return
+    _check_utf8_lf_budget(agents_file, "AGENTS.md", REPO_AGENTS_MAX_BYTES, report)
 
 
 def _check_stdlib_only(py_file: Path, report: Report) -> None:
@@ -399,6 +431,8 @@ def validate_plugin(root: Path, report: Report) -> None:
     _validate_module_json(root, manifest, report)
     _validate_skills(root, report)
     _validate_rules(root, report)
+    if root.name == "plugin" and (root.parent / "AGENTS.md").is_file():
+        _validate_repo_agents_md(root, report)
 
     for py_file in sorted(root.rglob("*.py")):
         if "__pycache__" in py_file.parts:

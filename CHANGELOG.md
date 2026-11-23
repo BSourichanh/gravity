@@ -10,6 +10,13 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 - **Plan de migration legacy 100 % lecture seule (`plugin/scripts/init_env.py --migration-plan`)** avec `--shell {auto,powershell,bash}` : inventaire des fichiers/octets sans suivi de symlinks, détection des collisions avec `$GRAVITY_HOME/<target_module>/` et plan non destructif en 4 étapes (sauvegarde horodatée, copie sans écrasement `Copy-Item` / `cp -n`, vérification `--check`, nettoyage commenté `#`), zéro écriture disque.
 - **Documentation & tests :** contrat CLI commun à 11 drapeaux sur les `install.py` dans `docs/repo-standard.md`, mention `--migration-plan` dans `plugin/skills/gravity/SKILL.md` sous `/gravity doctor`, mise à jour `README.md` / `plugin/README.md`, et suites `unittest` isolées `tests/test_ecosystem_install.py` et `tests/test_migration_plan.py`.
 
+### Changed
+- **Standard `AGENTS.md` D4 & validateur (`docs/repo-standard.md`, `plugin/scripts/validate.py`, `AGENTS.md`) :**
+  - Double seuil harmonisé pour `plugin/rules/AGENTS.md` : cible éditoriale `<= 600 o` (`report.info` entre `601` et `1 000 o`), plafond strict bloquant abaissé à `<= 1 000 o` UTF-8 sans BOM/LF et zéro frontmatter YAML.
+  - Contrôle de `AGENTS.md` racine (`<= 2 500 o` UTF-8, sans BOM, LF) dans `validate_plugin()` via `_validate_repo_agents_md()` lorsque `root.name == "plugin"`.
+  - Documentation de l'exception SRP volontaire pour `gravity-workflow/plugin/rules/` et compaction de `AGENTS.md` racine (`<= 1 650 o`) sans perte d'invariant.
+  - Mise à jour de `tests/test_validate.py` et `README.md`.
+
 ## [0.1.0] - 2026-11-22
 
 ### Added

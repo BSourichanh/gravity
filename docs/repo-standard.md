@@ -15,14 +15,14 @@ Ce document définit le socle technique et organisationnel uniforme applicable �
 │   ├── assets/
 │   │   └── logo.svg         # SVG carré 1:1
 │   ├── rules/
-│   │   └── AGENTS.md        # Règle légère (< 2 048 octets, sans frontmatter)
+│   │   └── AGENTS.md        # Règle légère (<= 600 o cible, <= 1 000 o strict, sans frontmatter, UTF-8 sans BOM, LF)
 │   ├── skills/<skill>/
 │   │   └── SKILL.md         # Frontmatter YAML (name, description <= 160 car.)
 │   ├── scripts/
 │   │   └── validate.py      # Validateur autonome (--strict)
 │   └── README.md            # Aligné sur le README racine
 ├── install.py               # Installeur/désinstalleur cross-platform (contrat CLI commun 11 drapeaux)
-├── AGENTS.md                # Charte agent canonique (<= 2 500 octets, 3 sections)
+├── AGENTS.md                # Charte agent canonique (<= 2 500 octets, UTF-8 sans BOM, LF, 3 sections ; contrôlée par validate.py)
 ├── README.md                # Présentation, installation et liens docs/
 ├── CHANGELOG.md             # Format Keep a Changelog + SemVer
 ├── docs/                    # Documentation détaillée (si applicable)
@@ -67,9 +67,13 @@ Interdits : `$schema`, `license`, `keywords` ou tout champ non officiel, ainsi q
 
 | Surface | Budget maximal | Contraintes |
 |---|---|---|
-| `AGENTS.md` (racine dépôt) | **<= 2 500 octets UTF-8** | Strictement 3 sections (`## Périmètre & Architecture`, `## Invariants` citant KISS/YAGNI/DRY/SOLID/CUPID, `## Vérifications obligatoires`) |
-| `plugin/rules/AGENTS.md` | **< 2 048 octets UTF-8** | **Zéro frontmatter YAML** (`---`) |
+| `AGENTS.md` (racine dépôt) | **<= 2 500 octets UTF-8** *(contrôlé par `validate.py`)* | UTF-8 sans BOM, LF, strictement 3 sections (`## Périmètre & Architecture`, `## Invariants` citant KISS/YAGNI/DRY/SOLID/CUPID, `## Vérifications obligatoires`) |
+| `plugin/rules/AGENTS.md` *(D4)* | **<= 600 octets UTF-8** *(cible éditoriale ; note au-delà)* / **<= 1 000 octets UTF-8** *(plafond strict bloquant)* | UTF-8 sans BOM, LF, **zéro frontmatter YAML** (`---`) |
 | `gravity-studio` Hot *(référence)* | `ECOSYSTEM.md <= 6 000 o`, fiches `<= 3 500 o`, `IMPACT.md <= 6 000 o` | Données froides (`archives/`, `specs/archive/`, `handoffs/archive/`) hors session courante |
+
+> **Exception SRP (`gravity-workflow`) :** `gravity-workflow/plugin/rules/` est volontairement absent afin de ne pas alourdir les sessions Antigravity hors harnais ; ses règles sont déployées uniquement dans `.agents/rules/` du workspace cible.
+>
+> **SRP `gravity init` :** `plugin/scripts/init_env.py` n'écrit ni ne modifie jamais de fichier `AGENTS.md` dans les workspaces utilisateur cibles.
 
 ---
 
