@@ -16,6 +16,27 @@ from typing import Any, Optional, Sequence
 MAX_SCAN_FILES = 10_000
 MAX_SCAN_DEPTH = 32
 MAX_COLLISIONS_SHOWN = 50
+MAX_GUIDE_LINES = 20
+
+GUIDE_QUICKSTART: tuple[str, ...] = (
+    "1. Initialiser : /gravity init (cree $GRAVITY_HOME/core/modules.json)",
+    "2. Piloter     : /gravity dashboard (MCP App, 0 token) ou vos modules actifs",
+    "3. Verifier    : /gravity doctor (sante & legacy lecture seule)",
+)
+GUIDE_CORE_COMMANDS: tuple[str, ...] = (
+    "/gravity init",
+    "/gravity status",
+    "/gravity modules",
+    "/gravity doctor",
+    "/gravity dashboard",
+    "/gravity help",
+)
+GUIDE_DOCS: tuple[str, ...] = (
+    "docs/getting-started.md",
+    "docs/user-journey.md",
+    "docs/command-cheatsheet.md",
+    "docs/troubleshooting-and-lifecycle.md",
+)
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 if str(PLUGIN_ROOT) not in sys.path:
@@ -473,6 +494,45 @@ def _run_dashboard_diagnostic(
     return payload, (0 if ok else 1)
 
 
+def _run_guide_mode(
+    *,
+    gravity_home: Optional[Path] = None,
+    plugins_dirs: Optional[Sequence[Path]] = None,
+) -> tuple[dict[str, Any], int]:
+    """Return a strictly read-only interactive quick-guide payload based on discovered modules."""
+    resolved_home = resolve_gravity_home(gravity_home)
+    roots = list(plugins_dirs) if plugins_dirs else default_plugin_roots()
+    modules = discover_modules(roots)
+
+    installed_modules: list[dict[str, Any]] = []
+    commands: dict[str, list[str]] = {"core": list(GUIDE_CORE_COMMANDS)}
+    for mod in modules:
+        mod_id = str(mod.get("id") or "")
+        mod_cmds = [str(c) for c in (mod.get("commands") or []) if isinstance(c, str) and c.strip()]
+        installed_modules.append(
+            {
+                "id": mod_id,
+                "plugin_name": mod.get("plugin_name"),
+                "version": mod.get("version"),
+                "valid": bool(mod.get("valid")),
+                "commands": mod_cmds,
+            }
+        )
+        if mod.get("valid") and mod_id and mod_id != "core":
+            commands[mod_id] = mod_cmds
+
+    payload: dict[str, Any] = {
+        "mode": "guide",
+        "ok": True,
+        "gravity_home": str(resolved_home),
+        "installed_modules": installed_modules,
+        "quickstart": list(GUIDE_QUICKSTART),
+        "commands": commands,
+        "docs": list(GUIDE_DOCS),
+    }
+    return payload, 0
+
+
 def run_environment(
     *,
     gravity_home: Optional[Path] = None,
@@ -482,9 +542,15 @@ def run_environment(
     check_only: bool = False,
     migration_plan: bool = False,
     dashboard: bool = False,
+    guide: bool = False,
     shell: str = "auto",
 ) -> tuple[dict[str, Any], int]:
-    """Execute init, status, check, migration-plan, or dashboard workflow and return (payload, exit_code)."""
+    """Execute init, status, check, migration-plan, dashboard, or guide workflow and return (payload, exit_code)."""
+    if guide:
+        return _run_guide_mode(
+            gravity_home=gravity_home,
+            plugins_dirs=plugins_dirs,
+        )
     if dashboard:
         return _run_dashboard_diagnostic(
             gravity_home=gravity_home,
@@ -623,7 +689,45 @@ def _print_dashboard_report(payload: dict[str, Any]) -> None:
         print(f"  [ERROR] {err}")
 
 
+def _print_guide_report(payload: dict[str, Any]) -> None:
+    installed = payload.get("installed_modules") or []
+    commands = payload.get("commands") or {}
+    docs = payload.get("docs") or []
+
+    lines: list[str] = [
+        "Gravity Core — Guide rapide (lecture seule)",
+        "Boucle en 3 temps :",
+        *[f"  {step}" for step in (payload.get("quickstart") or [])],
+        "Commandes Core : /gravity [init|status|modules|doctor|dashboard|help]",
+    ]
+    other_mods = [m for m in installed if m.get("id") != "core" and m.get("valid")]
+    if other_mods:
+        lines.append(f"Modules detectes ({len(installed)}) :")
+        max_listed = 5
+        for mod in other_mods[:max_listed]:
+            mod_id = str(mod.get("id") or "")
+            ver = mod.get("version") or "?"
+            cmds = ", ".join(commands.get(mod_id) or mod.get("commands") or []) or "-"
+            lines.append(f"  - {mod_id} (v{ver}) : {cmds}")
+        if len(other_mods) > max_listed:
+            lines.append(f"  - ... (+{len(other_mods) - max_listed} autres via /gravity modules)")
+    elif installed:
+        lines.append("Modules detectes : core uniquement (Paliers 2/3 : metrics, architect, bridge)")
+    else:
+        lines.append("Modules detectes : aucun dans --plugins-dir")
+
+    lines.append("Guides docs/ :")
+    for doc_path in docs:
+        lines.append(f"  - {doc_path}")
+
+    for line in lines[:MAX_GUIDE_LINES]:
+        print(line)
+
+
 def _print_human_report(payload: dict[str, Any]) -> None:
+    if payload.get("mode") == "guide":
+        _print_guide_report(payload)
+        return
     if payload.get("mode") == "migration-plan":
         _print_migration_plan_report(payload)
         return
@@ -707,6 +811,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Read-only diagnostics for the Gravity MCP App dashboard, config, and tabs.",
     )
+    mode_group.add_argument(
+        "--guide",
+        action="store_true",
+        help="Read-only quick guide, discovered module commands, and docs/ pointers.",
+    )
     parser.add_argument(
         "--shell",
         choices=("auto", "powershell", "bash"),
@@ -734,6 +843,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             check_only=args.check,
             migration_plan=args.migration_plan,
             dashboard=args.dashboard,
+            guide=args.guide,
             shell=args.shell,
         )
     except OSError as exc:

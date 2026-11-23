@@ -126,7 +126,7 @@ class TestValidate(unittest.TestCase):
             skill_path = copy_dir / "skills" / "gravity" / "SKILL.md"
             base = (
                 "---\nname: gravity\ndescription: \"Skill test\"\n---\n"
-                "init status modules doctor dashboard\n"
+                "init status modules doctor dashboard help\n"
             )
 
             skill_path.write_bytes((base + ("x" * 6000) + "\n").encode("utf-8"))
@@ -140,6 +140,14 @@ class TestValidate(unittest.TestCase):
             joined_enc = "\n".join(report_enc.errors)
             self.assertIn("BOM UTF-8", joined_enc)
             self.assertIn("CRLF", joined_enc)
+
+            skill_path.write_text(
+                "---\nname: gravity\ndescription: \"Skill test\"\n---\ninit status modules doctor dashboard\n",
+                encoding="utf-8",
+            )
+            report_no_help = self._validate_copy(copy_dir)
+            self.assertFalse(report_no_help.ok(strict=True))
+            self.assertTrue(any("help" in err for err in report_no_help.errors))
 
     def test_repo_root_agents_md_budget_and_encoding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -224,6 +232,77 @@ class TestValidate(unittest.TestCase):
             joined = "\n".join(rep.errors)
             self.assertIn("innerHTML", joined)
             self.assertIn("https://", joined)
+
+    def test_suggested_prompts_ux_guards(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            copy_dir = Path(tmp) / "plugin"
+            shutil.copytree(PLUGIN_ROOT, copy_dir, ignore=shutil.ignore_patterns("__pycache__"))
+            manifest_path = copy_dir / "plugin.json"
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+            # Valid prompts using '-', '—', and plain text <= 100 chars
+            data["suggestedPrompts"] = [
+                "/gravity init - Initialiser Gravity",
+                "/gravity doctor — Auditer les modules",
+                "Explorer l'architecture Gravity",
+            ]
+            manifest_path.write_text(json.dumps(data, ensure_ascii=False) + "\n", encoding="utf-8")
+            rep_ok = plugin_validator.Report()
+            plugin_validator._validate_manifest(copy_dir, rep_ok)
+            self.assertTrue(rep_ok.ok(strict=True), msg=rep_ok.errors)
+
+            # Invalid: >100 chars, missing separator, empty summary
+            data["suggestedPrompts"] = [
+                "/gravity init — " + ("x" * 90),
+                "/gravity status",
+                "/gravity doctor —   ",
+            ]
+            manifest_path.write_text(json.dumps(data, ensure_ascii=False) + "\n", encoding="utf-8")
+            rep_bad = plugin_validator.Report()
+            plugin_validator._validate_manifest(copy_dir, rep_bad)
+            self.assertFalse(rep_bad.ok(strict=True))
+            self.assertEqual(len(rep_bad.errors), 3)
+
+    def test_markdown_links_and_ux_guides_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_dir = Path(tmp) / "repo"
+            copy_dir = repo_dir / "plugin"
+            shutil.copytree(PLUGIN_ROOT, copy_dir, ignore=shutil.ignore_patterns("__pycache__"))
+            docs_dir = repo_dir / "docs"
+            docs_dir.mkdir(parents=True)
+            for name in plugin_validator.UX_GUIDE_FILES:
+                (docs_dir / name).write_bytes(
+                    (
+                        "# Guide\n\n"
+                        "Voir [Accueil](../README.md), [Section](#sec), "
+                        "[Web](https://example.com), [Mail](mailto:test@example.com), "
+                        "[Custom](customization://open).\n\n"
+                        "```markdown\n[Ignore](missing-in-fence.md)\n```\n"
+                        "`[IgnoreInline](missing-inline.md)`\n"
+                    ).encode("utf-8")
+                )
+            (repo_dir / "README.md").write_bytes(
+                b"# Repo\n\n[Start](docs/getting-started.md)\n"
+            )
+
+            rep_ok = plugin_validator.Report()
+            plugin_validator._validate_markdown_links(copy_dir, rep_ok)
+            self.assertTrue(rep_ok.ok(strict=True), msg=rep_ok.errors)
+
+            # Broken relative links + missing guide + oversized guide
+            (copy_dir / "README.md").write_text("[Broken](no-such-file.md)\n", encoding="utf-8")
+            (docs_dir / "user-journey.md").unlink()
+            (docs_dir / "getting-started.md").write_bytes(b"# Guide\n" + (b"a" * 15400) + b"\n")
+            (repo_dir / "README.md").write_text("[BrokenRoot](docs/absent.md)\n", encoding="utf-8")
+
+            rep_bad = plugin_validator.Report()
+            plugin_validator._validate_markdown_links(copy_dir, rep_bad)
+            self.assertFalse(rep_bad.ok(strict=True))
+            joined = "\n".join(rep_bad.errors)
+            self.assertIn("no-such-file.md", joined)
+            self.assertIn("docs/user-journey.md", joined)
+            self.assertIn("15360", joined)
+            self.assertIn("docs/absent.md", joined)
 
 
 if __name__ == "__main__":

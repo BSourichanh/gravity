@@ -78,7 +78,16 @@ Interdits : `$schema`, `license`, `keywords` ou tout champ non officiel, ainsi q
 
 ---
 
-## 5. Contrat CLI commun des installeurs (`install.py`, 11 drapeaux)
+## 5. Hygiène UX & Documentation
+
+- **`suggestedPrompts` (`plugin/plugin.json`) :** chaque entrée fait **`<= 100` caractères** ; si elle débute par `/`, elle doit contenir ` — ` ou ` - ` suivi d'un résumé non vide.
+- **Guides utilisateur `docs/` (`gravity`) :** les 4 guides (`getting-started.md`, `user-journey.md`, `command-cheatsheet.md`, `troubleshooting-and-lifecycle.md`) doivent chacun rester **`<= 15 360` octets UTF-8**, sans BOM et en fins de ligne LF.
+- **Liens Markdown relatifs intègres :** aucun lien relatif local cassé dans `plugin/README.md`, `plugin/skills/*/SKILL.md`, `README.md` et `docs/*.md` (contrôlé automatiquement par `plugin/scripts/validate.py`, hors URLs `http(s)://`, ancres `#`, `mailto:`, `customization://` et blocs de code).
+- **Skill `/gravity` :** toutes les sous-commandes officielles (`init`, `status`, `modules`, `doctor`, `dashboard`, `help`) doivent être documentées dans `SKILL.md`.
+
+---
+
+## 6. Contrat CLI commun des installeurs (`install.py`, 11 drapeaux)
 
 Chaque dépôt produit expose un script `install.py` autonome respectant un contrat CLI commun à **11 drapeaux** (complété au besoin par des options propres au module) afin de permettre l'orchestration hors-ligne par `scripts/ecosystem_install.py` (dans `gravity`) :
 
@@ -98,7 +107,7 @@ Chaque dépôt produit expose un script `install.py` autonome respectant un cont
 
 ---
 
-## 6. Vérifications obligatoires avant livraison
+## 7. Vérifications obligatoires avant livraison
 
 ```powershell
 python plugin/scripts/validate.py --strict

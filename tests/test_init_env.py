@@ -277,6 +277,112 @@ class TestInitEnvCLI(unittest.TestCase):
             )
             self.assertEqual(p_mutex.returncode, 2)
 
+    def test_guide_flag_is_read_only_lists_discovered_commands_and_caps_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_home = tmp_path / "user-home"
+            fake_home.mkdir()
+            plugins_dir = tmp_path / "plugins"
+            shutil.copytree(
+                REPO_ROOT / "plugin",
+                plugins_dir / "gravity",
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+            _create_fake_module(plugins_dir, "metrics", "gravity-metrics", "GRAVITY_METRICS_HOME")
+
+            gravity_home = tmp_path / "uninit-guide-home"
+            env = _isolated_env(fake_home)
+
+            p_json = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(INIT_SCRIPT),
+                    "--gravity-home",
+                    str(gravity_home),
+                    "--plugins-dir",
+                    str(plugins_dir),
+                    "--guide",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(p_json.returncode, 0, msg=p_json.stderr or p_json.stdout)
+            self.assertFalse(gravity_home.exists())
+            out = json.loads(p_json.stdout)
+            self.assertEqual(out["mode"], "guide")
+            self.assertTrue(out["ok"])
+            self.assertEqual([m["id"] for m in out["installed_modules"]], ["core", "metrics"])
+            self.assertEqual(len(out["quickstart"]), 3)
+            self.assertIn("core", out["commands"])
+            self.assertEqual(out["commands"]["metrics"], ["/gravity-metrics"])
+            self.assertEqual(
+                out["docs"],
+                [
+                    "docs/getting-started.md",
+                    "docs/user-journey.md",
+                    "docs/command-cheatsheet.md",
+                    "docs/troubleshooting-and-lifecycle.md",
+                ],
+            )
+
+            p_txt = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(INIT_SCRIPT),
+                    "--gravity-home",
+                    str(gravity_home),
+                    "--plugins-dir",
+                    str(plugins_dir),
+                    "--guide",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(p_txt.returncode, 0, msg=p_txt.stderr)
+            self.assertFalse(gravity_home.exists())
+            lines = p_txt.stdout.splitlines()
+            self.assertLessEqual(len(lines), 20)
+            self.assertIn("/gravity-metrics", p_txt.stdout)
+            self.assertIn("docs/getting-started.md", p_txt.stdout)
+
+            p_mutex = subprocess.run(
+                [sys.executable, "-B", str(INIT_SCRIPT), "--guide", "--status"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=10,
+                check=False,
+            )
+            self.assertEqual(p_mutex.returncode, 2)
+
+            p_help = subprocess.run(
+                [sys.executable, "-B", str(INIT_SCRIPT), "--help"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=10,
+                check=False,
+            )
+            self.assertEqual(p_help.returncode, 0)
+            self.assertIn("--guide", p_help.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -73,12 +73,23 @@ python plugin/scripts/init_env.py --migration-plan --shell bash --json
 # Diagnostiquer la MCP App unifiée et les onglets du dashboard (100 % lecture seule)
 python plugin/scripts/init_env.py --dashboard
 python plugin/scripts/init_env.py --dashboard --json
+
+# Guide rapide lecture seule (boucle 3 temps, commandes des modules détectés, pointeurs docs/)
+python plugin/scripts/init_env.py --guide
+python plugin/scripts/init_env.py --guide --json
 ```
 
-Dans Antigravity, utiliser le skill **`/gravity [init|status|modules|doctor|dashboard]`** ou ouvrir directement le tableau de bord depuis **Plugins -> Gravity** (`open_gravity_dashboard`, 0 token interactif).
+Dans Antigravity, utiliser le skill **`/gravity [init|status|modules|doctor|dashboard|help]`** ou ouvrir directement le tableau de bord depuis **Plugins -> Gravity** (`open_gravity_dashboard`, 0 token interactif).
 Les anciens répertoires éventuels (`~/.gemini/gravity-bridge`, `~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow`, `~/.gravity`) sont détectés en **lecture seule uniquement** : rien n'est jamais modifié ni supprimé automatiquement.
 
-## Documentation & vérifications
+## Parcours utilisateur & Guides UX (`docs/`)
+
+- **Démarrer en 5 minutes :** [`docs/getting-started.md`](docs/getting-started.md) *(prérequis, 3 paliers, séquences PowerShell/bash, check-list)*
+- **Parcours complet :** [`docs/user-journey.md`](docs/user-journey.md) *(diagramme, scénario fil rouge Paliers 1→3, matrice 7 phases, frontières d'or)*
+- **Aide-mémoire des commandes :** [`docs/command-cheatsheet.md`](docs/command-cheatsheet.md) *(matrice intentionnelle `/gravity*`, `/caveman`, `/learn`, anti-patterns)*
+- **Dépannage & cycle de vie :** [`docs/troubleshooting-and-lifecycle.md`](docs/troubleshooting-and-lifecycle.md) *(mises à jour `--update`, migration 4 étapes, dépannage Windows/POSIX, `--uninstall`)*
+
+## Documentation technique & vérifications
 
 - Index documentation : [`docs/README.md`](docs/README.md)
 - Architecture modulaire & signaux : [`docs/architecture.md`](docs/architecture.md)

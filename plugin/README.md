@@ -3,6 +3,8 @@
 Plugin maître de l'écosystème **Gravity** pour **Google Antigravity**, 100 % bibliothèque standard Python 3.10+.
 
 > **Rappel :** `gravity` (`/gravity`) gère l'environnement unifié et le registre des modules ; le harnais multi-agents/workflows s'appelle désormais **`gravity-workflow`** (`/gravity-workflow`, `/caveman`).
+>
+> **Guides UX (`gravity/docs/`) :** [Démarrage rapide](https://github.com/BSourichanh/gravity/blob/main/docs/getting-started.md) · [Parcours utilisateur](https://github.com/BSourichanh/gravity/blob/main/docs/user-journey.md) · [Aide-mémoire des commandes](https://github.com/BSourichanh/gravity/blob/main/docs/command-cheatsheet.md) · [Dépannage & cycle de vie](https://github.com/BSourichanh/gravity/blob/main/docs/troubleshooting-and-lifecycle.md)
 
 ## Capacités
 
@@ -10,7 +12,7 @@ Plugin maître de l'écosystème **Gravity** pour **Google Antigravity**, 100 % 
 - **Découverte & validation (`config/module.json` v1) :** inspecte les plugins installés, valide les contrats `module.json` + `plugin.json` et écrit de façon atomique `<gravity_home>/core/modules.json`.
 - **Détection legacy en lecture seule :** signale sans jamais les modifier ni les supprimer d'éventuels anciens dossiers (`~/.gemini/gravity-bridge`, `~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow`, `~/.gravity`).
 - **Dashboard MCP App unifié (`open_gravity_dashboard`) :** UI HTML5/SVG SEP-1865 lecture seule (`Overview/Doctor`, `Workflow Live`, `Metrics & Audits Agents`, `Bridge RO`, `Architect RO`, onglets génériques OCP) accessible via `/gravity dashboard` ou **Plugins -> Gravity** (`0` token interactif).
-- **Commandes `/gravity` :** `/gravity init`, `/gravity status`, `/gravity modules`, `/gravity doctor`, `/gravity dashboard`.
+- **Commandes `/gravity` :** `/gravity init`, `/gravity status`, `/gravity modules`, `/gravity doctor`, `/gravity dashboard`, `/gravity help` *(skill [`SKILL.md`](skills/gravity/SKILL.md))*.
 
 ## Écosystème Gravity
 
@@ -34,6 +36,7 @@ python scripts/init_env.py --check
 python scripts/init_env.py --status --json
 python scripts/init_env.py --migration-plan --shell auto
 python scripts/init_env.py --dashboard
+python scripts/init_env.py --guide
 
 # Validation stricte du plugin
 python scripts/validate.py --strict

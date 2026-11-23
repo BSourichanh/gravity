@@ -37,6 +37,14 @@ RULES_EDITORIAL_TARGET_BYTES = 600
 RULES_MAX_BYTES = 1000
 SKILL_MAX_BYTES = 6000
 REPO_AGENTS_MAX_BYTES = 2500
+SUGGESTED_PROMPT_MAX_CHARS = 100
+DOC_GUIDE_MAX_BYTES = 15_360
+UX_GUIDE_FILES: tuple[str, ...] = (
+    "getting-started.md",
+    "user-journey.md",
+    "command-cheatsheet.md",
+    "troubleshooting-and-lifecycle.md",
+)
 MCP_APP_URI = "ui://gravity/dashboard.html"
 MCP_APP_MIME = "text/html;profile=mcp-app"
 MCP_HTML_MAX_BYTES = 200 * 1024
@@ -221,6 +229,25 @@ def _validate_manifest(root: Path, report: Report) -> Optional[dict[str, Any]]:
         or not all(isinstance(p, str) and p.strip() for p in prompts)
     ):
         report.error("plugin.json : exactement 3 'suggestedPrompts' non vides sont requis.")
+    else:
+        for idx, prompt in enumerate(prompts):
+            if len(prompt) > SUGGESTED_PROMPT_MAX_CHARS:
+                report.error(
+                    f"plugin.json : 'suggestedPrompts[{idx}]' > {SUGGESTED_PROMPT_MAX_CHARS} caractères ({len(prompt)})."
+                )
+            stripped = prompt.lstrip()
+            if stripped.startswith("/"):
+                sep = " — " if " — " in stripped else (" - " if " - " in stripped else None)
+                if sep is None:
+                    report.error(
+                        f"plugin.json : 'suggestedPrompts[{idx}]' débutant par '/' doit contenir ' — ' ou ' - ' suivi d'un résumé."
+                    )
+                else:
+                    _, summary = stripped.split(sep, 1)
+                    if not summary.strip():
+                        report.error(
+                            f"plugin.json : 'suggestedPrompts[{idx}]' doit contenir un résumé non vide."
+                        )
 
     logo_rel = manifest.get("logo")
     if not isinstance(logo_rel, str) or not logo_rel.strip():
@@ -333,7 +360,7 @@ def _validate_skills(root: Path, report: Report) -> None:
             f"skills/gravity/SKILL.md : 'description' manquante, vide ou > 160 caractères ({desc_len})."
         )
 
-    for subcmd in ("init", "status", "modules", "doctor", "dashboard"):
+    for subcmd in ("init", "status", "modules", "doctor", "dashboard", "help"):
         if subcmd not in txt:
             report.error(f"skills/gravity/SKILL.md : sous-commande '/gravity {subcmd}' non documentée.")
 
@@ -380,6 +407,97 @@ def _validate_repo_agents_md(root: Path, report: Report) -> None:
     if not agents_file.is_file():
         return
     _check_utf8_lf_budget(agents_file, "AGENTS.md", REPO_AGENTS_MAX_BYTES, report)
+
+
+MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\n]+)\)")
+MD_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+INLINE_CODE_RE = re.compile(r"(`+)([^`\n]*?)\1")
+IGNORED_LINK_PREFIXES = ("#", "http://", "https://", "mailto:", "customization://")
+
+
+def _extract_markdown_targets(md_text: str) -> list[str]:
+    """Extract Markdown link targets while ignoring fenced code blocks and inline code."""
+    targets: list[str] = []
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+
+    for line in md_text.splitlines():
+        fence_match = MD_FENCE_RE.match(line)
+        if fence_match:
+            marker = fence_match.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_char = marker[0]
+                fence_len = len(marker)
+                continue
+            if marker[0] == fence_char and len(marker) >= fence_len and line.strip() == marker:
+                in_fence = False
+                fence_char = ""
+                fence_len = 0
+                continue
+        if in_fence:
+            continue
+
+        cleaned = INLINE_CODE_RE.sub("", line)
+        for match in MD_LINK_RE.finditer(cleaned):
+            raw_target = match.group(1).strip()
+            if not raw_target:
+                continue
+            if raw_target.startswith("<") and ">" in raw_target:
+                target = raw_target[1 : raw_target.index(">")].strip()
+            else:
+                target = raw_target.split()[0]
+            if target:
+                targets.append(target)
+    return targets
+
+
+def _check_markdown_file_links(md_path: Path, label: str, report: Report) -> None:
+    try:
+        content = md_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        report.error(f"Impossible de lire {label} : {exc}")
+        return
+
+    for target in _extract_markdown_targets(content):
+        lower = target.lower()
+        if lower.startswith(IGNORED_LINK_PREFIXES):
+            continue
+        rel = target.split("#", 1)[0].split("?", 1)[0]
+        if not rel:
+            continue
+        resolved = (md_path.parent / rel).resolve()
+        if not resolved.exists():
+            report.error(f"Lien Markdown relatif cassé dans {label} : {target!r}")
+
+
+def _validate_markdown_links(root: Path, report: Report) -> None:
+    """Validate relative local Markdown links and UX guide presence/budgets."""
+    plugin_readme = root / "README.md"
+    if plugin_readme.is_file():
+        _check_markdown_file_links(plugin_readme, "README.md", report)
+
+    skills_dir = root / "skills"
+    if skills_dir.is_dir():
+        for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+            _check_markdown_file_links(skill_md, skill_md.relative_to(root).as_posix(), report)
+
+    docs_dir = root.parent / "docs"
+    if root.name == "plugin" and docs_dir.is_dir():
+        for guide_name in UX_GUIDE_FILES:
+            guide_path = docs_dir / guide_name
+            if not guide_path.is_file():
+                report.error(f"Guide UX manquant : docs/{guide_name}")
+            else:
+                _check_utf8_lf_budget(guide_path, f"docs/{guide_name}", DOC_GUIDE_MAX_BYTES, report)
+
+        repo_readme = root.parent / "README.md"
+        if repo_readme.is_file():
+            _check_markdown_file_links(repo_readme, "../README.md", report)
+
+        for doc_md in sorted(docs_dir.glob("*.md")):
+            _check_markdown_file_links(doc_md, f"../docs/{doc_md.name}", report)
 
 
 def _check_stdlib_only(py_file: Path, report: Report) -> None:
@@ -703,6 +821,7 @@ def validate_plugin(root: Path, report: Report) -> None:
     _validate_skills(root, report)
     _validate_rules(root, report)
     _validate_mcp_config(root, report)
+    _validate_markdown_links(root, report)
     if root.name == "plugin" and (root.parent / "AGENTS.md").is_file():
         _validate_repo_agents_md(root, report)
 
