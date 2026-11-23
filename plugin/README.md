@@ -30,6 +30,7 @@ python scripts/init_env.py
 # Inspection et diagnostic en lecture seule
 python scripts/init_env.py --status --json
 python scripts/init_env.py --check --json
+python scripts/init_env.py --migration-plan --shell auto
 
 # Validation stricte du plugin
 python scripts/validate.py --strict

@@ -16,7 +16,7 @@ Exécuter `python scripts/init_env.py` depuis la racine du plugin `gravity` :
 | `/gravity init` | `python scripts/init_env.py --json` | Crée `<gravity_home>/core/` et les sous-dossiers des modules valides découverts, puis écrit `core/modules.json`. |
 | `/gravity` ou `/gravity status` | `python scripts/init_env.py --status --json` | Lecture seule : affiche l'état de `$GRAVITY_HOME`, de `core/modules.json`, des modules détectés et d'éventuels dossiers legacy. |
 | `/gravity modules` | `python scripts/init_env.py --status --json` | Présente les modules découverts (`id`, `plugin_name`, `version`, `commands`, `capabilities`, `ui`, `signals`, `valid`). |
-| `/gravity doctor` | `python scripts/init_env.py --check --json` | Audit en lecture seule : vérifie les contrats `config/module.json` v1, les surcharges `$GRAVITY_*_HOME` et signale les dossiers legacy sans rien modifier. |
+| `/gravity doctor` | `python scripts/init_env.py --check --json` | Audit en lecture seule : vérifie les contrats `config/module.json` v1, les surcharges `$GRAVITY_*_HOME` et signale les dossiers legacy sans rien modifier. Pour générer un plan de migration manuel en 4 étapes non destructives (zéro écriture disque), exécuter `python scripts/init_env.py --migration-plan [--shell auto|powershell|bash]`. |
 
 ## Règles d'exécution
 

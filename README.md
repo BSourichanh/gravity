@@ -36,6 +36,25 @@ python install.py --force
 python install.py --scope workspace --workspace /chemin/vers/projet
 ```
 
+### Orchestrateur multi-dépôts hors-ligne (`scripts/ecosystem_install.py`)
+
+Permet d'inspecter, installer, mettre à jour ou désinstaller localement la suite Gravity dans l'ordre topologique (`gravity` → `gravity-workflow` → `gravity-metrics` → `gravity-architect` → `gravity-bridge`, inversé lors de `--uninstall`), sans aucun appel réseau :
+
+```powershell
+# Vérification en lecture seule par défaut (suite complète --tier 3)
+python scripts/ecosystem_install.py
+
+# Installer l'essentiel (--tier 1) ou le pilotage (--tier 2) ou la suite complète (--tier 3)
+python scripts/ecosystem_install.py --install --tier 2 --dry-run
+python scripts/ecosystem_install.py --install --tier 3
+
+# Mettre à jour (--force) un sous-ensemble explicite et rafraîchir core/modules.json
+python scripts/ecosystem_install.py --update --modules gravity,gravity-metrics --json
+
+# Désinstaller en ordre topologique inversé (gravity Core en dernier, données $GRAVITY_HOME préservées)
+python scripts/ecosystem_install.py --uninstall --dry-run
+```
+
 ### Initialiser et inspecter l'environnement Gravity
 
 ```powershell
@@ -45,6 +64,10 @@ python plugin/scripts/init_env.py
 # Lecture seule : statut des modules et détection d'anciens dossiers legacy
 python plugin/scripts/init_env.py --status
 python plugin/scripts/init_env.py --check --json
+
+# Générer un plan de migration legacy en 4 étapes non destructives (100 % lecture seule)
+python plugin/scripts/init_env.py --migration-plan --shell auto
+python plugin/scripts/init_env.py --migration-plan --shell bash --json
 ```
 
 Dans Antigravity, utiliser le skill **`/gravity [init|status|modules|doctor]`**.

@@ -21,7 +21,7 @@ Ce document définit le socle technique et organisationnel uniforme applicable �
 │   ├── scripts/
 │   │   └── validate.py      # Validateur autonome (--strict)
 │   └── README.md            # Aligné sur le README racine
-├── install.py               # Installeur/désinstalleur cross-platform (--check, --dry-run, --force, --uninstall)
+├── install.py               # Installeur/désinstalleur cross-platform (contrat CLI commun 11 drapeaux)
 ├── AGENTS.md                # Charte agent canonique (<= 2 500 octets, 3 sections)
 ├── README.md                # Présentation, installation et liens docs/
 ├── CHANGELOG.md             # Format Keep a Changelog + SemVer
@@ -55,7 +55,7 @@ Interdits : `$schema`, `license`, `keywords` ou tout champ non officiel, ainsi q
 ## 3. Règles d'ingénierie & qualité logicielle
 
 - **Principes obligatoires :** **KISS**, **YAGNI**, **DRY**, **SOLID**, **CUPID**.
-- **Pile 100 % Python 3.10+ stdlib :** aucune dépendance tierce dans `plugin/`, `install.py` et `tests/`.
+- **Pile 100 % Python 3.10+ stdlib :** aucune dépendance tierce dans `plugin/`, `scripts/`, `install.py` et `tests/`.
 - **Encodage & fins de ligne :** UTF-8 **sans BOM**, fins de ligne **LF** (`\n`).
 - **Portabilité Windows / POSIX :** conserver `"python3"` dans les manifests source (`hooks.json`, `mcp_config.json`, `sidecar.json`) ; l'adaptation éventuelle ne s'applique qu'à la copie installée sous Windows via `install.py`.
 - **Zéro pollution des workspaces cibles :** tout état applicatif vit sous `$GRAVITY_HOME/<module>/` (ou surcharge dédiée).
@@ -73,7 +73,27 @@ Interdits : `$schema`, `license`, `keywords` ou tout champ non officiel, ainsi q
 
 ---
 
-## 5. Vérifications obligatoires avant livraison
+## 5. Contrat CLI commun des installeurs (`install.py`, 11 drapeaux)
+
+Chaque dépôt produit expose un script `install.py` autonome respectant un contrat CLI commun à **11 drapeaux** (complété au besoin par des options propres au module) afin de permettre l'orchestration hors-ligne par `scripts/ecosystem_install.py` (dans `gravity`) :
+
+| # | Drapeau | Type / Valeurs | Rôle |
+|---|---|---|---|
+| 1 | `--scope` | `global` *(défaut)* \| `workspace` | Portée d'installation (`~/.gemini/config/plugins/` ou `<workspace>/.agents/plugins/`) |
+| 2 | `--workspace` | `PATH` | Dossier du projet cible (requis si `--scope workspace`) |
+| 3 | `--target` | `PATH` | Destination explicite prioritaire (incompatible avec `--method agy`) |
+| 4 | `--method` | `copy` *(défaut)* \| `agy` | Backend d'installation (`copy` stdlib ou délégation `agy plugin install`) |
+| 5 | `--force` | booléen | Autorise la mise à jour, réinstallation ou remplacement d'une installation existante |
+| 6 | `--skip-validate` | booléen | Ignore la validation pré-installation (hors `--strict`) |
+| 7 | `--strict` | booléen | Exige une validation stricte avant commit et échoue sur avertissement |
+| 8 | `--no-fix-python` | booléen | Désactive l'adaptation Windows `python3` → `python`/`py -3` sur la copie installée |
+| 9 | `--dry-run` | booléen | Prévisualise les opérations planifiées sans modifier le disque |
+| 10 | `--check` | booléen | Audit en lecture seule des prérequis et de l'état cible |
+| 11 | `--uninstall` | booléen | Désinstalle le plugin en préservant les données centralisées sous `$GRAVITY_HOME` |
+
+---
+
+## 6. Vérifications obligatoires avant livraison
 
 ```powershell
 python plugin/scripts/validate.py --strict
