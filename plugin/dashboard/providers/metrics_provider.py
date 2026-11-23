@@ -12,6 +12,10 @@ from typing import Any, Optional, Sequence
 
 from core.registry import resolve_module_home
 from dashboard.providers import (
+    enforce_payload_budget,
+    extract_md_excerpt,
+    extract_md_title,
+    extract_md_verdict,
     file_uri_if_exists,
     read_json_ro,
     short_digest,
@@ -27,20 +31,7 @@ MAX_AGENTS_IN_DETAIL = 200
 
 _HEX_PREFIX_RE = re.compile(r"^[0-9a-fA-F]{8,}(?:-[0-9a-fA-F]{0,4}){0,4}$")
 _SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_TITLE_RE = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)
 _DATE_PREFIX_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\b")
-_VERDICT_LINE_RE = re.compile(
-    r"(?:^|\n)\s*(?:[-*]\s+)?(?:\*\*|__)?(?:Verdict(?:\s+global)?|Statut(?:\s+global)?|Status|Conclusion|Résultat|Result)(?:\*\*|__)?\s*[:：]\s*(?:\*\*|__)?\s*(.+)",
-    re.IGNORECASE,
-)
-_VERDICT_HEADING_RE = re.compile(
-    r"(?:^|\n)\s*#{1,4}\s+(?:Verdict(?:\s+global)?|Conclusion|Statut(?:\s+global)?)\s*\n+([^\n#]+)",
-    re.IGNORECASE,
-)
-_CANONICAL_VERDICT_RE = re.compile(
-    r"\b(NON[\s-]+BLOQUANT|BLOQUANT|PASS|PARTIAL|PARTIEL|FAIL|UNTESTED|WARN(?:ING)?|OK|KO)\b",
-    re.IGNORECASE,
-)
 _TRAJECTORY_KEYS = frozenset(
     {
         "trajectory",
@@ -441,72 +432,6 @@ def _discover_audit_roots_ro(
     return roots
 
 
-def _clean_md_inline(text: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"[*_`]+", "", text or "").strip())
-
-
-def _classify_verdict_tone(verdict_text: str) -> str:
-    up = verdict_text.upper()
-    if re.search(r"\bUNTESTED\b", up):
-        return "neutral"
-    if re.search(r"(?<!NON[\s-])\bBLOQUANT\b", up):
-        return "danger"
-    if any(tok in up for tok in ("FAIL", "REJECT", "REFUS", "CRITIQUE", "ERROR")):
-        return "danger"
-    if re.search(r"\bKO\b", up):
-        return "danger"
-    if any(tok in up for tok in ("PARTIAL", "PARTIEL", "WARN", "ATTENTION", "CORRIGER", "CONDITIONAL", "MITIG")):
-        return "warn"
-    if "NON BLOQUANT" in up or "NON-BLOQUANT" in up:
-        return "ok"
-    if any(tok in up for tok in ("PASS", "VALID", "APPROUV", "APPROVED", "CLEAN", "SUCC")):
-        return "ok"
-    if re.search(r"\bOK\b", up):
-        return "ok"
-    return "neutral"
-
-
-def _extract_verdict(text: str) -> tuple[str, str]:
-    chunk = text[:16_384]
-    match = _VERDICT_LINE_RE.search(chunk)
-    raw = match.group(1) if match else ""
-    if not raw:
-        h_match = _VERDICT_HEADING_RE.search(chunk)
-        if h_match:
-            raw = h_match.group(1)
-    if not raw:
-        return "", "neutral"
-    cleaned = _clean_md_inline(raw)
-    prefix = re.split(r"\s*(?:\||—|–|\s-\s)\s*", cleaned, maxsplit=1)[0].strip() or cleaned
-    canon_m = _CANONICAL_VERDICT_RE.search(prefix)
-    if canon_m:
-        token = re.sub(r"\s+", " ", canon_m.group(1).upper())
-        val = "WARN" if token == "WARNING" else token
-    else:
-        val = prefix if len(prefix) <= 40 else prefix[:37].rstrip() + "..."
-    return val, _classify_verdict_tone(val) if val else "neutral"
-
-
-def _extract_title(text: str, fallback: str) -> str:
-    match = _TITLE_RE.search(text[:8_192])
-    if match:
-        title = _clean_md_inline(match.group(1))
-        if title:
-            return title
-    return fallback
-
-
-def _extract_excerpt(text: str) -> str:
-    for line in text[:4_096].splitlines():
-        s = line.strip()
-        if not s or s.startswith(("#", "---", "|", "<!--")):
-            continue
-        cleaned = _clean_md_inline(s)
-        if len(cleaned) >= 12:
-            return cleaned if len(cleaned) <= 160 else cleaned[:157].rstrip() + "..."
-    return ""
-
-
 def _collect_audit_files_ro(roots: Sequence[dict[str, Any]]) -> list[tuple[dict[str, Any], Path, str]]:
     discovered: list[tuple[dict[str, Any], Path, str]] = []
     for root in roots:
@@ -550,19 +475,19 @@ def _build_audits_bundle_ro(
         updated_at = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         date_m = _DATE_PREFIX_RE.match(resolved_file.name)
         date_str = date_m.group(1) if date_m else updated_at[:10]
-        verdict, verdict_tone = _extract_verdict(text)
+        verdict, verdict_tone = extract_md_verdict(text)
 
         entry = {
             "audit_id": f"{root['root_id']}:{rel_posix}",
             "workspace": root["workspace"],
             "rel_path": rel_posix,
-            "title": _extract_title(text, resolved_file.stem),
+            "title": extract_md_title(text, resolved_file.stem),
             "verdict": verdict,
             "verdict_tone": verdict_tone,
             "date": date_str,
             "updated_at": updated_at,
             "size_bytes": int(st.st_size),
-            "excerpt": _extract_excerpt(text),
+            "excerpt": extract_md_excerpt(text),
             "uri": resolved_file.as_uri(),
         }
         if rel_posix.lower() == "readme.md":
@@ -582,26 +507,6 @@ def _build_audits_bundle_ro(
         "index_audit": index_audits[0] if index_audits else None,
         "index_audits": index_audits,
     }
-
-
-def _enforce_payload_budget(payload: dict[str, Any]) -> dict[str, Any]:
-    def _encoded_len() -> int:
-        return len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-
-    if _encoded_len() < MAX_PAYLOAD_BYTES:
-        return payload
-
-    payload["truncated"] = True
-    while _encoded_len() >= MAX_PAYLOAD_BYTES and payload["records"]:
-        keep = max(0, len(payload["records"]) // 2)
-        payload["records"] = payload["records"][:keep]
-
-    for list_key in ("audits", "pending_sessions", "ignored_sessions"):
-        while _encoded_len() >= MAX_PAYLOAD_BYTES and payload[list_key]:
-            keep = max(0, len(payload[list_key]) // 2)
-            payload[list_key] = payload[list_key][:keep]
-
-    return payload
 
 
 def get_metrics_state(
@@ -699,7 +604,11 @@ def get_metrics_state(
         "index_audits": audits_bundle["index_audits"],
         "warnings": warnings,
     }
-    return _enforce_payload_budget(payload)
+    return enforce_payload_budget(
+        payload,
+        ("records", "audits", "pending_sessions", "ignored_sessions"),
+        max_bytes=MAX_PAYLOAD_BYTES,
+    )
 
 
 def _resolve_target_record(

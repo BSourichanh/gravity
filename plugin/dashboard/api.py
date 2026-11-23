@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+from dashboard.providers.architect_provider import get_architect_state
+from dashboard.providers.bridge_provider import get_bridge_state
 from dashboard.providers.core_provider import get_overview
 from dashboard.providers.generic_provider import get_module_info
 from dashboard.providers.metrics_provider import get_metrics_state, get_session_detail
@@ -20,6 +22,8 @@ def build_initial_summary(
     overview: Optional[dict[str, Any]] = None,
     workflow: Optional[dict[str, Any]] = None,
     metrics: Optional[dict[str, Any]] = None,
+    bridge: Optional[dict[str, Any]] = None,
+    architect: Optional[dict[str, Any]] = None,
     module_info: Optional[dict[str, Any]] = None,
     gravity_home: Optional[Path] = None,
     plugin_roots: Optional[Sequence[Path]] = None,
@@ -27,6 +31,10 @@ def build_initial_summary(
     workflow_home: Optional[Path] = None,
     metrics_home: Optional[Path] = None,
     audits_dirs: Optional[Sequence[Path]] = None,
+    bridge_home: Optional[Path] = None,
+    db_path: Optional[Path] = None,
+    architect_home: Optional[Path] = None,
+    architect_workspace: Optional[Path] = None,
 ) -> str:
     """Build a concise plain-text summary for `open_gravity_dashboard` responses."""
     req_view = (view or "overview").strip().lower() or "overview"
@@ -89,11 +97,45 @@ def build_initial_summary(
             f"{len(met.get('pending_sessions') or [])} en attente"
         )
 
+    if bridge is not None or req_view == "bridge" or "bridge" in tab_ids:
+        br = bridge if bridge is not None else get_bridge_state(
+            gravity_home=gravity_home,
+            bridge_home=bridge_home,
+            db_path=db_path,
+        )
+        if br.get("available"):
+            bk = br.get("kpis") or {}
+            parts.append(
+                f"Bridge: {bk.get('online_count', 0)}/{bk.get('workspaces_count', 0)} sidecar(s), "
+                f"{bk.get('threads_open', 0)} ouvert(s)"
+            )
+        else:
+            parts.append("Bridge: inactif")
+
+    if architect is not None or req_view == "architect" or "architect" in tab_ids:
+        arch = architect if architect is not None else get_architect_state(
+            gravity_home=gravity_home,
+            bridge_home=bridge_home,
+            architect_home=architect_home,
+            architect_workspace=architect_workspace,
+        )
+        if arch.get("available"):
+            parts.append(
+                f"Architect: {len(arch.get('projects') or [])} projet(s), "
+                f"{len(arch.get('specs') or [])} spec(s), "
+                f"{len(arch.get('handoffs') or [])} handoff(s), "
+                f"{len(arch.get('audits') or [])} audit(s) code"
+            )
+        else:
+            parts.append("Architect: atelier non détecté")
+
     return " | ".join(parts)
 
 
 __all__ = [
     "build_initial_summary",
+    "get_architect_state",
+    "get_bridge_state",
     "get_metrics_state",
     "get_module_info",
     "get_overview",

@@ -411,4 +411,10 @@ WIDGET_CSS = r"""
     font-size: 12px;
   }
   .kv-k { color: var(--g-fg-sec); font-weight: 500; }
+  .preview-text {
+    max-width: 340px;
+    color: var(--g-fg-sec);
+    font-size: 11.5px;
+    line-height: 1.35;
+  }
 """

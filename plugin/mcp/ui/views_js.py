@@ -676,4 +676,530 @@ VIEWS_JS = r"""
     }
     container.appendChild(panel);
   }
+
+  function renderBridgeSvgChart(jobsByStatus) {
+    const box = el("div", "svg-box");
+    const entries = [
+      { key: "completed", label: "completed", color: "var(--g-c3)" },
+      { key: "dispatched", label: "dispatched", color: "var(--g-c1)" },
+      { key: "claimed", label: "claimed", color: "var(--g-c5)" },
+      { key: "queued", label: "queued", color: "var(--g-c4)" },
+      { key: "failed", label: "failed", color: "var(--g-err)" },
+      { key: "cancelled", label: "cancelled", color: "var(--g-fg-dim)" }
+    ].filter((it) => (jobsByStatus && jobsByStatus[it.key]) > 0 || it.key === "completed" || it.key === "queued");
+
+    const maxV = Math.max.apply(null, entries.map((e) => Number((jobsByStatus && jobsByStatus[e.key]) || 0)).concat([1]));
+    const width = 640;
+    const rowH = 24;
+    const padT = 8;
+    const height = padT + entries.length * rowH + 8;
+    const lblW = 110;
+    const valW = 70;
+    const barMaxW = width - lblW - valW - 16;
+
+    const svg = svgEl("svg", { viewBox: "0 0 " + width + " " + height, role: "img", "aria-label": "Jobs Bridge par statut" });
+    entries.forEach((item, idx) => {
+      const y = padT + idx * rowH;
+      const val = Number((jobsByStatus && jobsByStatus[item.key]) || 0);
+      const barW = val > 0 ? Math.max(4, (val / maxV) * barMaxW) : 0;
+
+      const g = svgEl("g");
+      g.appendChild(svgEl("title", null, item.label + ": " + fmtInt(val)));
+      g.appendChild(svgEl("text", {
+        x: 4, y: y + 15, fill: "var(--g-fg)", "font-size": 11, "font-family": "var(--g-mono)"
+      }, item.label));
+      g.appendChild(svgEl("rect", {
+        x: lblW, y: y + 4, width: barMaxW, height: 13, rx: 4, fill: "var(--g-muted)"
+      }));
+      if (barW > 0) {
+        g.appendChild(svgEl("rect", {
+          x: lblW, y: y + 4, width: barW.toFixed(1), height: 13, rx: 4, fill: item.color
+        }));
+      }
+      g.appendChild(svgEl("text", {
+        x: lblW + barMaxW + 8, y: y + 15, fill: "var(--g-fg-sec)", "font-size": 11, "font-family": "var(--g-mono)"
+      }, fmtInt(val)));
+      svg.appendChild(g);
+    });
+    box.appendChild(svg);
+    return box;
+  }
+
+  function renderBridgeView(container) {
+    const br = state.bridge;
+    const bar = el("section", "panel");
+    const head = el("div", "panel-head");
+    head.appendChild(el("div", "panel-title", "Bridge SQLite WAL (lecture seule ?mode=ro)"));
+
+    const ctrls = el("div", "actions-row");
+    [
+      { val: "", label: "Tous" },
+      { val: "open", label: "Ouverts" },
+      { val: "done", label: "Clôturés" }
+    ].forEach((f) => {
+      ctrls.appendChild(el("button", "btn" + (state.bridgeStatus === f.val ? " active" : ""), f.label, {
+        type: "button", "data-action": "bridge-status", "data-status": f.val
+      }));
+    });
+    head.appendChild(ctrls);
+    bar.appendChild(head);
+    if (br && br.db_path) {
+      bar.appendChild(el("div", "mono", "Base : " + br.db_path));
+    }
+    container.appendChild(bar);
+
+    if (!br) {
+      container.appendChild(el("div", "empty", "Chargement de l'état Bridge..."));
+      return;
+    }
+
+    (br.warnings || []).forEach((w) => {
+      container.appendChild(el("div", "notice warn", w));
+    });
+
+    if (!br.available) {
+      const emp = el("section", "panel");
+      emp.appendChild(el("div", "empty", "Base bridge.db absente ou indisponible en lecture seule."));
+      container.appendChild(emp);
+      return;
+    }
+
+    const kpis = br.kpis || {};
+    const jobsBy = kpis.jobs_by_status || {};
+    const activeJobs = (jobsBy.queued || 0) + (jobsBy.claimed || 0) + (jobsBy.dispatched || 0);
+
+    const kpiPanel = el("section", "panel");
+    const kpiGrid = el("div", "grid-kpi");
+    kpiGrid.appendChild(makeKpiCard(
+      "Workspaces",
+      fmtInt(kpis.workspaces_count || 0),
+      fmtInt(kpis.online_count || 0) + " online · " + fmtInt(kpis.offline_count || 0) + " offline · " + fmtInt(kpis.unlinked_count || 0) + " unlinked"
+    ));
+    kpiGrid.appendChild(makeKpiCard(
+      "Threads",
+      fmtInt(kpis.threads_open || 0) + " ouvert(s)",
+      fmtInt(kpis.threads_done || 0) + " clôturé(s) · " + fmtInt(kpis.notify_caller_threads || 0) + " callback(s)"
+    ));
+    kpiGrid.appendChild(makeKpiCard(
+      "Jobs relais",
+      fmtInt(activeJobs) + " actif(s)",
+      fmtInt(kpis.outbound_jobs || 0) + " outbound · " + fmtInt(kpis.callback_jobs || 0) + " callback"
+    ));
+    kpiGrid.appendChild(makeKpiCard(
+      "Jobs terminés",
+      fmtInt(jobsBy.completed || 0),
+      fmtInt(jobsBy.failed || 0) + " échec(s) · " + fmtInt(jobsBy.cancelled || 0) + " annulé(s)"
+    ));
+    kpiPanel.appendChild(kpiGrid);
+    kpiPanel.appendChild(renderBridgeSvgChart(jobsBy));
+    container.appendChild(kpiPanel);
+
+    if (br.truncated) {
+      container.appendChild(el("div", "notice warn", "Réponse bornée sous le plafond de 450 Ko."));
+    }
+
+    const threads = br.threads || [];
+    const workspaces = br.workspaces || [];
+    const jobs = br.jobs || [];
+
+    const subPanel = el("section", "panel");
+    const sHead = el("div", "panel-head");
+    const subTabs = el("div", "subtabs");
+    [
+      { id: "threads", label: "Threads (" + threads.length + ")" },
+      { id: "workspaces", label: "Workspaces (" + workspaces.length + ")" },
+      { id: "jobs", label: "Jobs (" + jobs.length + ")" }
+    ].forEach((st) => {
+      subTabs.appendChild(el("button", "btn" + (state.bridgeSub === st.id ? " active" : ""), st.label, {
+        type: "button", "data-action": "bridge-sub", "data-sub": st.id
+      }));
+    });
+    sHead.appendChild(subTabs);
+    subPanel.appendChild(sHead);
+
+    if (state.bridgeSub === "workspaces") {
+      if (!workspaces.length) {
+        subPanel.appendChild(el("div", "empty", "Aucun workspace enregistré dans bridge.db."));
+      } else {
+        const wrap = el("div", "table-wrap");
+        const tbl = el("table");
+        const thead = el("thead");
+        const htr = el("tr");
+        ["Slug", "Nom", "Projet", "Sidecar", "Statut", "Heartbeat"].forEach((lbl) => htr.appendChild(el("th", null, lbl)));
+        thead.appendChild(htr);
+        tbl.appendChild(thead);
+        const tbody = el("tbody");
+        workspaces.forEach((w) => {
+          const tr = el("tr");
+          tr.appendChild(el("td", "mono", w.slug || "—"));
+          tr.appendChild(el("td", null, w.display_name || "—"));
+          tr.appendChild(el("td", "mono", w.project_id || "—"));
+          tr.appendChild(el("td", "mono", w.sidecar_id || "—"));
+          const stCell = el("td");
+          const scSt = String(w.sidecar_status || "unlinked");
+          const tone = scSt === "online" ? "ok" : (scSt === "offline" ? "warn" : "");
+          stCell.appendChild(makeBadge(scSt, tone));
+          tr.appendChild(stCell);
+          tr.appendChild(el("td", "mono", fmtDate(w.sidecar_last_seen_at || w.last_seen_at)));
+          tbody.appendChild(tr);
+        });
+        tbl.appendChild(tbody);
+        wrap.appendChild(tbl);
+        subPanel.appendChild(wrap);
+      }
+    } else if (state.bridgeSub === "jobs") {
+      if (!jobs.length) {
+        subPanel.appendChild(el("div", "empty", "Aucun job Bridge enregistré."));
+      } else {
+        const wrap = el("div", "table-wrap");
+        const tbl = el("table");
+        const thead = el("thead");
+        const htr = el("tr");
+        ["ID", "Thread", "Cible", "Action", "Direction", "Statut", "Créé"].forEach((lbl) => htr.appendChild(el("th", null, lbl)));
+        thead.appendChild(htr);
+        tbl.appendChild(thead);
+        const tbody = el("tbody");
+        jobs.forEach((j) => {
+          const tr = el("tr");
+          tr.appendChild(el("td", "mono", j.id || "—"));
+          tr.appendChild(el("td", "mono", j.thread_id || "—"));
+          tr.appendChild(el("td", "mono", j.target_workspace || "—"));
+          tr.appendChild(el("td", "mono", j.action || "—"));
+          tr.appendChild(el("td", "mono", j.direction || "outbound"));
+          const jCell = el("td");
+          const jSt = String(j.status || "");
+          const jTone = jSt === "completed" ? "ok" : (jSt === "failed" ? "danger" : (jSt === "queued" || jSt === "claimed" || jSt === "dispatched" ? "info" : ""));
+          jCell.appendChild(makeBadge(jSt || "—", jTone));
+          tr.appendChild(jCell);
+          tr.appendChild(el("td", "mono", fmtDate(j.created_at)));
+          tbody.appendChild(tr);
+        });
+        tbl.appendChild(tbody);
+        wrap.appendChild(tbl);
+        subPanel.appendChild(wrap);
+      }
+    } else {
+      if (!threads.length) {
+        subPanel.appendChild(el("div", "empty", "Aucun thread Bridge correspondant."));
+      } else {
+        const wrap = el("div", "table-wrap");
+        const tbl = el("table");
+        const thead = el("thead");
+        const htr = el("tr");
+        ["Sujet", "Flux", "Statut", "Msgs", "Aperçu", "MàJ"].forEach((lbl, idx) => {
+          htr.appendChild(el("th", idx === 3 ? "num" : null, lbl));
+        });
+        thead.appendChild(htr);
+        tbl.appendChild(thead);
+        const tbody = el("tbody");
+        threads.forEach((th) => {
+          const tr = el("tr");
+          const subjCell = el("td");
+          subjCell.appendChild(el("div", null, th.subject || th.id || "—"));
+          subjCell.appendChild(el("div", "mono", th.id || ""));
+          tr.appendChild(subjCell);
+
+          tr.appendChild(el("td", "mono", (th.from_workspace || "?") + " -> " + (th.to_workspace || "?")));
+
+          const stCell = el("td");
+          stCell.appendChild(makeBadge(th.status || "open", th.status === "done" ? "ok" : "warn"));
+          if (th.notify_caller) {
+            stCell.appendChild(document.createTextNode(" "));
+            stCell.appendChild(makeBadge("callback", "info"));
+          }
+          tr.appendChild(stCell);
+
+          const msgTxt = fmtInt(th.message_count || 0) + ((th.unread_count || 0) > 0 ? " (" + th.unread_count + " non lu)" : "");
+          tr.appendChild(el("td", "num mono", msgTxt));
+          tr.appendChild(el("td", "preview-text", th.preview || "—"));
+          tr.appendChild(el("td", "mono", fmtDate(th.updated_at || th.created_at)));
+          tbody.appendChild(tr);
+        });
+        tbl.appendChild(tbody);
+        wrap.appendChild(tbl);
+        subPanel.appendChild(wrap);
+      }
+    }
+    container.appendChild(subPanel);
+  }
+
+  function renderArchitectSvgChart(arch) {
+    const box = el("div", "svg-box");
+    const rows = [
+      { label: "Projets", count: (arch.projects || []).length, color: "var(--g-c1)" },
+      { label: "Specs actives", count: (arch.specs || []).length, color: "var(--g-c2)" },
+      { label: "Handoffs", count: (arch.handoffs || []).length, color: "var(--g-c4)" },
+      { label: "Audits Code", count: (arch.audits || []).length, color: "var(--g-c3)" }
+    ];
+    const maxV = Math.max.apply(null, rows.map((r) => r.count).concat([1]));
+    const width = 640;
+    const rowH = 24;
+    const padT = 8;
+    const height = padT + rows.length * rowH + 8;
+    const lblW = 120;
+    const valW = 70;
+    const barMaxW = width - lblW - valW - 16;
+
+    const svg = svgEl("svg", { viewBox: "0 0 " + width + " " + height, role: "img", "aria-label": "Inventaire atelier Architect" });
+    rows.forEach((r, idx) => {
+      const y = padT + idx * rowH;
+      const barW = r.count > 0 ? Math.max(4, (r.count / maxV) * barMaxW) : 0;
+      const g = svgEl("g");
+      g.appendChild(svgEl("title", null, r.label + ": " + fmtInt(r.count)));
+      g.appendChild(svgEl("text", {
+        x: 4, y: y + 15, fill: "var(--g-fg)", "font-size": 11, "font-family": "var(--g-font)"
+      }, r.label));
+      g.appendChild(svgEl("rect", {
+        x: lblW, y: y + 4, width: barMaxW, height: 13, rx: 4, fill: "var(--g-muted)"
+      }));
+      if (barW > 0) {
+        g.appendChild(svgEl("rect", {
+          x: lblW, y: y + 4, width: barW.toFixed(1), height: 13, rx: 4, fill: r.color
+        }));
+      }
+      g.appendChild(svgEl("text", {
+        x: lblW + barMaxW + 8, y: y + 15, fill: "var(--g-fg-sec)", "font-size": 11, "font-family": "var(--g-mono)"
+      }, fmtInt(r.count)));
+      svg.appendChild(g);
+    });
+    box.appendChild(svg);
+    return box;
+  }
+
+  function renderArchitectView(container) {
+    const arch = state.architect;
+    const bar = el("section", "panel");
+    const head = el("div", "panel-head");
+    head.appendChild(el("div", "panel-title", "Architect — Atelier Hot / Cold (lecture seule)"));
+
+    const ctrls = el("div", "actions-row");
+    if (arch && arch.discovery_source) {
+      ctrls.appendChild(makeBadge("source: " + arch.discovery_source, "info"));
+    }
+    if (arch && arch.ecosystem && arch.ecosystem.uri) {
+      ctrls.appendChild(el("button", "btn", "Ouvrir ECOSYSTEM.md", {
+        type: "button", "data-action": "open-file", "data-uri": arch.ecosystem.uri
+      }));
+    }
+    if (arch && arch.delta && arch.delta.uri) {
+      ctrls.appendChild(el("button", "btn", "Ouvrir delta.md", {
+        type: "button", "data-action": "open-file", "data-uri": arch.delta.uri
+      }));
+    }
+    head.appendChild(ctrls);
+    bar.appendChild(head);
+    if (arch && arch.atelier_root) {
+      bar.appendChild(el("div", "mono", "Atelier : " + arch.atelier_root));
+    }
+    container.appendChild(bar);
+
+    if (!arch) {
+      container.appendChild(el("div", "empty", "Chargement de l'état Architect..."));
+      return;
+    }
+
+    (arch.warnings || []).forEach((w) => {
+      container.appendChild(el("div", "notice warn", w));
+    });
+
+    if (!arch.available) {
+      const emp = el("section", "panel");
+      emp.appendChild(el("div", "empty", "Aucun atelier Gravity Architect (ECOSYSTEM.md / projects.json) détecté."));
+      container.appendChild(emp);
+      return;
+    }
+
+    const eco = arch.ecosystem || {};
+    const delta = arch.delta || {};
+    const projects = arch.projects || [];
+    const specs = arch.specs || [];
+    const handoffs = arch.handoffs || [];
+    const audits = arch.audits || [];
+    const allAlerts = (eco.alerts || []).concat(delta.hygiene_alerts || []);
+
+    const kpiPanel = el("section", "panel");
+    const kpiGrid = el("div", "grid-kpi");
+    kpiGrid.appendChild(makeKpiCard(
+      "ECOSYSTEM.md",
+      eco.exists ? fmtBytes(eco.size_bytes) : "Absent",
+      eco.budget_bytes ? ("budget " + fmtBytes(eco.budget_bytes) + (eco.over_budget ? " [DÉPASSÉ]" : "")) : fmtDate(eco.updated_at)
+    ));
+    kpiGrid.appendChild(makeKpiCard(
+      "delta.md",
+      delta.editorial_status || "Absent",
+      delta.date ? fmtDate(delta.date) : "aucune synchro"
+    ));
+    kpiGrid.appendChild(makeKpiCard(
+      "Projets & Veilles",
+      fmtInt(projects.length) + " projet(s)",
+      fmtInt(arch.watches_count || 0) + " veille(s)"
+    ));
+    kpiGrid.appendChild(makeKpiCard(
+      "Specs & Handoffs",
+      fmtInt(specs.length) + " / " + fmtInt(handoffs.length),
+      fmtInt(arch.archived_specs_count || 0) + " + " + fmtInt(arch.archived_handoffs_count || 0) + " archivé(s)"
+    ));
+    kpiGrid.appendChild(makeKpiCard(
+      "Audits Code",
+      fmtInt(audits.length),
+      "audits/code/ uniquement"
+    ));
+    kpiPanel.appendChild(kpiGrid);
+    kpiPanel.appendChild(renderArchitectSvgChart(arch));
+
+    if (allAlerts.length) {
+      allAlerts.slice(0, 8).forEach((al) => {
+        kpiPanel.appendChild(el("div", "notice warn", al));
+      });
+    } else {
+      kpiPanel.appendChild(el("div", "notice info", "Aucune alerte d'hygiène signalée dans ECOSYSTEM.md / delta.md."));
+    }
+    container.appendChild(kpiPanel);
+
+    if (arch.truncated) {
+      container.appendChild(el("div", "notice warn", "Réponse bornée sous le plafond de 450 Ko."));
+    }
+
+    const subPanel = el("section", "panel");
+    const sHead = el("div", "panel-head");
+    const subTabs = el("div", "subtabs");
+    [
+      { id: "projects", label: "Projets (" + projects.length + ")" },
+      { id: "artifacts", label: "Specs & Handoffs (" + (specs.length + handoffs.length) + ")" },
+      { id: "audits", label: "Audits Code (" + audits.length + ")" }
+    ].forEach((st) => {
+      subTabs.appendChild(el("button", "btn" + (state.architectSub === st.id ? " active" : ""), st.label, {
+        type: "button", "data-action": "architect-sub", "data-sub": st.id
+      }));
+    });
+    sHead.appendChild(subTabs);
+    subPanel.appendChild(sHead);
+
+    if (state.architectSub === "artifacts") {
+      const combined = specs.map((s) => Object.assign({ kind: "spec" }, s)).concat(
+        handoffs.map((h) => Object.assign({ kind: "handoff" }, h))
+      );
+      if (!combined.length) {
+        subPanel.appendChild(el("div", "empty", "Aucune spécification ni handoff actif."));
+      } else {
+        const wrap = el("div", "table-wrap");
+        const tbl = el("table");
+        const thead = el("thead");
+        const htr = el("tr");
+        ["Type", "Titre", "Cible", "Statut", "Date", "Fichier"].forEach((lbl) => htr.appendChild(el("th", null, lbl)));
+        thead.appendChild(htr);
+        tbl.appendChild(thead);
+        const tbody = el("tbody");
+        combined.forEach((item) => {
+          const tr = el("tr");
+          const kCell = el("td");
+          kCell.appendChild(makeBadge(item.kind, item.kind === "spec" ? "info" : "warn"));
+          tr.appendChild(kCell);
+          tr.appendChild(el("td", null, item.title || item.filename || "—"));
+          tr.appendChild(el("td", "mono", item.target_project || "—"));
+          tr.appendChild(el("td", "mono", item.status || "—"));
+          tr.appendChild(el("td", "mono", item.date || "—"));
+          const fCell = el("td");
+          if (item.uri) {
+            fCell.appendChild(el("button", "btn", "Ouvrir .md", {
+              type: "button", "data-action": "open-file", "data-uri": item.uri
+            }));
+          }
+          tr.appendChild(fCell);
+          tbody.appendChild(tr);
+        });
+        tbl.appendChild(tbody);
+        wrap.appendChild(tbl);
+        subPanel.appendChild(wrap);
+      }
+    } else if (state.architectSub === "audits") {
+      subPanel.appendChild(el("div", "notice info", "Périmètre strict audits/code/ uniquement (audits/agents/ exclu)."));
+      if (arch.index_audit) {
+        const idxCard = el("div", "notice");
+        const row = el("div", "panel-head");
+        row.appendChild(el("span", null, "Index Audits Code : " + (arch.index_audit.title || arch.index_audit.rel_path)));
+        if (arch.index_audit.uri) {
+          row.appendChild(el("button", "btn", "Ouvrir index .md", {
+            type: "button", "data-action": "open-file", "data-uri": arch.index_audit.uri
+          }));
+        }
+        idxCard.appendChild(row);
+        subPanel.appendChild(idxCard);
+      }
+      if (!audits.length) {
+        subPanel.appendChild(el("div", "empty", "Aucun audit code découvert dans audits/code/."));
+      } else {
+        const wrap = el("div", "table-wrap");
+        const tbl = el("table");
+        const thead = el("thead");
+        const htr = el("tr");
+        ["Titre", "Cible", "Verdict", "Date", "Taille", "Fichier"].forEach((lbl, idx) => {
+          htr.appendChild(el("th", idx === 4 ? "num" : null, lbl));
+        });
+        thead.appendChild(htr);
+        tbl.appendChild(thead);
+        const tbody = el("tbody");
+        audits.forEach((a) => {
+          const tr = el("tr");
+          tr.appendChild(el("td", null, a.title || a.rel_path || "—"));
+          tr.appendChild(el("td", "mono", a.target || "—"));
+          const vCell = el("td");
+          vCell.appendChild(makeBadge(a.verdict || "—", a.verdict_tone || ""));
+          tr.appendChild(vCell);
+          tr.appendChild(el("td", "mono", a.date || "—"));
+          tr.appendChild(el("td", "num mono", fmtBytes(a.size_bytes)));
+          const actCell = el("td");
+          if (a.uri) {
+            actCell.appendChild(el("button", "btn", "Ouvrir .md", {
+              type: "button", "data-action": "open-file", "data-uri": a.uri
+            }));
+          }
+          tr.appendChild(actCell);
+          tbody.appendChild(tr);
+        });
+        tbl.appendChild(tbody);
+        wrap.appendChild(tbl);
+        subPanel.appendChild(wrap);
+      }
+    } else {
+      if (!projects.length) {
+        subPanel.appendChild(el("div", "empty", "Aucun projet suivi dans projects.json."));
+      } else {
+        const wrap = el("div", "table-wrap");
+        const tbl = el("table");
+        const thead = el("thead");
+        const htr = el("tr");
+        ["ID", "Nom", "Branches", "Chemin", "Fiche", "Action"].forEach((lbl) => htr.appendChild(el("th", null, lbl)));
+        thead.appendChild(htr);
+        tbl.appendChild(thead);
+        const tbody = el("tbody");
+        projects.forEach((p) => {
+          const tr = el("tr");
+          tr.appendChild(el("td", "mono", p.id || "—"));
+          tr.appendChild(el("td", null, p.name || "—"));
+          tr.appendChild(el("td", "mono", (p.main_branch || "main") + " / " + (p.dev_branch || "dev")));
+          tr.appendChild(el("td", "mono", p.path || "—"));
+          const cardCell = el("td");
+          if (p.card_bytes) {
+            cardCell.appendChild(makeBadge(fmtBytes(p.card_bytes), p.over_budget ? "warn" : "ok"));
+          } else {
+            cardCell.appendChild(el("span", "mono", "—"));
+          }
+          tr.appendChild(cardCell);
+          const actCell = el("td");
+          if (p.card_uri) {
+            actCell.appendChild(el("button", "btn", "Ouvrir .md", {
+              type: "button", "data-action": "open-file", "data-uri": p.card_uri
+            }));
+          }
+          tr.appendChild(actCell);
+          tbody.appendChild(tr);
+        });
+        tbl.appendChild(tbody);
+        wrap.appendChild(tbl);
+        subPanel.appendChild(wrap);
+      }
+    }
+    container.appendChild(subPanel);
+  }
 """

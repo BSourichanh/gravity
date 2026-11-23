@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -37,6 +39,7 @@ def _clean_env() -> dict[str, str]:
         "GRAVITY_METRICS_HOME",
         "GRAVITY_BRIDGE_HOME",
         "GRAVITY_ARCHITECT_HOME",
+        "GRAVITY_ARCHITECT_WORKSPACE",
         "GRAVITY_AUDITS_DIR",
     ):
         env.pop(key, None)
@@ -85,11 +88,13 @@ def _write_module_plugin(
 
 class TestDashboardHelpers(unittest.TestCase):
     def test_provider_helpers_and_tab_ordering(self) -> None:
-        self.assertEqual(DEDICATED_PROVIDERS, ("core", "workflow", "metrics"))
+        self.assertEqual(DEDICATED_PROVIDERS, ("core", "workflow", "metrics", "bridge", "architect"))
         self.assertEqual(resolve_provider_kind("core"), "core")
         self.assertEqual(resolve_provider_kind("workflow"), "workflow")
         self.assertEqual(resolve_provider_kind("metrics"), "metrics")
-        self.assertEqual(resolve_provider_kind("bridge"), "generic")
+        self.assertEqual(resolve_provider_kind("bridge"), "bridge")
+        self.assertEqual(resolve_provider_kind("architect"), "architect")
+        self.assertEqual(resolve_provider_kind("custom"), "generic")
         self.assertEqual(unchanged_response("abc"), {"changed": False, "unchanged": True, "signature": "abc"})
         self.assertEqual(len(short_digest(["a", 1])), 12)
 
@@ -100,6 +105,7 @@ class TestDashboardHelpers(unittest.TestCase):
             self.assertRegex(stat_token(p), r"^\d+:5$")
 
         modules = [
+            {"id": "custom", "plugin_name": "gravity-custom", "valid": True},
             {"id": "bridge", "plugin_name": "gravity-bridge", "valid": True},
             {"id": "metrics", "plugin_name": "gravity-metrics", "valid": True},
             {"id": "architect", "plugin_name": "gravity-architect", "valid": True},
@@ -107,12 +113,14 @@ class TestDashboardHelpers(unittest.TestCase):
             {"id": "core", "plugin_name": "gravity", "valid": True},
         ]
         tabs = build_dashboard_tabs(modules)
-        self.assertEqual([t["id"] for t in tabs], ["overview", "workflow", "metrics", "bridge", "architect"])
+        self.assertEqual([t["id"] for t in tabs], ["overview", "workflow", "metrics", "bridge", "architect", "custom"])
         self.assertTrue(tabs[0]["dedicated"])
         self.assertTrue(tabs[1]["dedicated"])
         self.assertTrue(tabs[2]["dedicated"])
-        self.assertFalse(tabs[3]["dedicated"])
-        self.assertEqual(tabs[3]["kind"], "generic")
+        self.assertTrue(tabs[3]["dedicated"])
+        self.assertTrue(tabs[4]["dedicated"])
+        self.assertFalse(tabs[5]["dedicated"])
+        self.assertEqual(tabs[5]["kind"], "generic")
 
 
 class TestCoreAndGenericProviders(unittest.TestCase):
@@ -221,13 +229,14 @@ class TestCoreAndGenericProviders(unittest.TestCase):
             tmp_path = Path(tmp)
             g_home = tmp_path / "gravity-home"
             plugins_root = tmp_path / "plugins"
+            _write_module_plugin(plugins_root, mod_id="custom", plugin_name="gravity-custom")
             _write_module_plugin(plugins_root, mod_id="bridge", plugin_name="gravity-bridge")
             _write_module_plugin(plugins_root, mod_id="metrics", plugin_name="gravity-metrics")
 
-            bridge_home = g_home / "bridge"
-            bridge_home.mkdir(parents=True)
+            custom_home = g_home / "custom"
+            custom_home.mkdir(parents=True)
             for idx in range(30):
-                (bridge_home / f"item_{idx:02d}.txt").write_text(f"data-{idx}", encoding="utf-8")
+                (custom_home / f"item_{idx:02d}.txt").write_text(f"data-{idx}", encoding="utf-8")
 
             for bad_id in ("", "../escape", "a/b", "BadUpper"):
                 res_bad = api.get_module_info(bad_id, gravity_home=g_home, plugin_roots=[plugins_root])
@@ -237,14 +246,18 @@ class TestCoreAndGenericProviders(unittest.TestCase):
             missing = api.get_module_info("unknown", gravity_home=g_home, plugin_roots=[plugins_root])
             self.assertFalse(missing["found"])
 
-            info = api.get_module_info("bridge", gravity_home=g_home, plugin_roots=[plugins_root])
+            info = api.get_module_info("custom", gravity_home=g_home, plugin_roots=[plugins_root])
             self.assertTrue(info["found"])
-            self.assertEqual(info["plugin_name"], "gravity-bridge")
+            self.assertEqual(info["plugin_name"], "gravity-custom")
             self.assertFalse(info["dedicated_provider"])
             self.assertTrue(info["storage"]["exists"])
             self.assertEqual(len(info["top_entries"]), 25)
             self.assertTrue(info["top_entries_truncated"])
             self.assertNotIn("content", info["top_entries"][0])
+
+            bridge_info = api.get_module_info("bridge", gravity_home=g_home, plugin_roots=[plugins_root])
+            self.assertTrue(bridge_info["found"])
+            self.assertTrue(bridge_info["dedicated_provider"])
 
             metrics_info = api.get_module_info("metrics", gravity_home=g_home, plugin_roots=[plugins_root])
             self.assertTrue(metrics_info["found"])
@@ -592,6 +605,298 @@ class TestMetricsProvider(unittest.TestCase):
             self.assertFalse(short_pref["found"])
 
 
+_BRIDGE_SCHEMA_SQL = """
+PRAGMA journal_mode = WAL;
+CREATE TABLE workspaces (
+    slug TEXT PRIMARY KEY,
+    canonical_path TEXT UNIQUE NOT NULL,
+    display_name TEXT NOT NULL,
+    sidecar_id TEXT,
+    sidecar_pid INTEGER,
+    sidecar_last_seen_at TEXT,
+    project_id TEXT,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+CREATE TABLE threads (
+    id TEXT PRIMARY KEY,
+    from_workspace TEXT NOT NULL,
+    to_workspace TEXT NOT NULL,
+    msg_type TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    approved INTEGER NOT NULL DEFAULT 0,
+    target_conversation_id TEXT,
+    caller_conversation_id TEXT,
+    notify_caller INTEGER NOT NULL DEFAULT 0,
+    callback_dispatched_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id TEXT NOT NULL,
+    sender_workspace TEXT NOT NULL,
+    msg_type TEXT NOT NULL,
+    body TEXT NOT NULL,
+    file_refs_json TEXT NOT NULL DEFAULT '[]',
+    is_read INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE jobs (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    target_workspace TEXT NOT NULL,
+    action TEXT NOT NULL,
+    direction TEXT NOT NULL DEFAULT 'outbound',
+    model TEXT,
+    sidecar_id TEXT,
+    target_conversation_id TEXT,
+    status TEXT NOT NULL,
+    exit_code INTEGER,
+    error_summary TEXT,
+    claimed_at TEXT,
+    dispatched_at TEXT,
+    finished_at TEXT,
+    created_at TEXT NOT NULL
+);
+"""
+
+
+def _create_sample_bridge_db(db_path: Path, *, studio_path: Optional[Path] = None) -> None:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    recent_iso = (now - timedelta(seconds=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    stale_iso = (now - timedelta(seconds=120)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ws_studio = str(studio_path.resolve()) if studio_path else "/tmp/studio"
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executescript(_BRIDGE_SCHEMA_SQL)
+        conn.executemany(
+            """
+            INSERT INTO workspaces (
+                slug, canonical_path, display_name, sidecar_id, sidecar_pid,
+                sidecar_last_seen_at, project_id, created_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("gravity", "/tmp/gravity", "Gravity", "sc-gravity", 1234, recent_iso, "gravity", recent_iso, recent_iso),
+                ("gravity-studio", ws_studio, "Gravity Studio", "sc-studio", 5678, stale_iso, "studio", stale_iso, stale_iso),
+                ("metrics", "/tmp/metrics", "Metrics", None, None, None, None, stale_iso, stale_iso),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO threads (
+                id, from_workspace, to_workspace, msg_type, subject, status,
+                approved, target_conversation_id, caller_conversation_id,
+                notify_caller, callback_dispatched_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("thr-open-1", "gravity-studio", "gravity", "handoff", "Lot 2", "open", 1, "conv-t1", "conv-c1", 1, None, stale_iso, recent_iso),
+                ("thr-done-1", "gravity", "metrics", "info", "Sync OK", "done", 1, None, None, 0, None, stale_iso, stale_iso),
+            ],
+        )
+        long_body = "Header " + ("detail-" * 45)
+        conn.executemany(
+            """
+            INSERT INTO messages (
+                thread_id, sender_workspace, msg_type, body, file_refs_json, is_read, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("thr-open-1", "gravity-studio", "handoff", "Initial body", "[]", 1, stale_iso),
+                ("thr-open-1", "gravity-studio", "reply", long_body, "[]", 0, recent_iso),
+                ("thr-done-1", "gravity", "info", "Completed clean", "[]", 1, stale_iso),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO jobs (
+                id, thread_id, message_id, target_workspace, action, direction, model,
+                sidecar_id, target_conversation_id, status, exit_code, error_summary,
+                claimed_at, dispatched_at, finished_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                ("job-1", "thr-open-1", 1, "gravity", "new_conversation", "outbound", "pro", "sc-gravity", "conv-t1", "completed", 0, None, stale_iso, stale_iso, recent_iso, stale_iso),
+                ("job-2", "thr-open-1", 2, "gravity-studio", "send_message", "callback", "flash", "sc-studio", "conv-c1", "queued", None, None, None, None, None, recent_iso),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestBridgeProvider(unittest.TestCase):
+    def test_bridge_absent_and_corrupt_returns_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            b_home = Path(tmp) / "bridge"
+            res = api.get_bridge_state(bridge_home=b_home)
+            self.assertFalse(res["available"])
+            self.assertEqual(res["kpis"]["workspaces_count"], 0)
+            self.assertFalse(b_home.exists())
+
+            b_home.mkdir(parents=True)
+            (b_home / "bridge.db").write_text("not-a-sqlite-db", encoding="utf-8")
+            corrupt = api.get_bridge_state(bridge_home=b_home)
+            self.assertFalse(corrupt["available"])
+            self.assertTrue(corrupt["warnings"])
+
+    def test_bridge_ro_kpis_filters_preview_cap_and_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "bridge" / "bridge.db"
+            _create_sample_bridge_db(db_path)
+
+            state = api.get_bridge_state(db_path=db_path)
+            self.assertTrue(state["available"])
+            kpis = state["kpis"]
+            self.assertEqual(kpis["workspaces_count"], 3)
+            self.assertEqual(kpis["online_count"], 1)
+            self.assertEqual(kpis["offline_count"], 1)
+            self.assertEqual(kpis["unlinked_count"], 1)
+            self.assertEqual(kpis["threads_open"], 1)
+            self.assertEqual(kpis["threads_done"], 1)
+            self.assertEqual(kpis["notify_caller_threads"], 1)
+            self.assertEqual(kpis["outbound_jobs"], 1)
+            self.assertEqual(kpis["callback_jobs"], 1)
+            self.assertEqual(kpis["jobs_by_status"]["completed"], 1)
+            self.assertEqual(kpis["jobs_by_status"]["queued"], 1)
+
+            self.assertEqual(len(state["threads"]), 2)
+            t_open = next(t for t in state["threads"] if t["id"] == "thr-open-1")
+            self.assertEqual(t_open["message_count"], 2)
+            self.assertEqual(t_open["unread_count"], 1)
+            self.assertLessEqual(len(t_open["preview"]), 160)
+            self.assertNotIn("body", t_open)
+
+            unchanged = api.get_bridge_state(since_signature=state["signature"], db_path=db_path)
+            self.assertEqual(unchanged, {"changed": False, "unchanged": True, "signature": state["signature"]})
+            self.assertLess(len(json.dumps(state, ensure_ascii=False).encode("utf-8")), 450_000)
+
+            only_open = api.get_bridge_state(status="open", db_path=db_path)
+            self.assertEqual([t["id"] for t in only_open["threads"]], ["thr-open-1"])
+
+            clamped = api.get_bridge_state(limit=999, db_path=db_path)
+            self.assertEqual(clamped["filters"]["limit"], 200)
+            unchanged_clamped = api.get_bridge_state(
+                limit=999, since_signature=clamped["signature"], db_path=db_path
+            )
+            self.assertEqual(
+                unchanged_clamped,
+                {"changed": False, "unchanged": True, "signature": clamped["signature"]},
+            )
+
+
+class TestArchitectProvider(unittest.TestCase):
+    def _write_mini_atelier(self, root: Path) -> None:
+        (root / "tracking" / "snapshots").mkdir(parents=True)
+        (root / "tracking" / "projects").mkdir(parents=True)
+        (root / "specs" / "archive").mkdir(parents=True)
+        (root / "handoffs" / "archive").mkdir(parents=True)
+        (root / "audits" / "code").mkdir(parents=True)
+        (root / "audits" / "agents").mkdir(parents=True)
+
+        (root / "ECOSYSTEM.md").write_text(
+            "# Tableau de bord\n\n"
+            "<!-- AUTO:START:ecosystem-hygiene -->\n"
+            "- `gravity` : WIP local détecté.\n"
+            "<!-- AUTO:END:ecosystem-hygiene -->\n",
+            encoding="utf-8",
+        )
+        (root / "tracking" / "snapshots" / "delta.md").write_text(
+            "# Delta\n\n"
+            "- **Date :** `2026-11-23T22:00:00Z`\n"
+            "- **Statut éditorial :** `EDITORIAL_UPDATE_REQUIRED`\n"
+            "- **Veilles :** `ok`\n",
+            encoding="utf-8",
+        )
+        (root / "projects.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 5,
+                    "workspace_name": "Atelier Test",
+                    "hot_budgets": {"ECOSYSTEM.md": 6000, "project_card_max_bytes": 3500},
+                    "watches": [{"id": "antigravity"}],
+                    "projects": [{"id": "gravity", "name": "Gravity", "path": "../gravity"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (root / "tracking" / "projects" / "gravity.md").write_text("# Gravity\n", encoding="utf-8")
+        (root / "specs" / "_TEMPLATE.md").write_text("# Template Spec\n", encoding="utf-8")
+        (root / "specs" / "2026-11-23-dashboard.md").write_text(
+            "# Dashboard Spec\n\n- **Date / Statut :** `validated`\n- **Projets impactés :** `gravity`\n",
+            encoding="utf-8",
+        )
+        (root / "specs" / "archive" / "2026-11-01-old.md").write_text("# Old Spec\n", encoding="utf-8")
+        (root / "handoffs" / "_TEMPLATE.md").write_text("# Template Handoff\n", encoding="utf-8")
+        (root / "handoffs" / "2026-11-23-lot2.md").write_text(
+            "# Lot 2\n\n- **Date / Statut :** `ready`\n- **Dépôt cible :** `gravity`\n",
+            encoding="utf-8",
+        )
+        (root / "audits" / "code" / "README.md").write_text("# Index Audits Code\n", encoding="utf-8")
+        (root / "audits" / "code" / "_TEMPLATE.md").write_text("# Template Audit\n", encoding="utf-8")
+        (root / "audits" / "code" / "2026-11-23-audit-code-gravity.md").write_text(
+            "# Audit Code Gravity\n\n- **Cible :** `gravity`\n- **Verdict :** `PASS`\n\nClean architecture.\n",
+            encoding="utf-8",
+        )
+        (root / "audits" / "agents" / "2026-11-23-secret-agent.md").write_text(
+            "# Agent Audit\n\nVerdict: BLOQUANT\n",
+            encoding="utf-8",
+        )
+
+    def test_architect_absent_returns_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            g_home = Path(tmp) / "gravity-home"
+            res = api.get_architect_state(gravity_home=g_home)
+            self.assertFalse(res["available"])
+            self.assertEqual(res["discovery_source"], "module_home")
+            self.assertFalse(g_home.exists())
+
+    def test_architect_discovery_precedence_and_code_audit_isolation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            atelier = tmp_path / "gravity-studio"
+            self._write_mini_atelier(atelier)
+            b_home = tmp_path / "bridge"
+            _create_sample_bridge_db(b_home / "bridge.db", studio_path=atelier)
+
+            # Bridge RO discovery when no explicit workspace/env is set
+            via_bridge = api.get_architect_state(bridge_home=b_home)
+            self.assertTrue(via_bridge["available"])
+            self.assertEqual(via_bridge["discovery_source"], "bridge_discovery")
+            self.assertEqual(via_bridge["workspace_name"], "Atelier Test")
+            self.assertTrue(via_bridge["ecosystem"]["exists"])
+            self.assertEqual(via_bridge["ecosystem"]["alerts"], ["gravity : WIP local détecté."])
+            self.assertEqual(via_bridge["delta"]["editorial_status"], "EDITORIAL_UPDATE_REQUIRED")
+            self.assertEqual(len(via_bridge["projects"]), 1)
+            self.assertEqual([s["filename"] for s in via_bridge["specs"]], ["2026-11-23-dashboard.md"])
+            self.assertEqual(via_bridge["archived_specs_count"], 1)
+            self.assertEqual([h["filename"] for h in via_bridge["handoffs"]], ["2026-11-23-lot2.md"])
+            self.assertEqual(len(via_bridge["audits"]), 1)
+            self.assertEqual(via_bridge["audits"][0]["verdict"], "PASS")
+            self.assertEqual(via_bridge["audits"][0]["verdict_tone"], "ok")
+            self.assertIsNotNone(via_bridge["index_audit"])
+            self.assertEqual(via_bridge["index_audit"]["rel_path"], "README.md")
+            self.assertTrue(all("agent" not in a["rel_path"].lower() for a in via_bridge["audits"]))
+
+            # Fast-path since_signature
+            unchanged = api.get_architect_state(since_signature=via_bridge["signature"], bridge_home=b_home)
+            self.assertEqual(unchanged, {"changed": False, "unchanged": True, "signature": via_bridge["signature"]})
+
+            # Explicit architect_workspace overrides bridge_discovery
+            other = tmp_path / "other-atelier"
+            other.mkdir()
+            explicit = api.get_architect_state(bridge_home=b_home, architect_workspace=other)
+            self.assertEqual(explicit["discovery_source"], "arg_workspace")
+            self.assertFalse(explicit["available"])
+
+
 class TestDashboardFacade(unittest.TestCase):
     def test_build_initial_summary_isolated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
@@ -603,6 +908,8 @@ class TestDashboardFacade(unittest.TestCase):
             _write_module_plugin(plugins_root, mod_id="core", plugin_name="gravity", ui_mode="core")
             _write_module_plugin(plugins_root, mod_id="workflow", plugin_name="gravity-workflow", ui_mode="transition-sidecar")
             _write_module_plugin(plugins_root, mod_id="metrics", plugin_name="gravity-metrics", ui_mode="transition-mcp")
+            _write_module_plugin(plugins_root, mod_id="bridge", plugin_name="gravity-bridge")
+            _write_module_plugin(plugins_root, mod_id="architect", plugin_name="gravity-architect")
 
             summary = api.build_initial_summary(
                 gravity_home=g_home,
@@ -612,6 +919,8 @@ class TestDashboardFacade(unittest.TestCase):
             self.assertIn("Gravity Dashboard", summary)
             self.assertIn("Workflow:", summary)
             self.assertIn("Metrics", summary)
+            self.assertIn("Bridge:", summary)
+            self.assertIn("Architect:", summary)
 
 
 if __name__ == "__main__":

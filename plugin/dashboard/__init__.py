@@ -5,6 +5,8 @@ from __future__ import annotations
 from dashboard import api
 from dashboard.api import (
     build_initial_summary,
+    get_architect_state,
+    get_bridge_state,
     get_metrics_state,
     get_module_info,
     get_overview,
@@ -15,6 +17,8 @@ from dashboard.api import (
 __all__ = [
     "api",
     "build_initial_summary",
+    "get_architect_state",
+    "get_bridge_state",
     "get_metrics_state",
     "get_module_info",
     "get_overview",

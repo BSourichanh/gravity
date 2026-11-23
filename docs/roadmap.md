@@ -12,11 +12,11 @@
 ## `v0.2.0` — Interface MCP App unifiée & boucle `metrics -> workflow auto`
 
 ### 1. Convergence UI/UX vers `gravity` (`ui-host`)
-- **Socle & MCP App unifiée livrés sur `dev` (Phase 4 / Lots 1A & 1B) :** façade lecture seule `plugin/dashboard/`, serveur stdio MCP App (`plugin/mcp/server.py`, `open_gravity_dashboard` sur `aux_pane`/`global`), UI HTML5/SVG SEP-1865 autonome sans `innerHTML` et diagnostic `init_env.py --dashboard`.
+- **Socle & MCP App unifiée livrés sur `dev` (Phase 4 / Lots 1A, 1B & 2) :** façade lecture seule `plugin/dashboard/`, serveur stdio MCP App (`plugin/mcp/server.py`, `open_gravity_dashboard` sur `aux_pane`/`global` + 7 outils `app`), UI HTML5/SVG SEP-1865 autonome sans `innerHTML` et diagnostic `init_env.py --dashboard`.
 - **Transition des interfaces existantes :**
-  - `gravity-metrics` (`ui.mode: "transition-mcp"`) : vue lecture seule coûts/tokens/cache/audits intégrée dans `gravity` (`archive`/`remove` conservés sous `/gravity-metrics`).
+  - `gravity-metrics` (`ui.mode: "transition-mcp"`) : vue lecture seule coûts/tokens/cache/audits agents intégrée dans `gravity` (`archive`/`remove` conservés sous `/gravity-metrics`).
   - `gravity-workflow` (`ui.mode: "transition-sidecar"`) : vue `Workflow Live` temps réel (`~1 500 ms`) intégrée dans `gravity` en lecture seule.
-  - `gravity-bridge` et `gravity-architect` : onglets génériques OCP actifs dès Lot 1B, providers dédiés prévus au Lot 2.
+  - `gravity-bridge` et `gravity-architect` : onglets dédiés lecture seule livrés au Lot 2 (**`Bridge`** sur `bridge.db` `?mode=ro` et **`Architect`** sur l'atelier Hot/Cold + `audits/code/`).
 
 ### 2. Boucle d'optimisation `metrics -> workflow auto`
 - Exploitation des signaux `session-metrics` et `cost-telemetry` produits par `gravity-metrics` comme entrées du routage adaptatif dans `gravity-workflow`.

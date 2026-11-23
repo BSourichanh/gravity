@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -94,6 +95,8 @@ class TestMcpServer(unittest.TestCase):
                 "gravity_get_workflow_state",
                 "gravity_get_metrics_state",
                 "gravity_get_session_detail",
+                "gravity_get_bridge_state",
+                "gravity_get_architect_state",
                 "gravity_get_module_info",
             ],
         )
@@ -130,6 +133,8 @@ class TestMcpServer(unittest.TestCase):
             "ui/notifications/host-context-changed",
             "com.google.antigravity/toggle-aux-pane",
             'addEventListener("message"',
+            "renderBridgeView",
+            "renderArchitectView",
         ):
             self.assertIn(required, html_txt)
 
@@ -146,7 +151,7 @@ class TestMcpServer(unittest.TestCase):
         bad_method = mcp_server.handle_jsonrpc_message({"jsonrpc": "2.0", "id": 8, "method": "nope/method"})
         self.assertEqual(bad_method["error"]["code"], -32601)  # type: ignore[index]
 
-    def test_all_six_tools_with_isolated_ctx(self) -> None:
+    def test_all_eight_tools_with_isolated_ctx(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             g_home = tmp_path / "gravity-home"
@@ -156,17 +161,92 @@ class TestMcpServer(unittest.TestCase):
             wf_home = g_home / "workflow"
             met_home = g_home / "metrics"
             bridge_home = g_home / "bridge"
+            atelier_dir = tmp_path / "gravity-studio"
             (g_home / "core").mkdir(parents=True)
             (wf_home / "workspaces" / "proj-1").mkdir(parents=True)
             (met_home / "data").mkdir(parents=True)
             (met_home / "reports").mkdir(parents=True)
             bridge_home.mkdir(parents=True)
-            (bridge_home / "bridge.db").write_text("sqlite-stub", encoding="utf-8")
+            (atelier_dir / "tracking" / "snapshots").mkdir(parents=True)
+            (atelier_dir / "audits" / "code").mkdir(parents=True)
+            (atelier_dir / "audits" / "agents").mkdir(parents=True)
+
+            conn = sqlite3.connect(str(bridge_home / "bridge.db"))
+            try:
+                conn.executescript(
+                    """
+                    PRAGMA journal_mode = WAL;
+                    CREATE TABLE workspaces (
+                        slug TEXT PRIMARY KEY, canonical_path TEXT UNIQUE NOT NULL, display_name TEXT NOT NULL,
+                        sidecar_id TEXT, sidecar_pid INTEGER, sidecar_last_seen_at TEXT,
+                        project_id TEXT, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL
+                    );
+                    CREATE TABLE threads (
+                        id TEXT PRIMARY KEY, from_workspace TEXT NOT NULL, to_workspace TEXT NOT NULL,
+                        msg_type TEXT NOT NULL, subject TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open',
+                        approved INTEGER NOT NULL DEFAULT 0, target_conversation_id TEXT,
+                        caller_conversation_id TEXT, notify_caller INTEGER NOT NULL DEFAULT 0,
+                        callback_dispatched_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                    );
+                    CREATE TABLE messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL,
+                        sender_workspace TEXT NOT NULL, msg_type TEXT NOT NULL, body TEXT NOT NULL,
+                        file_refs_json TEXT NOT NULL DEFAULT '[]', is_read INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL
+                    );
+                    CREATE TABLE jobs (
+                        id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, message_id INTEGER NOT NULL,
+                        target_workspace TEXT NOT NULL, action TEXT NOT NULL, direction TEXT NOT NULL DEFAULT 'outbound',
+                        model TEXT, sidecar_id TEXT, target_conversation_id TEXT, status TEXT NOT NULL,
+                        exit_code INTEGER, error_summary TEXT, claimed_at TEXT, dispatched_at TEXT,
+                        finished_at TEXT, created_at TEXT NOT NULL
+                    );
+                    """
+                )
+                conn.execute(
+                    "INSERT INTO workspaces VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ("gravity-studio", str(atelier_dir.resolve()), "Studio", "sc-1", 10, "2026-11-23T22:00:00Z", "studio", "2026-11-23T20:00:00Z", "2026-11-23T22:00:00Z"),
+                )
+                conn.execute(
+                    "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ("thr-1", "gravity-studio", "gravity", "handoff", "Lot 2", "open", 1, "c1", "c2", 1, None, "2026-11-23T21:00:00Z", "2026-11-23T22:00:00Z"),
+                )
+                conn.execute(
+                    "INSERT INTO messages (thread_id, sender_workspace, msg_type, body, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("thr-1", "gravity-studio", "handoff", "Bridge message preview", 0, "2026-11-23T22:00:00Z"),
+                )
+                conn.execute(
+                    "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ("job-1", "thr-1", 1, "gravity", "new_conversation", "outbound", "pro", "sc-1", "c1", "completed", 0, None, "2026-11-23T22:00:00Z", "2026-11-23T22:00:01Z", "2026-11-23T22:00:05Z", "2026-11-23T22:00:00Z"),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            (atelier_dir / "ECOSYSTEM.md").write_text("# Atelier\n", encoding="utf-8")
+            (atelier_dir / "projects.json").write_text(
+                json.dumps({"schema_version": 5, "projects": [{"id": "gravity", "name": "Gravity", "path": "../gravity"}]}),
+                encoding="utf-8",
+            )
+            (atelier_dir / "tracking" / "snapshots" / "delta.md").write_text(
+                "- **Date :** `2026-11-23T22:00:00Z`\n- **Statut éditorial :** `NO_EDITORIAL_CHANGES`\n",
+                encoding="utf-8",
+            )
+            (atelier_dir / "audits" / "code" / "README.md").write_text("# Code Index\n", encoding="utf-8")
+            (atelier_dir / "audits" / "code" / "2026-11-23-audit-code-gravity.md").write_text(
+                "# Audit Code\n\n- **Verdict :** `PASS`\n",
+                encoding="utf-8",
+            )
+            (atelier_dir / "audits" / "agents" / "2026-11-23-agent.md").write_text(
+                "# Secret Agent Audit\n\nVerdict: BLOQUANT\n",
+                encoding="utf-8",
+            )
 
             _write_fake_plugin(plugins_root, mod_id="core", plugin_name="gravity", ui_mode="core")
             _write_fake_plugin(plugins_root, mod_id="workflow", plugin_name="gravity-workflow", ui_mode="transition-sidecar")
             _write_fake_plugin(plugins_root, mod_id="metrics", plugin_name="gravity-metrics", ui_mode="transition-mcp")
             _write_fake_plugin(plugins_root, mod_id="bridge", plugin_name="gravity-bridge", ui_mode="none")
+            _write_fake_plugin(plugins_root, mod_id="architect", plugin_name="gravity-architect", ui_mode="none")
 
             mods = []
             for mod_id, pname, ui_mode in (
@@ -174,6 +254,7 @@ class TestMcpServer(unittest.TestCase):
                 ("workflow", "gravity-workflow", "transition-sidecar"),
                 ("metrics", "gravity-metrics", "transition-mcp"),
                 ("bridge", "gravity-bridge", "none"),
+                ("architect", "gravity-architect", "none"),
             ):
                 mods.append(
                     {
@@ -239,6 +320,7 @@ class TestMcpServer(unittest.TestCase):
                 "home_dir": fake_user,
                 "workflow_home": wf_home,
                 "metrics_home": met_home,
+                "bridge_home": bridge_home,
                 "audits_dirs": [],
             }
 
@@ -250,9 +332,11 @@ class TestMcpServer(unittest.TestCase):
             self.assertLessEqual(len(json.dumps(open_res, ensure_ascii=False).encode("utf-8")), mcp_server.MAX_TRAJECTORY_BYTES)
             sc = open_res["structuredContent"]
             self.assertEqual(sc["initial_view"], "overview")
-            self.assertEqual([t["id"] for t in sc["overview"]["tabs"]], ["overview", "workflow", "metrics", "bridge"])
+            self.assertEqual([t["id"] for t in sc["overview"]["tabs"]], ["overview", "workflow", "metrics", "bridge", "architect"])
             self.assertEqual(sc["workflow"]["stage"], "build")
             self.assertEqual(sc["metrics"]["kpis"]["sessions_count"], 1)
+            self.assertTrue(sc["bridge"]["available"])
+            self.assertTrue(sc["architect"]["available"])
 
             ov1 = mcp_server.handle_jsonrpc_message(
                 {"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "gravity_get_overview", "arguments": {}}},
@@ -308,6 +392,32 @@ class TestMcpServer(unittest.TestCase):
             )["result"]  # type: ignore[index]
             self.assertTrue(mod_err["isError"])
 
+            br1 = mcp_server.handle_jsonrpc_message(
+                {"jsonrpc": "2.0", "id": 20, "method": "tools/call", "params": {"name": "gravity_get_bridge_state", "arguments": {"status": "open"}}},
+                ctx=ctx,
+            )["result"]["structuredContent"]  # type: ignore[index]
+            self.assertTrue(br1["available"])
+            self.assertEqual(br1["kpis"]["threads_open"], 1)
+            br2 = mcp_server.handle_jsonrpc_message(
+                {"jsonrpc": "2.0", "id": 21, "method": "tools/call", "params": {"name": "gravity_get_bridge_state", "arguments": {"status": "open", "since_signature": br1["signature"]}}},
+                ctx=ctx,
+            )["result"]["structuredContent"]  # type: ignore[index]
+            self.assertTrue(br2["unchanged"])
+
+            arch1 = mcp_server.handle_jsonrpc_message(
+                {"jsonrpc": "2.0", "id": 22, "method": "tools/call", "params": {"name": "gravity_get_architect_state", "arguments": {}}},
+                ctx=ctx,
+            )["result"]["structuredContent"]  # type: ignore[index]
+            self.assertTrue(arch1["available"])
+            self.assertEqual(arch1["discovery_source"], "bridge_discovery")
+            self.assertEqual(len(arch1["audits"]), 1)
+            self.assertEqual(arch1["audits"][0]["verdict"], "PASS")
+            arch2 = mcp_server.handle_jsonrpc_message(
+                {"jsonrpc": "2.0", "id": 23, "method": "tools/call", "params": {"name": "gravity_get_architect_state", "arguments": {"since_signature": arch1["signature"]}}},
+                ctx=ctx,
+            )["result"]["structuredContent"]  # type: ignore[index]
+            self.assertTrue(arch2["unchanged"])
+
     def test_stdio_subprocess_roundtrip_and_parse_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -319,7 +429,14 @@ class TestMcpServer(unittest.TestCase):
             env["HOME"] = str(fake_home)
             env["USERPROFILE"] = str(fake_home)
             env["GRAVITY_HOME"] = str(g_home)
-            for k in ("GRAVITY_CORE_HOME", "GRAVITY_WORKFLOW_HOME", "GRAVITY_METRICS_HOME"):
+            for k in (
+                "GRAVITY_CORE_HOME",
+                "GRAVITY_WORKFLOW_HOME",
+                "GRAVITY_METRICS_HOME",
+                "GRAVITY_BRIDGE_HOME",
+                "GRAVITY_ARCHITECT_HOME",
+                "GRAVITY_ARCHITECT_WORKSPACE",
+            ):
                 env.pop(k, None)
 
             stdin_lines = [
