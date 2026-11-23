@@ -12,11 +12,11 @@
 ## `v0.2.0` — Interface MCP App unifiée & boucle `metrics -> workflow auto`
 
 ### 1. Convergence UI/UX vers `gravity` (`ui-host`)
-- Introduction d'une **MCP App native unifiée** dans `gravity` (`ui.mode: "core"`), exploitant le support officiel MCP Apps d'Antigravity (`aux_pane` / `global`).
+- **Socle & MCP App unifiée livrés sur `dev` (Phase 4 / Lots 1A & 1B) :** façade lecture seule `plugin/dashboard/`, serveur stdio MCP App (`plugin/mcp/server.py`, `open_gravity_dashboard` sur `aux_pane`/`global`), UI HTML5/SVG SEP-1865 autonome sans `innerHTML` et diagnostic `init_env.py --dashboard`.
 - **Transition des interfaces existantes :**
-  - `gravity-metrics` (`ui.mode: "transition-mcp"`) : intégration de la vue coûts/tokens/cache dans le tableau de bord unifié `gravity`, puis dépréciation progressive du panneau standalone.
-  - `gravity-workflow` (`ui.mode: "transition-sidecar"`) : remplacement progressif du sidecar HTTP `4789` (`live-widget`) par le flux temps réel intégré à l'UI unifiée `gravity`.
-  - `gravity-bridge` et `gravity-architect` : exposition ultérieure de vues dédiées (fils inter-workspaces, santé des modules) au sein du même hôte `gravity`.
+  - `gravity-metrics` (`ui.mode: "transition-mcp"`) : vue lecture seule coûts/tokens/cache/audits intégrée dans `gravity` (`archive`/`remove` conservés sous `/gravity-metrics`).
+  - `gravity-workflow` (`ui.mode: "transition-sidecar"`) : vue `Workflow Live` temps réel (`~1 500 ms`) intégrée dans `gravity` en lecture seule.
+  - `gravity-bridge` et `gravity-architect` : onglets génériques OCP actifs dès Lot 1B, providers dédiés prévus au Lot 2.
 
 ### 2. Boucle d'optimisation `metrics -> workflow auto`
 - Exploitation des signaux `session-metrics` et `cost-telemetry` produits par `gravity-metrics` comme entrées du routage adaptatif dans `gravity-workflow`.

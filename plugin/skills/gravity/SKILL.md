@@ -1,6 +1,6 @@
 ---
 name: gravity
-description: "Initialiser ~/.gemini/gravity/, découvrir les modules Gravity installés et diagnostiquer l'environnement via /gravity [init|status|modules|doctor]."
+description: "Initialiser ~/.gemini/gravity/, découvrir les modules, diagnostiquer l'environnement et ouvrir le dashboard (/gravity [init|status|modules|doctor|dashboard])."
 ---
 
 # Gravity Core (`/gravity`)
@@ -17,6 +17,7 @@ Exécuter depuis la racine du plugin `gravity` (sortie texte compacte par défau
 | `/gravity` ou `/gravity status` | `python scripts/init_env.py --status` | Lecture seule : état de `$GRAVITY_HOME`, `core/modules.json`, modules détectés et dossiers legacy. |
 | `/gravity modules` | `python scripts/init_env.py --status --json` | Liste complète des contrats découverts (`id`, `plugin_name`, `version`, `commands`, `capabilities`, `ui`, `signals`, `valid`). |
 | `/gravity doctor` | `python scripts/init_env.py --check` | Audit lecture seule (`config/module.json` v1, `$GRAVITY_*_HOME`, legacy). Plan manuel non destructif (0 écriture) : `python scripts/init_env.py --migration-plan [--shell auto|powershell|bash]`. |
+| `/gravity dashboard` | MCP `open_gravity_dashboard` / `python scripts/init_env.py --dashboard` | Ouvre le tableau de bord unifié MCP App (`aux_pane` ou `Plugins -> Gravity` à `0` token interactif) ; `--dashboard` diagnostique la config MCP et les onglets en lecture seule. |
 
 ## Règles d'exécution
 

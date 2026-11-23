@@ -31,12 +31,24 @@ OFFICIAL_PLUGIN_FIELDS = {
     "disabled",
 }
 REQUIRED_PLUGIN_FIELDS = OFFICIAL_PLUGIN_FIELDS - {"disabled"}
-ALLOWED_LOCAL_MODULES = {"core", "dashboard", "registry", "init_env", "validate"}
-REQUIRED_DIRS = ("assets", "config", "core", "dashboard", "rules", "scripts", "skills")
+ALLOWED_LOCAL_MODULES = {"core", "dashboard", "mcp", "registry", "init_env", "validate"}
+REQUIRED_DIRS = ("assets", "config", "core", "dashboard", "mcp", "rules", "scripts", "skills")
 RULES_EDITORIAL_TARGET_BYTES = 600
 RULES_MAX_BYTES = 1000
 SKILL_MAX_BYTES = 6000
 REPO_AGENTS_MAX_BYTES = 2500
+MCP_APP_URI = "ui://gravity/dashboard.html"
+MCP_APP_MIME = "text/html;profile=mcp-app"
+MCP_HTML_MAX_BYTES = 200 * 1024
+MCP_TRAJECTORY_MAX_BYTES = 450_000
+EXPECTED_MCP_TOOLS = {
+    "open_gravity_dashboard",
+    "gravity_get_overview",
+    "gravity_get_workflow_state",
+    "gravity_get_metrics_state",
+    "gravity_get_session_detail",
+    "gravity_get_module_info",
+}
 
 FORBIDDEN_MOD_RE = re.compile(r"\bMod" + r"ule\s+0?\d\b", re.IGNORECASE)
 PERSONAL_PATH_RE = re.compile(
@@ -83,6 +95,66 @@ def _configure_stdio() -> None:
                 reconf(encoding="utf-8", errors="replace")
             except Exception:
                 pass
+
+
+def has_real_python3() -> bool:
+    """Return True if a real 'python3' binary exists on PATH (ignoring WindowsApps stub)."""
+    found = shutil.which("python3")
+    if not found:
+        return False
+    if os.name == "nt" and "windowsapps" in found.lower():
+        return False
+    return True
+
+
+def _detect_portable_python_cmd() -> str:
+    py_bin = shutil.which("python")
+    if py_bin and not (os.name == "nt" and "windowsapps" in py_bin.lower()):
+        return "python"
+    if shutil.which("py"):
+        return "py -3"
+    return "python"
+
+
+def fix_python_cmd(plugin_root: Path) -> int:
+    """Adapt 'python3' to 'python' or 'py -3' in mcp_config.json on a Windows copy."""
+    if has_real_python3():
+        print("[INFO]  Exécutable 'python3' réel détecté : aucune adaptation nécessaire.")
+        return 0
+
+    mcp_json = plugin_root / "mcp_config.json"
+    if not mcp_json.is_file():
+        print(f"[INFO]  {mcp_json} absent : aucune adaptation requise.")
+        return 0
+
+    py_cmd = _detect_portable_python_cmd()
+    raw = mcp_json.read_bytes()
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    data = json.loads(raw.decode("utf-8"))
+    changed = False
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
+    if isinstance(servers, dict):
+        for scfg in servers.values():
+            if not isinstance(scfg, dict):
+                continue
+            if scfg.get("command") == "python3":
+                args = list(scfg.get("args") or [])
+                if py_cmd == "py -3":
+                    scfg["command"] = "py"
+                    if not args or args[0] != "-3":
+                        scfg["args"] = ["-3", *args]
+                else:
+                    scfg["command"] = py_cmd
+                changed = True
+
+    if changed:
+        with mcp_json.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        print(f"[FIXED] {mcp_json} -> '{py_cmd}'")
+    else:
+        print(f"[INFO]  Aucun changement requis dans {mcp_json}.")
+    return 0
 
 
 def _load_validate_module_contract(plugin_root: Path):
@@ -259,7 +331,7 @@ def _validate_skills(root: Path, report: Report) -> None:
             f"skills/gravity/SKILL.md : 'description' manquante, vide ou > 160 caractères ({desc_len})."
         )
 
-    for subcmd in ("init", "status", "modules", "doctor"):
+    for subcmd in ("init", "status", "modules", "doctor", "dashboard"):
         if subcmd not in txt:
             report.error(f"skills/gravity/SKILL.md : sous-commande '/gravity {subcmd}' non documentée.")
 
@@ -328,6 +400,200 @@ def _check_stdlib_only(py_file: Path, report: Report) -> None:
         for mod in mods:
             if mod not in allowed:
                 report.error(f"Import non stdlib {mod!r} détecté dans {py_file}")
+
+
+def _validate_mcp_config(root: Path, report: Report) -> None:
+    mcp_json = root / "mcp_config.json"
+    if not mcp_json.is_file():
+        report.error("mcp_config.json introuvable à la racine du plugin.")
+        return
+
+    raw_bytes = mcp_json.read_bytes()
+    if raw_bytes.startswith(b"\xef\xbb\xbf"):
+        report.error("mcp_config.json ne doit pas contenir de BOM UTF-8.")
+        raw_bytes = raw_bytes[3:]
+    if b"\r\n" in raw_bytes:
+        report.error("mcp_config.json doit utiliser des fins de ligne LF (CRLF détecté).")
+
+    try:
+        mcp_raw = raw_bytes.decode("utf-8")
+        mcp_data = json.loads(mcp_raw)
+    except Exception as exc:
+        report.error(f"mcp_config.json invalide : {exc}")
+        return
+
+    if not isinstance(mcp_data, dict) or not isinstance(mcp_data.get("mcpServers"), dict):
+        report.error("mcp_config.json doit contenir un objet 'mcpServers'.")
+        return
+
+    servers = mcp_data["mcpServers"]
+    if "dashboard" not in servers or not isinstance(servers["dashboard"], dict):
+        report.error("mcp_config.json : serveur 'dashboard' manquant.")
+        return
+
+    for sname, scfg in servers.items():
+        if not isinstance(scfg, dict):
+            report.error(f"mcp_config.json ({sname}) doit être un objet.")
+            continue
+        cmd = scfg.get("command")
+        args = scfg.get("args")
+        if not isinstance(cmd, str) or not cmd.strip():
+            report.error(f"mcp_config.json ({sname}) : 'command' manquant.")
+        if not isinstance(args, list):
+            report.error(f"mcp_config.json ({sname}) : 'args' doit être une liste.")
+            continue
+        for arg in args:
+            if isinstance(arg, str) and arg.endswith(".py"):
+                rel = arg.replace("${PLUGIN_ROOT}/", "").replace("${PLUGIN_ROOT}\\", "").lstrip("/\\")
+                target_py = (root / rel).resolve()
+                if not target_py.is_relative_to(root.resolve()) or not target_py.is_file():
+                    report.error(f"mcp_config.json ({sname}) : script introuvable {arg!r}")
+
+    if os.name == "nt" and '"command": "python3"' in mcp_raw and not has_real_python3():
+        report.info(
+            "mcp_config.json portable ('python3') détecté sous Windows : adapté automatiquement lors de install.py."
+        )
+
+
+def _run_mcp_dry_run(root: Path, report: Report) -> None:
+    server_script = root / "mcp" / "server.py"
+    if not server_script.is_file():
+        report.error(f"Serveur MCP introuvable : {server_script}")
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        fake_home = tmp_path / "user-home"
+        fake_home.mkdir(parents=True)
+        gravity_home = tmp_path / "gravity-home"
+        gravity_home.mkdir(parents=True)
+
+        env = dict(os.environ)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["HOME"] = str(fake_home)
+        env["USERPROFILE"] = str(fake_home)
+        env["GRAVITY_HOME"] = str(gravity_home)
+        for key in (
+            "GRAVITY_CORE_HOME",
+            "GRAVITY_WORKFLOW_HOME",
+            "GRAVITY_METRICS_HOME",
+            "GRAVITY_BRIDGE_HOME",
+            "GRAVITY_ARCHITECT_HOME",
+            "GRAVITY_AUDITS_DIR",
+        ):
+            env.pop(key, None)
+
+        requests = [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "gravity-validator", "version": "1.0"},
+                },
+            },
+            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            {"jsonrpc": "2.0", "id": 3, "method": "resources/list", "params": {}},
+            {"jsonrpc": "2.0", "id": 4, "method": "resources/read", "params": {"uri": MCP_APP_URI}},
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {"name": "open_gravity_dashboard", "arguments": {}},
+            },
+        ]
+        stdin_payload = "\n".join(json.dumps(r) for r in requests) + "\n"
+        proc = subprocess.run(
+            [sys.executable, "-B", str(server_script)],
+            input=stdin_payload,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(root),
+            env=env,
+            timeout=10,
+            check=False,
+        )
+        if proc.returncode != 0:
+            report.error(f"Dry-run MCP échoué (rc={proc.returncode}) : {proc.stderr or proc.stdout}")
+            return
+
+        lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+        if len(lines) != 5:
+            report.error(f"Dry-run MCP : 5 réponses attendues, obtenu {len(lines)}.")
+            return
+
+        try:
+            parsed = [json.loads(ln) for ln in lines]
+            resps = {obj["id"]: obj for obj in parsed}
+        except Exception as exc:
+            report.error(f"Dry-run MCP : JSON-RPC invalide ({exc})")
+            return
+
+        for req_id in (1, 2, 3, 4, 5):
+            if req_id not in resps or "error" in resps[req_id]:
+                report.error(f"Dry-run MCP : réponse erreur/manquante pour id={req_id} : {resps.get(req_id)!r}")
+                return
+
+        tools = (resps[2].get("result") or {}).get("tools") or []
+        tool_names = {t.get("name") for t in tools if isinstance(t, dict)}
+        if tool_names != EXPECTED_MCP_TOOLS:
+            report.error(f"MCP tools/list : outils attendus {sorted(EXPECTED_MCP_TOOLS)}, obtenu {sorted(tool_names)}")
+
+        open_tool = next((t for t in tools if t.get("name") == "open_gravity_dashboard"), None)
+        if not open_tool:
+            report.error("MCP tools/list : 'open_gravity_dashboard' manquant.")
+        else:
+            meta = open_tool.get("_meta") or {}
+            ui_meta = meta.get("ui") or {}
+            if ui_meta.get("resourceUri") != MCP_APP_URI:
+                report.error(f"MCP resourceUri invalide : {ui_meta.get('resourceUri')!r}")
+            if not {"model", "app"}.issubset(set(ui_meta.get("visibility") or [])):
+                report.error(f"MCP open_gravity_dashboard visibility invalide : {ui_meta.get('visibility')!r}")
+            eps = (meta.get("com.google.antigravity/ui") or {}).get("entrypoints") or []
+            ep_types = {e.get("type") for e in eps if isinstance(e, dict)}
+            if not {"aux_pane", "global"}.issubset(ep_types):
+                report.error(f"MCP entrypoints incomplets : {ep_types!r}")
+
+        for tool in tools:
+            tname = str(tool.get("name") or "")
+            if tname.startswith("gravity_get_"):
+                vis = ((tool.get("_meta") or {}).get("ui") or {}).get("visibility")
+                if vis != ["app"]:
+                    report.error(f"MCP outil {tname!r} : visibility doit être ['app'], obtenu {vis!r}")
+
+        resources = (resps[3].get("result") or {}).get("resources") or []
+        if not resources or resources[0].get("uri") != MCP_APP_URI:
+            report.error(f"MCP resources/list invalide : {resources!r}")
+        elif ((resources[0].get("_meta") or {}).get("ui") or {}).get("prefersBorder") is not False:
+            report.error("MCP resources/list : _meta.ui.prefersBorder doit être False.")
+
+        contents = (resps[4].get("result") or {}).get("contents") or []
+        if not contents:
+            report.error("MCP resources/read : contenu vide.")
+        else:
+            c0 = contents[0]
+            html_txt = str(c0.get("text") or "")
+            if c0.get("mimeType") != MCP_APP_MIME:
+                report.error(f"MCP mimeType invalide : {c0.get('mimeType')!r}")
+            html_bytes = len(html_txt.encode("utf-8"))
+            if not html_txt or html_bytes >= MCP_HTML_MAX_BYTES:
+                report.error(f"MCP HTML vide ou >= {MCP_HTML_MAX_BYTES} o ({html_bytes}).")
+            for forbidden in ("innerHTML", "http://", "https://", "window.confirm", "window.alert", "window.prompt"):
+                if forbidden in html_txt:
+                    report.error(f"MCP HTML : motif interdit {forbidden!r} détecté (CSP / anti-XSS).")
+
+        call_res = resps[5].get("result") or {}
+        call_bytes = len(json.dumps(call_res, ensure_ascii=False).encode("utf-8"))
+        sc = call_res.get("structuredContent") or {}
+        if call_res.get("isError") or not isinstance(sc.get("overview"), dict) or call_bytes > MCP_TRAJECTORY_MAX_BYTES:
+            report.error(
+                f"MCP open_gravity_dashboard résultat invalide (isError={call_res.get('isError')}, bytes={call_bytes})."
+            )
 
 
 def _run_e2e_dry_run(root: Path, report: Report) -> None:
@@ -433,6 +699,7 @@ def validate_plugin(root: Path, report: Report) -> None:
     _validate_module_json(root, manifest, report)
     _validate_skills(root, report)
     _validate_rules(root, report)
+    _validate_mcp_config(root, report)
     if root.name == "plugin" and (root.parent / "AGENTS.md").is_file():
         _validate_repo_agents_md(root, report)
 
@@ -456,6 +723,7 @@ def validate_plugin(root: Path, report: Report) -> None:
             report.error(f"Chemin personnel détecté dans {fpath}")
 
     _run_e2e_dry_run(root, report)
+    _run_mcp_dry_run(root, report)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -472,8 +740,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=PLUGIN_ROOT_DEFAULT,
         help="Racine du plugin Gravity Core à auditer.",
     )
+    parser.add_argument(
+        "--fix-python-cmd",
+        action="store_true",
+        help="Adapte 'python3' vers 'python' ou 'py -3' dans mcp_config.json sous Windows.",
+    )
     args = parser.parse_args(argv)
     plugin_root = args.plugin_root.expanduser().resolve()
+
+    if args.fix_python_cmd:
+        return fix_python_cmd(plugin_root)
 
     report = Report()
     validate_plugin(plugin_root, report)

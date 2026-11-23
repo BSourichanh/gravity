@@ -196,6 +196,87 @@ class TestInitEnvCLI(unittest.TestCase):
             self.assertIn("INVALID", proc.stdout)
             self.assertFalse(gravity_home.exists())
 
+    def test_dashboard_flag_is_read_only_and_reports_mcp_and_tabs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_home = tmp_path / "user-home"
+            fake_home.mkdir()
+            plugins_dir = tmp_path / "plugins"
+            shutil.copytree(
+                REPO_ROOT / "plugin",
+                plugins_dir / "gravity",
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+            _create_fake_module(plugins_dir, "bridge", "gravity-bridge", "GRAVITY_BRIDGE_HOME")
+
+            gravity_home = tmp_path / "uninit-dash-home"
+            env = _isolated_env(fake_home)
+
+            p_json = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(INIT_SCRIPT),
+                    "--gravity-home",
+                    str(gravity_home),
+                    "--plugins-dir",
+                    str(plugins_dir),
+                    "--dashboard",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(p_json.returncode, 0, msg=p_json.stderr or p_json.stdout)
+            self.assertFalse(gravity_home.exists())
+            out = json.loads(p_json.stdout)
+            self.assertEqual(out["mode"], "dashboard")
+            self.assertTrue(out["ok"])
+            self.assertTrue(out["dashboard"]["mcp_config_ok"])
+            self.assertTrue(out["dashboard"]["server_exists"])
+            self.assertTrue(out["dashboard"]["api_exists"])
+            self.assertEqual([t["id"] for t in out["tabs"]], ["overview", "bridge"])
+
+            p_txt = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(INIT_SCRIPT),
+                    "--gravity-home",
+                    str(gravity_home),
+                    "--plugins-dir",
+                    str(plugins_dir),
+                    "--dashboard",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(p_txt.returncode, 0, msg=p_txt.stderr)
+            self.assertIn("open_gravity_dashboard", p_txt.stdout)
+            self.assertFalse(gravity_home.exists())
+
+            p_mutex = subprocess.run(
+                [sys.executable, "-B", str(INIT_SCRIPT), "--dashboard", "--status"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=10,
+                check=False,
+            )
+            self.assertEqual(p_mutex.returncode, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

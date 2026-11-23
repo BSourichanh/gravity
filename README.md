@@ -69,9 +69,13 @@ python plugin/scripts/init_env.py --status --json
 # Générer un plan de migration legacy en 4 étapes non destructives (100 % lecture seule)
 python plugin/scripts/init_env.py --migration-plan --shell auto
 python plugin/scripts/init_env.py --migration-plan --shell bash --json
+
+# Diagnostiquer la MCP App unifiée et les onglets du dashboard (100 % lecture seule)
+python plugin/scripts/init_env.py --dashboard
+python plugin/scripts/init_env.py --dashboard --json
 ```
 
-Dans Antigravity, utiliser le skill **`/gravity [init|status|modules|doctor]`**.
+Dans Antigravity, utiliser le skill **`/gravity [init|status|modules|doctor|dashboard]`** ou ouvrir directement le tableau de bord depuis **Plugins -> Gravity** (`open_gravity_dashboard`, 0 token interactif).
 Les anciens répertoires éventuels (`~/.gemini/gravity-bridge`, `~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow`, `~/.gravity`) sont détectés en **lecture seule uniquement** : rien n'est jamais modifié ni supprimé automatiquement.
 
 ## Documentation & vérifications

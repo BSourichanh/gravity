@@ -182,6 +182,33 @@ class TestInstall(unittest.TestCase):
         self.assertIsNotNone(installer.is_unsafe_target(installer.PLUGIN_SOURCE, installer.PLUGIN_SOURCE))
         self.assertIsNotNone(installer.is_unsafe_target(REPO_ROOT, installer.PLUGIN_SOURCE))
 
+    def test_exec_scripts_and_windows_python_cmd_adaptation(self) -> None:
+        self.assertIn("mcp/server.py", installer.EXEC_SCRIPTS)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_home = tmp_path / "home"
+            fake_home.mkdir()
+
+            p_check = _run_install(["--check", "--target", str(tmp_path / "t")], fake_home)
+            self.assertEqual(p_check.returncode, 0, msg=p_check.stderr)
+            self.assertIn("Real 'python3'", p_check.stdout)
+
+            target_fix = tmp_path / "installed-fix"
+            with (
+                mock.patch("install.os.name", "nt"),
+                mock.patch("install.has_real_python3", return_value=False),
+            ):
+                rc_fix = installer.install_copy(installer.PLUGIN_SOURCE, target_fix)
+            self.assertEqual(rc_fix, 0)
+            cfg_fix = json.loads((target_fix / "mcp_config.json").read_text(encoding="utf-8"))
+            self.assertIn(cfg_fix["mcpServers"]["dashboard"]["command"], ("python", "py"))
+
+            target_nofix = tmp_path / "installed-nofix"
+            p_nofix = _run_install(["--target", str(target_nofix), "--no-fix-python"], fake_home)
+            self.assertEqual(p_nofix.returncode, 0, msg=p_nofix.stderr or p_nofix.stdout)
+            cfg_nofix = json.loads((target_nofix / "mcp_config.json").read_text(encoding="utf-8"))
+            self.assertEqual(cfg_nofix["mcpServers"]["dashboard"]["command"], "python3")
+
 
 if __name__ == "__main__":
     unittest.main()

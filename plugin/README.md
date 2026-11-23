@@ -9,7 +9,8 @@ Plugin maître de l'écosystème **Gravity** pour **Google Antigravity**, 100 % 
 - **Environnement centralisé (`$GRAVITY_HOME`) :** résout `~/.gemini/gravity/` (ou `$GRAVITY_HOME`) et le stockage dédié de chaque module (`$GRAVITY_<MODULE>_HOME` > `$GRAVITY_HOME/<subdir>`).
 - **Découverte & validation (`config/module.json` v1) :** inspecte les plugins installés, valide les contrats `module.json` + `plugin.json` et écrit de façon atomique `<gravity_home>/core/modules.json`.
 - **Détection legacy en lecture seule :** signale sans jamais les modifier ni les supprimer d'éventuels anciens dossiers (`~/.gemini/gravity-bridge`, `~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow`, `~/.gravity`).
-- **Commandes `/gravity` :** `/gravity init`, `/gravity status`, `/gravity modules`, `/gravity doctor`.
+- **Dashboard MCP App unifié (`open_gravity_dashboard`) :** UI HTML5/SVG SEP-1865 lecture seule (`Overview/Doctor`, `Workflow Live`, `Metrics & Audits Agents`, onglets génériques OCP) accessible via `/gravity dashboard` ou **Plugins -> Gravity** (`0` token interactif).
+- **Commandes `/gravity` :** `/gravity init`, `/gravity status`, `/gravity modules`, `/gravity doctor`, `/gravity dashboard`.
 
 ## Écosystème Gravity
 
@@ -32,6 +33,7 @@ python scripts/init_env.py --status
 python scripts/init_env.py --check
 python scripts/init_env.py --status --json
 python scripts/init_env.py --migration-plan --shell auto
+python scripts/init_env.py --dashboard
 
 # Validation stricte du plugin
 python scripts/validate.py --strict

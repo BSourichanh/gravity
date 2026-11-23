@@ -20,11 +20,22 @@ PLUGIN_SOURCE = REPO_ROOT / "plugin"
 PLUGIN_NAME = "gravity"
 
 EXEC_SCRIPTS: tuple[str, ...] = (
+    "mcp/server.py",
     "scripts/init_env.py",
     "scripts/validate.py",
 )
 
 COPY_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".DS_Store")
+
+
+def has_real_python3() -> bool:
+    """Return True if a real 'python3' binary exists on PATH (ignoring WindowsApps stub)."""
+    found = shutil.which("python3")
+    if not found:
+        return False
+    if os.name == "nt" and "windowsapps" in found.lower():
+        return False
+    return True
 
 
 def _configure_stdio() -> None:
@@ -180,6 +191,15 @@ def run_plugin_validation(plugin_dir: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def run_fix_python_cmd(plugin_dir: Path) -> subprocess.CompletedProcess[str]:
+    """Adapt 'python3' references to 'python' or 'py -3' on Windows copies."""
+    validator = plugin_dir / "scripts" / "validate.py"
+    return _run_subprocess(
+        [sys.executable, "-B", str(validator), "--plugin-root", str(plugin_dir), "--fix-python-cmd"],
+        dont_write_bytecode=True,
+    )
+
+
 def _is_empty_dir(path: Path) -> bool:
     return path.is_dir() and not path.is_symlink() and not any(path.iterdir())
 
@@ -216,10 +236,12 @@ def check_environment(
     src_manifest = read_plugin_manifest(plugin_src) or {}
     src_version = src_manifest.get("version", "unknown")
     agy_bin = shutil.which("agy")
+    real_py3 = has_real_python3()
 
     print("Gravity Core Environment Check")
     print(f"  Platform        : {platform.system()} {platform.release()} ({os.name})")
     print(f"  Python          : {sys.version.split()[0]} ({sys.executable})")
+    print(f"  Real 'python3'  : {'yes' if real_py3 else 'no (Windows copy install will auto-adapt)'}")
     print(f"  Antigravity CLI : {agy_bin if agy_bin else 'not found on PATH'}")
     print(f"  Source plugin   : {plugin_src} (v{src_version})")
     print(f"  Selected method : {method} (scope={scope})")
@@ -252,6 +274,7 @@ def install_copy(
     target_dir: Path,
     *,
     force: bool = False,
+    no_fix_python: bool = False,
     skip_validate: bool = False,
     dry_run: bool = False,
 ) -> int:
@@ -290,6 +313,8 @@ def install_copy(
                 return 1
             replacing = True
 
+    will_fix_py = os.name == "nt" and not no_fix_python and not has_real_python3()
+
     if dry_run:
         action = (
             "Replace legacy 'gravity' install with Gravity Core"
@@ -298,6 +323,8 @@ def install_copy(
         )
         print(f"[DRY-RUN] {action} plugin from {plugin_src} -> {target_dir}")
         print("[DRY-RUN] Set POSIX executable bits (0755) on scripts when on Linux/macOS")
+        if will_fix_py:
+            print("[DRY-RUN] Run validate.py --fix-python-cmd on staged copy (Windows)")
         if not skip_validate:
             print("[DRY-RUN] Run validate.py --strict on staged copy before committing")
         return 0
@@ -310,6 +337,14 @@ def install_copy(
     try:
         shutil.copytree(plugin_src, staged_dir, ignore=COPY_IGNORE)
         ensure_posix_exec_bits(staged_dir)
+
+        if will_fix_py:
+            fix_proc = run_fix_python_cmd(staged_dir)
+            if fix_proc.returncode != 0:
+                print("[ERROR] Failed to adapt python3 commands on staged copy.", file=sys.stderr)
+                _print_process_output(fix_proc)
+                return 1
+            print("[OK]    Adapted 'python3' references on installed copy for Windows.")
 
         if not skip_validate:
             val_proc = run_plugin_validation(staged_dir)
@@ -390,6 +425,12 @@ def install_agy(plugin_src: Path, *, dry_run: bool = False) -> int:
         return 1
 
     print("[OK]    Installed Gravity Core via 'agy plugin install'.")
+    if os.name == "nt" and not has_real_python3():
+        print(
+            "[NOTE]  Windows without real 'python3' detected: if MCP server fails, run\n"
+            "        'python plugin/scripts/validate.py --plugin-root <installed-dir> --fix-python-cmd'\n"
+            "        against your installed copy."
+        )
     return 0
 
 
@@ -453,6 +494,7 @@ def print_next_steps(target_dir: Optional[Path]) -> None:
         print(f"  - Installed plugin location : {target_dir}")
     print(f"  - Unified Gravity home      : {gravity_home}")
     print("  - Initialize environment    : python plugin/scripts/init_env.py (or /gravity init)")
+    print("  - Open dashboard            : /gravity dashboard or Plugins -> Gravity (zero tokens)")
     print("  - Manage plugin in Antigravity : [Gravity](customization://gravity)")
 
 
@@ -497,6 +539,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="Upgrade, reinstall, or overwrite an older 'gravity' install (including legacy harness).",
+    )
+    parser.add_argument(
+        "--no-fix-python",
+        action="store_true",
+        help="Skip automatic Windows 'python3' -> 'python'/'py -3' adaptation on the installed copy.",
     )
     parser.add_argument(
         "--skip-validate",
@@ -571,6 +618,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             PLUGIN_SOURCE,
             target_dir,
             force=args.force,
+            no_fix_python=args.no_fix_python,
             skip_validate=args.skip_validate,
             dry_run=args.dry_run,
         )

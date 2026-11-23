@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import sys
 from typing import Any, Optional, Sequence
 
@@ -363,6 +364,115 @@ def _find_duplicate_ids(modules: Sequence[dict[str, Any]]) -> list[str]:
     return sorted(mod_id for mod_id, count in counts.items() if count > 1)
 
 
+def _has_real_python3() -> bool:
+    found = shutil.which("python3")
+    if not found:
+        return False
+    if os.name == "nt" and "windowsapps" in found.lower():
+        return False
+    return True
+
+
+def _diagnose_mcp_dashboard(plugin_root: Path) -> dict[str, Any]:
+    """Inspect mcp_config.json, mcp/server.py, dashboard/api.py, and python3 availability."""
+    mcp_config_path = plugin_root / "mcp_config.json"
+    server_path = plugin_root / "mcp" / "server.py"
+    api_path = plugin_root / "dashboard" / "api.py"
+    errors: list[str] = []
+    mcp_command = ""
+    mcp_args: list[str] = []
+    mcp_config_ok = False
+
+    if not mcp_config_path.is_file():
+        errors.append("mcp_config.json introuvable.")
+    else:
+        try:
+            raw = mcp_config_path.read_bytes()
+            if raw.startswith(b"\xef\xbb\xbf"):
+                errors.append("mcp_config.json contient un BOM UTF-8.")
+                raw = raw[3:]
+            data = json.loads(raw.decode("utf-8"))
+            servers = data.get("mcpServers") if isinstance(data, dict) else None
+            dash = servers.get("dashboard") if isinstance(servers, dict) else None
+            if not isinstance(dash, dict):
+                errors.append("mcp_config.json : section mcpServers.dashboard manquante.")
+            else:
+                cmd = dash.get("command")
+                args = dash.get("args")
+                if isinstance(cmd, str) and cmd.strip():
+                    mcp_command = cmd.strip()
+                else:
+                    errors.append("mcp_config.json : command manquant.")
+                if isinstance(args, list) and all(isinstance(a, str) for a in args):
+                    mcp_args = list(args)
+                else:
+                    errors.append("mcp_config.json : args invalide.")
+                if not errors:
+                    mcp_config_ok = True
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            errors.append(f"mcp_config.json invalide : {exc}")
+
+    server_exists = server_path.is_file()
+    if not server_exists:
+        errors.append("mcp/server.py introuvable.")
+    api_exists = api_path.is_file()
+    if not api_exists:
+        errors.append("dashboard/api.py introuvable.")
+
+    return {
+        "mcp_config_path": str(mcp_config_path),
+        "mcp_config_ok": mcp_config_ok,
+        "mcp_command": mcp_command,
+        "mcp_args": mcp_args,
+        "server_path": str(server_path),
+        "server_exists": server_exists,
+        "api_path": str(api_path),
+        "api_exists": api_exists,
+        "real_python3": _has_real_python3(),
+        "errors": errors,
+    }
+
+
+def _run_dashboard_diagnostic(
+    *,
+    gravity_home: Optional[Path] = None,
+    plugins_dirs: Optional[Sequence[Path]] = None,
+    home_dir: Optional[Path] = None,
+) -> tuple[dict[str, Any], int]:
+    """Run strictly read-only diagnostics for the Gravity MCP App dashboard."""
+    from dashboard import api as dashboard_api
+
+    resolved_home = resolve_gravity_home(gravity_home)
+    roots = list(plugins_dirs) if plugins_dirs else default_plugin_roots()
+    diag = _diagnose_mcp_dashboard(PLUGIN_ROOT)
+    overview = dashboard_api.get_overview(
+        gravity_home=resolved_home,
+        plugin_roots=roots,
+        home_dir=home_dir,
+    )
+    ok = (
+        bool(diag["mcp_config_ok"])
+        and bool(diag["server_exists"])
+        and bool(diag["api_exists"])
+        and not diag["errors"]
+    )
+    payload: dict[str, Any] = {
+        "mode": "dashboard",
+        "ok": ok,
+        "gravity_home": str(resolved_home),
+        "registry_path": overview["registry_path"],
+        "registry_exists": overview["registry_exists"],
+        "registry_source": overview["registry_source"],
+        "plugin_roots": [str(Path(p).expanduser().resolve()) for p in roots],
+        "dashboard": diag,
+        "doctor": overview["doctor"],
+        "tabs": overview["tabs"],
+        "modules": overview["modules"],
+        "legacy_homes": overview["legacy_homes"],
+    }
+    return payload, (0 if ok else 1)
+
+
 def run_environment(
     *,
     gravity_home: Optional[Path] = None,
@@ -371,9 +481,17 @@ def run_environment(
     status_only: bool = False,
     check_only: bool = False,
     migration_plan: bool = False,
+    dashboard: bool = False,
     shell: str = "auto",
 ) -> tuple[dict[str, Any], int]:
-    """Execute init, status, check, or migration-plan workflow and return (payload, exit_code)."""
+    """Execute init, status, check, migration-plan, or dashboard workflow and return (payload, exit_code)."""
+    if dashboard:
+        return _run_dashboard_diagnostic(
+            gravity_home=gravity_home,
+            plugins_dirs=plugins_dirs,
+            home_dir=home_dir,
+        )
+
     resolved_home = resolve_gravity_home(gravity_home)
     roots = list(plugins_dirs) if plugins_dirs else default_plugin_roots()
     raw_modules = discover_modules(roots)
@@ -480,9 +598,37 @@ def _print_migration_plan_report(payload: dict[str, Any]) -> None:
             print(f"       {step['command']}")
 
 
+def _print_dashboard_report(payload: dict[str, Any]) -> None:
+    diag = payload.get("dashboard") or {}
+    doctor = payload.get("doctor") or {}
+    tabs = payload.get("tabs") or []
+    print("Gravity Dashboard Diagnostics (read-only)")
+    print(f"  Gravity Home  : {payload['gravity_home']}")
+    print(
+        f"  MCP Config    : {'OK' if diag.get('mcp_config_ok') else 'ERROR'} "
+        f"({diag.get('mcp_command') or '-'})"
+    )
+    print(f"  MCP Server    : {'present' if diag.get('server_exists') else 'missing'} ({diag.get('server_path')})")
+    print(f"  Dashboard API : {'present' if diag.get('api_exists') else 'missing'} ({diag.get('api_path')})")
+    py3_lbl = "yes" if diag.get("real_python3") else "no (Windows copy adapts to python/py -3)"
+    print(f"  Real python3  : {py3_lbl}")
+    print(
+        f"  Doctor        : {doctor.get('status', 'unknown')} "
+        f"({doctor.get('valid_count', 0)}/{doctor.get('module_count', 0)} modules valid)"
+    )
+    tab_desc = ", ".join(f"{t.get('id')} ({t.get('label')})" for t in tabs) or "none"
+    print(f"  Tabs          : {tab_desc}")
+    print("  MCP Tool      : open_gravity_dashboard (aux_pane / global)")
+    for err in diag.get("errors") or []:
+        print(f"  [ERROR] {err}")
+
+
 def _print_human_report(payload: dict[str, Any]) -> None:
     if payload.get("mode") == "migration-plan":
         _print_migration_plan_report(payload)
+        return
+    if payload.get("mode") == "dashboard":
+        _print_dashboard_report(payload)
         return
 
     print(f"Gravity Core Environment ({payload['mode']})")
@@ -556,6 +702,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Read-only 4-step manual migration plan for legacy directories.",
     )
+    mode_group.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Read-only diagnostics for the Gravity MCP App dashboard, config, and tabs.",
+    )
     parser.add_argument(
         "--shell",
         choices=("auto", "powershell", "bash"),
@@ -582,6 +733,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             status_only=args.status,
             check_only=args.check,
             migration_plan=args.migration_plan,
+            dashboard=args.dashboard,
             shell=args.shell,
         )
     except OSError as exc:

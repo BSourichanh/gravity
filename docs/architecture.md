@@ -72,10 +72,8 @@ La boucle **`metrics -> workflow auto`** permettra à `gravity-workflow` d'ajust
 
 ## 5. Convergence UI/UX vers `gravity`
 
-En `v0.1.0` / `v0.2.0` actuelle :
-- `gravity` (`core`) porte `ui: {"mode": "core", "target": "gravity"}` et prépare le point d'accueil UI unique.
-- `gravity-metrics` porte `ui: {"mode": "transition-mcp", "target": "gravity"}` (son widget MCP App actuel reste fonctionnel durant la transition).
-- `gravity-workflow` porte `ui: {"mode": "transition-sidecar", "target": "gravity"}` (son sidecar HTTP `4789` reste fonctionnel durant la transition).
-- `gravity-architect` et `gravity-bridge` portent `ui: {"mode": "none", "target": "gravity"}`.
-
-À partir de `gravity v0.2.0`, l'ensemble de l'expérience visuelle convergera vers une **MCP App native unique** hébergée par `gravity`.
+En `v0.2.0` :
+- `gravity` (`core`) porte `ui: {"mode": "core", "target": "gravity"}` et héberge la **MCP App native unifiée** (`plugin/mcp_config.json`, `plugin/mcp/server.py`, `plugin/mcp/widget_html.py`, façade `plugin/dashboard/api.py`, outils `open_gravity_dashboard` + `gravity_get_*`) en lecture seule.
+- `gravity-metrics` porte `ui: {"mode": "transition-mcp", "target": "gravity"}` (son widget MCP App reste disponible durant la transition ; les écritures `archive`/`remove` restent sous `/gravity-metrics`).
+- `gravity-workflow` porte `ui: {"mode": "transition-sidecar", "target": "gravity"}` (son sidecar HTTP `4789` reste fonctionnel durant la transition ; la vue `Workflow Live` dans `gravity` lit `live_workspaces.json`/`live_state.json`).
+- `gravity-architect` et `gravity-bridge` portent `ui: {"mode": "none", "target": "gravity"}` et s'affichent comme onglets génériques OCP en attendant leurs providers dédiés.

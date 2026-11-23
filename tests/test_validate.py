@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_ROOT = REPO_ROOT / "plugin"
@@ -125,7 +126,7 @@ class TestValidate(unittest.TestCase):
             skill_path = copy_dir / "skills" / "gravity" / "SKILL.md"
             base = (
                 "---\nname: gravity\ndescription: \"Skill test\"\n---\n"
-                "init status modules doctor\n"
+                "init status modules doctor dashboard\n"
             )
 
             skill_path.write_bytes((base + ("x" * 6000) + "\n").encode("utf-8"))
@@ -173,6 +174,56 @@ class TestValidate(unittest.TestCase):
             joined = "\n".join(report.errors)
             self.assertIn("Jargon interdit", joined)
             self.assertIn("Chemin personnel", joined)
+
+    def test_mcp_config_validation_and_fix_python_cmd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            copy_dir = Path(tmp) / "plugin"
+            shutil.copytree(PLUGIN_ROOT, copy_dir, ignore=shutil.ignore_patterns("__pycache__"))
+
+            # Windows portable python3 info (never warn)
+            with (
+                mock.patch("validate.os.name", "nt"),
+                mock.patch("validate.has_real_python3", return_value=False),
+            ):
+                rep_info = plugin_validator.Report()
+                plugin_validator._validate_mcp_config(copy_dir, rep_info)
+                self.assertTrue(rep_info.ok(strict=True))
+                self.assertTrue(any("python3" in msg for msg in rep_info.infos))
+
+            # fix_python_cmd adapts python3 -> python on copy
+            with (
+                mock.patch("validate.has_real_python3", return_value=False),
+                mock.patch("validate._detect_portable_python_cmd", return_value="python"),
+            ):
+                rc = plugin_validator.main(["--plugin-root", str(copy_dir), "--fix-python-cmd"])
+                self.assertEqual(rc, 0)
+            fixed = json.loads((copy_dir / "mcp_config.json").read_text(encoding="utf-8"))
+            self.assertEqual(fixed["mcpServers"]["dashboard"]["command"], "python")
+
+            # Missing server path & BOM in mcp_config.json are rejected
+            bad_cfg = {"mcpServers": {"dashboard": {"command": "python3", "args": ["${PLUGIN_ROOT}/mcp/missing.py"]}}}
+            (copy_dir / "mcp_config.json").write_bytes(b"\xef\xbb\xbf" + json.dumps(bad_cfg).encode("utf-8"))
+            rep_bad = plugin_validator.Report()
+            plugin_validator._validate_mcp_config(copy_dir, rep_bad)
+            self.assertFalse(rep_bad.ok(strict=True))
+            joined = "\n".join(rep_bad.errors)
+            self.assertIn("BOM UTF-8", joined)
+            self.assertIn("introuvable", joined)
+
+    def test_mcp_dry_run_rejects_innerhtml_and_external_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            copy_dir = Path(tmp) / "plugin"
+            shutil.copytree(PLUGIN_ROOT, copy_dir, ignore=shutil.ignore_patterns("__pycache__"))
+            (copy_dir / "mcp" / "widget_html.py").write_text(
+                'def render_dashboard_html():\n    return "<script>x.innerHTML=1; // https://bad</script>"\n',
+                encoding="utf-8",
+            )
+            rep = plugin_validator.Report()
+            plugin_validator._run_mcp_dry_run(copy_dir, rep)
+            self.assertFalse(rep.ok(strict=True))
+            joined = "\n".join(rep.errors)
+            self.assertIn("innerHTML", joined)
+            self.assertIn("https://", joined)
 
 
 if __name__ == "__main__":
