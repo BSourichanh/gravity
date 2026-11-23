@@ -5,6 +5,8 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-24
+
 ### Changed
 - **Harmonisation CLI `install.py` (11/11) :** ajout du drapeau `--strict` dans `install.py` (prévaut sur `--skip-validate` et exécute `validate.py --strict` en lecture seule sous `--check`), avec couverture `tests/test_install.py`.
 

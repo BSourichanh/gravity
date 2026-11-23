@@ -37,7 +37,7 @@ def _read_plugin_version() -> str:
                 return ver.strip()
     except (OSError, ValueError, UnicodeDecodeError):
         pass
-    return "0.2.0"
+    return "0.3.0"
 
 
 SERVER_VERSION = _read_plugin_version()

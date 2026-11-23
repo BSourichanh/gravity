@@ -631,7 +631,7 @@ APP_JS = r"""
   async function initBridge() {
     try {
       const initRes = await sendRequest("ui/initialize", {
-        appInfo: { name: "gravity", version: "0.2.0" },
+        appInfo: { name: "gravity", version: "0.3.0" },
         appCapabilities: {},
         protocolVersion: PROTOCOL_VERSION
       });

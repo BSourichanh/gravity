@@ -1,7 +1,7 @@
 {
   "name": "gravity",
   "displayName": "Gravity",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Socle central de l'écosystème Gravity : environnement ~/.gemini/gravity/, registre de modules et future UI unifiée.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
