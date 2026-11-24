@@ -93,7 +93,11 @@ def _create_bridge_db(
 
 
 class TestMetricsProviderPendingStrict(unittest.TestCase):
-    def test_derive_pending_excludes_plain_session_meta_worktrees_and_bridge_targets(self) -> None:
+    def test_no_live_bridge_helpers_exposed(self) -> None:
+        self.assertFalse(hasattr(metrics_provider, "_resolve_bridge_db_path"))
+        self.assertFalse(hasattr(metrics_provider, "_load_bridge_roles_ro"))
+
+    def test_derive_pending_excludes_plain_session_meta_worktrees_and_archived(self) -> None:
         session_meta = {
             "cid-consultative": {
                 "cwd": "/home/user/Documents/Github/gravity",
@@ -107,16 +111,11 @@ class TestMetricsProviderPendingStrict(unittest.TestCase):
                 "started_at": "2026-11-24T09:00:00Z",
                 "updated_at": "2026-11-24T09:30:00Z",
             },
-            "cid-bridge-caller": {
+            "cid-active-hist": {
                 "cwd": "/home/user/Documents/Github/gravity-studio",
                 "project": "gravity-studio",
                 "started_at": "2026-11-24T10:00:00Z",
                 "updated_at": "2026-11-24T10:15:00Z",
-            },
-            "cid-bridge-child": {
-                "cwd": "/home/user/Documents/Github/gravity",
-                "project": "gravity",
-                "updated_at": "2026-11-24T10:20:00Z",
             },
             "cid-wt-posix": {
                 "cwd": "/home/user/.gemini/antigravity/worktrees/gravity/feat-x",
@@ -141,7 +140,6 @@ class TestMetricsProviderPendingStrict(unittest.TestCase):
         }
         active_captures = {
             "cid-captured": {"label": "cap-session", "start_step": 1, "updated_at": "2026-11-24T09:35:00Z"},
-            "cid-bridge-child": {"label": "child-cap", "start_step": 1},
             "cid-wt-captured": {"label": "wt-cap", "start_step": 2},
         }
         ignored_map = {
@@ -151,91 +149,35 @@ class TestMetricsProviderPendingStrict(unittest.TestCase):
         records = [
             {"conversation_id": "cid-archived", "status": "archived", "label": "done"},
             {"conversation_id": "cid-wt-posix", "status": "active", "label": "wt-active"},
+            {
+                "conversation_id": "cid-active-hist",
+                "status": "active",
+                "label": "hist-active",
+                "current_phase": "Validation",
+                "llm_calls": 5,
+                "bridge_children_count": 2,
+            },
         ]
         pending, ignored = metrics_provider._derive_pending_states_ro(
             records=records,
             active_captures=active_captures,
             ignored_map=ignored_map,
             session_meta=session_meta,
-            bridge_callers={"cid-bridge-caller", "cid-wt-win", "cid-archived", "cid-bridge-child"},
-            bridge_targets={"cid-bridge-child"},
         )
 
         self.assertEqual(
             [p["conversation_id"] for p in pending],
-            ["cid-wt-captured", "cid-bridge-caller", "cid-captured"],
+            ["cid-wt-captured", "cid-active-hist", "cid-captured"],
         )
         by_cid = {p["conversation_id"]: p for p in pending}
-        self.assertEqual(by_cid["cid-bridge-caller"]["project"], "gravity-studio")
-        self.assertEqual(by_cid["cid-bridge-caller"]["cwd"], "/home/user/Documents/Github/gravity-studio")
-        self.assertEqual(by_cid["cid-bridge-caller"]["started_at"], "2026-11-24T10:00:00Z")
+        self.assertEqual(by_cid["cid-active-hist"]["project"], "gravity-studio")
+        self.assertEqual(by_cid["cid-active-hist"]["cwd"], "/home/user/Documents/Github/gravity-studio")
+        self.assertEqual(by_cid["cid-active-hist"]["started_at"], "2026-11-24T10:00:00Z")
+        self.assertEqual(by_cid["cid-active-hist"]["bridge_children_count"], 2)
         self.assertEqual(by_cid["cid-captured"]["project"], "Gravity")
         self.assertEqual([i["conversation_id"] for i in ignored], ["cid-ignored-keep"])
 
-    def test_resolve_bridge_db_path_precedence_and_roles_tolerant(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
-            tmp_path = Path(tmp)
-            fake_home = tmp_path / "user-home"
-            fake_home.mkdir()
-
-            with mock.patch.object(Path, "home", return_value=fake_home):
-                self.assertEqual(
-                    metrics_provider._resolve_bridge_db_path(),
-                    (fake_home / ".gemini" / "gravity" / "bridge" / "bridge.db").resolve(),
-                )
-                with mock.patch.dict(os.environ, {"GRAVITY_HOME": str(tmp_path / "g-home")}):
-                    self.assertEqual(
-                        metrics_provider._resolve_bridge_db_path(),
-                        (tmp_path / "g-home" / "bridge" / "bridge.db").resolve(),
-                    )
-                    with mock.patch.dict(os.environ, {"GRAVITY_BRIDGE_HOME": str(tmp_path / "b-home")}):
-                        self.assertEqual(
-                            metrics_provider._resolve_bridge_db_path(),
-                            (tmp_path / "b-home" / "bridge.db").resolve(),
-                        )
-
-            # Missing DB -> silent empty sets
-            warnings: list[str] = []
-            self.assertEqual(
-                metrics_provider._load_bridge_roles_ro(tmp_path / "missing" / "bridge.db", warnings),
-                (set(), set()),
-            )
-            self.assertEqual(warnings, [])
-
-            # Corrupt DB -> warning + empty sets
-            corrupt_db = tmp_path / "corrupt.db"
-            corrupt_db.write_text("not-a-sqlite-file", encoding="utf-8")
-            self.assertEqual(
-                metrics_provider._load_bridge_roles_ro(corrupt_db, warnings),
-                (set(), set()),
-            )
-            self.assertTrue(warnings)
-
-            # Legacy v0.1.0 schema without caller_conversation_id or jobs.direction
-            legacy_db = tmp_path / "legacy-v010.db"
-            conn = sqlite3.connect(str(legacy_db))
-            try:
-                conn.executescript(
-                    """
-                    CREATE TABLE threads (id TEXT PRIMARY KEY, target_conversation_id TEXT);
-                    CREATE TABLE jobs (id TEXT PRIMARY KEY, action TEXT, target_conversation_id TEXT);
-                    INSERT INTO threads VALUES ('thr-1', 'child-t1');
-                    INSERT INTO jobs VALUES ('j-1', 'new_conversation', 'child-j1');
-                    INSERT INTO jobs VALUES ('j-2', 'send_message', 'root-caller');
-                    """
-                )
-                conn.commit()
-            finally:
-                conn.close()
-
-            legacy_warnings: list[str] = []
-            callers, targets = metrics_provider._load_bridge_roles_ro(legacy_db, legacy_warnings)
-            self.assertEqual(legacy_warnings, [])
-            self.assertEqual(callers, set())
-            self.assertEqual(targets, {"child-t1", "child-j1"})
-            self.assertNotIn("root-caller", targets)
-
-    def test_get_metrics_state_bridge_filtering_audits_and_cache_invalidation(self) -> None:
+    def test_get_metrics_state_ignores_live_bridge_db_and_preserves_archived_counters(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
             tmp_path = Path(tmp)
             g_home = tmp_path / "gravity-home"
@@ -260,16 +202,33 @@ class TestMetricsProviderPendingStrict(unittest.TestCase):
                 ],
                 jobs=[
                     ("job-out", "thr-1", "new_conversation", "outbound", "cid-child-1", "cid-job-caller"),
-                    ("job-cb", "thr-1", "send_message", "callback", "cid-root-caller", "cid-child-1"),
-                    ("job-send", "thr-1", "send_message", "outbound", "cid-root-caller", None),
                 ],
             )
 
-            (m_home / "data" / "history.jsonl").write_text(
-                json.dumps({"conversation_id": "cid-archived", "status": "archived", "label": "done"}) + "\n",
-                encoding="utf-8",
-            )
-            (m_home / "active_captures.json").write_text(
+            hist_lines = [
+                json.dumps(
+                    {
+                        "conversation_id": "cid-archived",
+                        "status": "archived",
+                        "label": "legacy-bridge-run",
+                        "project": "gravity",
+                        "cost_usd": 1.5,
+                        "bridge_children_count": 3,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "conversation_id": "cid-hist-active",
+                        "status": "active",
+                        "label": "hist-active",
+                        "project": "gravity-studio",
+                        "cost_usd": 0.25,
+                    }
+                ),
+            ]
+            (m_home / "data" / "history.jsonl").write_text("\n".join(hist_lines) + "\n", encoding="utf-8")
+            captures_path = m_home / "active_captures.json"
+            captures_path.write_text(
                 json.dumps({"schema_version": 1, "captures": {"cid-active": {"label": "active-cap"}}}),
                 encoding="utf-8",
             )
@@ -283,16 +242,6 @@ class TestMetricsProviderPendingStrict(unittest.TestCase):
                                 "project": "gravity-studio",
                                 "started_at": "2026-11-24T11:00:00Z",
                                 "updated_at": "2026-11-24T11:10:00Z",
-                            },
-                            "cid-child-1": {
-                                "cwd": str(ws_main),
-                                "project": "gravity",
-                                "updated_at": "2026-11-24T11:15:00Z",
-                            },
-                            "cid-grandchild": {
-                                "cwd": str(ws_main),
-                                "project": "gravity",
-                                "updated_at": "2026-11-24T11:16:00Z",
                             },
                             "cid-consultative": {
                                 "cwd": str(ws_main),
@@ -316,10 +265,16 @@ class TestMetricsProviderPendingStrict(unittest.TestCase):
 
             state1 = metrics_provider.get_metrics_state(gravity_home=g_home, metrics_home=m_home)
             self.assertTrue(state1["changed"])
+            self.assertEqual(state1["kpis"]["bridge_sessions_count"], 1)
+            self.assertEqual(state1["kpis"]["bridge_children_total"], 3)
+            by_proj = {p["project"]: p for p in state1["by_project"]}
+            self.assertEqual(by_proj["gravity"]["bridge_sessions"], 1)
+            self.assertEqual(by_proj["gravity-studio"]["bridge_sessions"], 0)
+
             pending_cids = {item["conversation_id"] for item in state1["pending_sessions"]}
-            self.assertEqual(pending_cids, {"cid-active", "cid-root-caller", "cid-job-caller"})
-            self.assertNotIn("cid-child-1", pending_cids)
-            self.assertNotIn("cid-grandchild", pending_cids)
+            self.assertEqual(pending_cids, {"cid-active", "cid-hist-active"})
+            self.assertNotIn("cid-root-caller", pending_cids)
+            self.assertNotIn("cid-job-caller", pending_cids)
             self.assertNotIn("cid-consultative", pending_cids)
             self.assertNotIn("cid-wt", pending_cids)
             # Audits discovery still uses session_meta.json
@@ -332,7 +287,7 @@ class TestMetricsProviderPendingStrict(unittest.TestCase):
             )
             self.assertTrue(unchanged["unchanged"])
 
-            # Modifying bridge.db must invalidate since_signature immediately
+            # Modifying or corrupting bridge.db must be completely ignored (signature stays identical)
             conn = sqlite3.connect(str(bridge_db))
             try:
                 conn.execute(
@@ -343,6 +298,26 @@ class TestMetricsProviderPendingStrict(unittest.TestCase):
             finally:
                 conn.close()
 
+            still_unchanged = metrics_provider.get_metrics_state(
+                since_signature=state1["signature"],
+                gravity_home=g_home,
+                metrics_home=m_home,
+            )
+            self.assertTrue(still_unchanged["unchanged"])
+
+            # Mutating active_captures.json invalidates signature
+            captures_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "captures": {
+                            "cid-active": {"label": "active-cap"},
+                            "cid-active-2": {"label": "active-cap-2"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
             state2 = metrics_provider.get_metrics_state(
                 since_signature=state1["signature"],
                 gravity_home=g_home,
@@ -350,9 +325,7 @@ class TestMetricsProviderPendingStrict(unittest.TestCase):
             )
             self.assertTrue(state2["changed"])
             self.assertNotEqual(state2["signature"], state1["signature"])
-            pending_cids_2 = {item["conversation_id"] for item in state2["pending_sessions"]}
-            self.assertIn("cid-new-caller", pending_cids_2)
-            self.assertNotIn("cid-new-child", pending_cids_2)
+            self.assertIn("cid-active-2", {item["conversation_id"] for item in state2["pending_sessions"]})
 
 
 if __name__ == "__main__":

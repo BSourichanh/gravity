@@ -9,13 +9,12 @@ import re
 import sqlite3
 from typing import Any, Optional, Sequence
 
-DEDICATED_PROVIDERS: tuple[str, ...] = ("core", "workflow", "metrics", "bridge", "architect")
+DEDICATED_PROVIDERS: tuple[str, ...] = ("core", "workflow", "metrics", "architect")
 
 _DEFAULT_LABELS: dict[str, str] = {
     "core": "Overview",
     "workflow": "Workflow Live",
     "metrics": "Metrics",
-    "bridge": "Bridge",
     "architect": "Architect",
 }
 
@@ -59,7 +58,7 @@ def unchanged_response(sig: str) -> dict[str, Any]:
 
 
 def resolve_provider_kind(module_id: str) -> str:
-    """Return the provider kind (`core`, `workflow`, `metrics`, `bridge`, `architect`, or `generic`)."""
+    """Return the provider kind (`core`, `workflow`, `metrics`, `architect`, or `generic`)."""
     if module_id in DEDICATED_PROVIDERS:
         return module_id
     return "generic"
@@ -101,7 +100,7 @@ def build_dashboard_tabs(modules: Sequence[dict[str, Any]]) -> list[dict[str, An
         }
     ]
 
-    for mod_id in ("workflow", "metrics", "bridge", "architect"):
+    for mod_id in ("workflow", "metrics", "architect"):
         mod = by_id.get(mod_id)
         if mod is None:
             continue

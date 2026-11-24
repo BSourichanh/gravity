@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 import re
-import sqlite3
 from typing import Any, Optional
 
 from core.registry import resolve_gravity_home, resolve_module_home
@@ -17,7 +16,6 @@ from dashboard.providers import (
     extract_md_title,
     extract_md_verdict,
     file_uri_if_exists,
-    open_sqlite_ro,
     read_json_ro,
     short_digest,
     stat_token,
@@ -170,58 +168,6 @@ def _discover_from_registry_ro(
     return _load_registered_ateliers_ro(reg_path, warnings), reg_path
 
 
-def _discover_from_bridge_ro(
-    *,
-    gravity_home: Optional[Path],
-    bridge_home: Optional[Path],
-    warnings: list[str],
-) -> list[dict[str, Any]]:
-    b_home = (
-        Path(bridge_home).expanduser().resolve()
-        if bridge_home is not None
-        else resolve_module_home("bridge", env_override="GRAVITY_BRIDGE_HOME", gravity_home=gravity_home)
-    )
-    db_path = b_home / "bridge.db"
-    if not db_path.is_file() or db_path.is_symlink():
-        return []
-    conn = open_sqlite_ro(db_path, warnings)
-    if conn is None:
-        return []
-    try:
-        rows = conn.execute(
-            "SELECT canonical_path, display_name, last_seen_at FROM workspaces ORDER BY last_seen_at DESC, slug ASC"
-        ).fetchall()
-    except sqlite3.Error as exc:
-        warnings.append(f"Bridge atelier discovery query failed: {exc}")
-        return []
-    finally:
-        conn.close()
-
-    discovered: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for row in rows:
-        raw_path = str(row["canonical_path"] or "").strip()
-        if not raw_path:
-            continue
-        candidate = Path(raw_path).expanduser()
-        if not _has_atelier_markers(candidate, require_both=True):
-            continue
-        resolved = candidate.resolve()
-        key = _norm_path_key(resolved)
-        if key in seen:
-            continue
-        seen.add(key)
-        discovered.append(
-            {
-                "workspace_path": str(resolved),
-                "workspace_name": str(row["display_name"] or "").strip() or resolved.name,
-                "updated_at": str(row["last_seen_at"] or "").strip(),
-                "source": "bridge_discovery",
-            }
-        )
-    return discovered
-
-
 def _resolve_atelier_root(
     *,
     atelier: str,
@@ -230,7 +176,6 @@ def _resolve_atelier_root(
     architect_home: Optional[Path],
     architect_workspace: Optional[Path],
     registry_ateliers: list[dict[str, Any]],
-    bridge_ateliers: list[dict[str, Any]],
     warnings: list[str],
 ) -> tuple[Path, str, bool]:
     if architect_workspace is not None:
@@ -243,7 +188,7 @@ def _resolve_atelier_root(
             return cand.resolve(), "selected_atelier", False
         cand_key = _norm_path_key(cand) if not cand.is_symlink() else ""
         if cand_key:
-            for known in (*registry_ateliers, *bridge_ateliers):
+            for known in registry_ateliers:
                 known_path = Path(str(known.get("workspace_path") or ""))
                 if _norm_path_key(known_path) == cand_key and _has_atelier_markers(known_path, require_both=True):
                     return known_path.resolve(), "selected_atelier", False
@@ -275,9 +220,6 @@ def _resolve_atelier_root(
 
     if registry_ateliers:
         return Path(registry_ateliers[0]["workspace_path"]), "architect_registry", False
-
-    if bridge_ateliers:
-        return Path(bridge_ateliers[0]["workspace_path"]), "bridge_discovery", False
 
     if architect_home is not None:
         return Path(architect_home).expanduser().resolve(), "module_home", False
@@ -618,7 +560,6 @@ def _dir_md_tokens(directory: Path) -> list[tuple[str, str]]:
 
 def _merge_ateliers(
     registry_ateliers: list[dict[str, Any]],
-    bridge_ateliers: list[dict[str, Any]],
     *,
     current_root: Path,
     current_available: bool,
@@ -628,7 +569,7 @@ def _merge_ateliers(
 ) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in (*registry_ateliers, *bridge_ateliers):
+    for item in registry_ateliers:
         raw_p = str(item.get("workspace_path") or "").strip()
         if not raw_p:
             continue
@@ -662,15 +603,11 @@ def get_architect_state(
     architect_workspace: Optional[Path] = None,
 ) -> dict[str, Any]:
     """Return read-only Gravity Architect atelier state, specs, handoffs, and `audits/code/`."""
+    _ = bridge_home  # Transitional W2 compat kwarg for mcp/server.py; removed in W3.
     warnings: list[str] = []
     registry_ateliers, ateliers_reg_path = _discover_from_registry_ro(
         gravity_home=gravity_home,
         architect_home=architect_home,
-        warnings=warnings,
-    )
-    bridge_ateliers = _discover_from_bridge_ro(
-        gravity_home=gravity_home,
-        bridge_home=bridge_home,
         warnings=warnings,
     )
     atelier_root, discovery_source, blocked_selection = _resolve_atelier_root(
@@ -680,7 +617,6 @@ def get_architect_state(
         architect_home=architect_home,
         architect_workspace=architect_workspace,
         registry_ateliers=registry_ateliers,
-        bridge_ateliers=bridge_ateliers,
         warnings=warnings,
     )
 
@@ -689,7 +625,7 @@ def get_architect_state(
         if (ateliers_reg_path.parent.is_symlink() or ateliers_reg_path.is_symlink())
         else stat_token(ateliers_reg_path)
     )
-    known_paths = [str(item.get("workspace_path") or "") for item in (*registry_ateliers, *bridge_ateliers)]
+    known_paths = [str(item.get("workspace_path") or "") for item in registry_ateliers]
 
     if blocked_selection:
         sig = short_digest(
@@ -708,7 +644,6 @@ def get_architect_state(
 
         ateliers_out = _merge_ateliers(
             registry_ateliers,
-            bridge_ateliers,
             current_root=atelier_root,
             current_available=False,
             current_name="",
@@ -799,7 +734,6 @@ def get_architect_state(
     )
     ateliers_out = _merge_ateliers(
         registry_ateliers,
-        bridge_ateliers,
         current_root=atelier_root,
         current_available=available,
         current_name=ws_name or atelier_root.name,

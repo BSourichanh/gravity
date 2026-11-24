@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from dashboard.providers.architect_provider import get_architect_state
-from dashboard.providers.bridge_provider import get_bridge_state
+from dashboard.providers.bridge_provider import get_bridge_state  # Transitional W2 shim for mcp/server.py; removed in W3.
 from dashboard.providers.core_provider import get_overview
 from dashboard.providers.generic_provider import get_module_info
 from dashboard.providers.metrics_provider import get_metrics_state, get_session_detail
@@ -38,6 +38,7 @@ def build_initial_summary(
     architect_workspace: Optional[Path] = None,
 ) -> str:
     """Build a concise plain-text summary for `open_gravity_dashboard` responses."""
+    _ = (bridge, bridge_home, db_path)  # Transitional W2 compat kwargs for mcp/server.py; removed in W3.
     req_view = (view or "overview").strip().lower() or "overview"
     ov = overview if overview is not None else get_overview(
         gravity_home=gravity_home,
@@ -98,27 +99,11 @@ def build_initial_summary(
             f"{len(met.get('pending_sessions') or [])} en attente"
         )
 
-    if bridge is not None or req_view == "bridge" or "bridge" in tab_ids:
-        br = bridge if bridge is not None else get_bridge_state(
-            gravity_home=gravity_home,
-            bridge_home=bridge_home,
-            db_path=db_path,
-        )
-        if br.get("available"):
-            bk = br.get("kpis") or {}
-            parts.append(
-                f"Bridge: {bk.get('online_count', 0)}/{bk.get('workspaces_count', 0)} sidecar(s), "
-                f"{bk.get('threads_open', 0)} ouvert(s)"
-            )
-        else:
-            parts.append("Bridge: inactif")
-
     if architect is not None or req_view == "architect" or "architect" in tab_ids:
         arch = architect if architect is not None else get_architect_state(
             atelier=atelier,
             ws=ws,
             gravity_home=gravity_home,
-            bridge_home=bridge_home,
             architect_home=architect_home,
             architect_workspace=architect_workspace,
         )
@@ -138,7 +123,7 @@ def build_initial_summary(
 __all__ = [
     "build_initial_summary",
     "get_architect_state",
-    "get_bridge_state",
+    "get_bridge_state",  # Transitional W2 shim for mcp/server.py; removed in W3.
     "get_metrics_state",
     "get_module_info",
     "get_overview",

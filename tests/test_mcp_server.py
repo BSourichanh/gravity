@@ -239,6 +239,22 @@ class TestMcpServer(unittest.TestCase):
                 json.dumps({"schema_version": 5, "projects": [{"id": "gravity", "name": "Gravity", "path": "../gravity"}]}),
                 encoding="utf-8",
             )
+            (g_home / "architect").mkdir(parents=True)
+            (g_home / "architect" / "ateliers.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "ateliers": [
+                            {
+                                "workspace_path": str(atelier_dir.resolve()),
+                                "workspace_name": "Studio",
+                                "updated_at": "2026-11-23T22:00:00Z",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
             (atelier_dir / "tracking" / "snapshots" / "delta.md").write_text(
                 "- **Date :** `2026-11-23T22:00:00Z`\n- **Statut éditorial :** `NO_EDITORIAL_CHANGES`\n",
                 encoding="utf-8",
@@ -343,7 +359,7 @@ class TestMcpServer(unittest.TestCase):
             self.assertLessEqual(len(json.dumps(open_res, ensure_ascii=False).encode("utf-8")), mcp_server.MAX_TRAJECTORY_BYTES)
             sc = open_res["structuredContent"]
             self.assertEqual(sc["initial_view"], "overview")
-            self.assertEqual([t["id"] for t in sc["overview"]["tabs"]], ["overview", "workflow", "metrics", "bridge", "architect"])
+            self.assertEqual([t["id"] for t in sc["overview"]["tabs"]], ["overview", "workflow", "metrics", "architect", "bridge"])
             self.assertEqual(sc["workflow"]["stage"], "build")
             self.assertEqual(sc["metrics"]["kpis"]["sessions_count"], 1)
             self.assertTrue(sc["bridge"]["available"])
@@ -420,7 +436,7 @@ class TestMcpServer(unittest.TestCase):
                 ctx=ctx,
             )["result"]["structuredContent"]  # type: ignore[index]
             self.assertTrue(arch1["available"])
-            self.assertEqual(arch1["discovery_source"], "bridge_discovery")
+            self.assertEqual(arch1["discovery_source"], "architect_registry")
             self.assertEqual(len(arch1["audits"]), 1)
             self.assertEqual(arch1["audits"][0]["verdict"], "PASS")
             arch2 = mcp_server.handle_jsonrpc_message(

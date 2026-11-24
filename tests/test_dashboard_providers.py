@@ -88,12 +88,12 @@ def _write_module_plugin(
 
 class TestDashboardHelpers(unittest.TestCase):
     def test_provider_helpers_and_tab_ordering(self) -> None:
-        self.assertEqual(DEDICATED_PROVIDERS, ("core", "workflow", "metrics", "bridge", "architect"))
+        self.assertEqual(DEDICATED_PROVIDERS, ("core", "workflow", "metrics", "architect"))
         self.assertEqual(resolve_provider_kind("core"), "core")
         self.assertEqual(resolve_provider_kind("workflow"), "workflow")
         self.assertEqual(resolve_provider_kind("metrics"), "metrics")
-        self.assertEqual(resolve_provider_kind("bridge"), "bridge")
         self.assertEqual(resolve_provider_kind("architect"), "architect")
+        self.assertEqual(resolve_provider_kind("bridge"), "generic")
         self.assertEqual(resolve_provider_kind("custom"), "generic")
         self.assertEqual(unchanged_response("abc"), {"changed": False, "unchanged": True, "signature": "abc"})
         self.assertEqual(len(short_digest(["a", 1])), 12)
@@ -113,12 +113,10 @@ class TestDashboardHelpers(unittest.TestCase):
             {"id": "core", "plugin_name": "gravity", "valid": True},
         ]
         tabs = build_dashboard_tabs(modules)
-        self.assertEqual([t["id"] for t in tabs], ["overview", "workflow", "metrics", "bridge", "architect", "custom"])
-        self.assertTrue(tabs[0]["dedicated"])
-        self.assertTrue(tabs[1]["dedicated"])
-        self.assertTrue(tabs[2]["dedicated"])
-        self.assertTrue(tabs[3]["dedicated"])
-        self.assertTrue(tabs[4]["dedicated"])
+        self.assertEqual([t["id"] for t in tabs], ["overview", "workflow", "metrics", "architect", "custom", "bridge"])
+        self.assertTrue(all(t["dedicated"] for t in tabs[:4]))
+        self.assertFalse(tabs[4]["dedicated"])
+        self.assertEqual(tabs[4]["kind"], "generic")
         self.assertFalse(tabs[5]["dedicated"])
         self.assertEqual(tabs[5]["kind"], "generic")
 
@@ -133,7 +131,7 @@ class TestCoreAndGenericProviders(unittest.TestCase):
             plugins_root = tmp_path / "plugins"
             _write_module_plugin(plugins_root, mod_id="core", plugin_name="gravity", ui_mode="core")
             _write_module_plugin(plugins_root, mod_id="metrics", plugin_name="gravity-metrics", ui_mode="transition-mcp")
-            _write_module_plugin(plugins_root, mod_id="bridge", plugin_name="gravity-bridge")
+            _write_module_plugin(plugins_root, mod_id="architect", plugin_name="gravity-architect")
 
             (g_home / "core").mkdir(parents=True)
             (g_home / "metrics").mkdir(parents=True)
@@ -165,17 +163,17 @@ class TestCoreAndGenericProviders(unittest.TestCase):
                     "signals": {"produces": ["session-metrics"], "consumes": []},
                 },
                 {
-                    "id": "bridge",
-                    "plugin_name": "gravity-bridge",
-                    "display_name": "Gravity Bridge",
-                    "version": "0.3.0",
+                    "id": "architect",
+                    "plugin_name": "gravity-architect",
+                    "display_name": "Gravity Architect",
+                    "version": "0.5.0",
                     "valid": True,
                     "errors": [],
-                    "storage": {"subdir": "bridge", "env_override": "GRAVITY_BRIDGE_HOME"},
-                    "commands": ["/gravity-bridge"],
-                    "capabilities": ["bridge"],
+                    "storage": {"subdir": "architect", "env_override": "GRAVITY_ARCHITECT_HOME"},
+                    "commands": ["/gravity-architect"],
+                    "capabilities": ["architect"],
                     "ui": {"mode": "none", "target": "gravity"},
-                    "signals": {"produces": ["bridge-threads"], "consumes": []},
+                    "signals": {"produces": ["specs"], "consumes": []},
                 },
             ]
             write_modules_registry(g_home, sample_mods)
@@ -184,12 +182,12 @@ class TestCoreAndGenericProviders(unittest.TestCase):
             self.assertEqual(ov["registry_source"], "modules.json")
             self.assertEqual(ov["doctor"]["status"], "ok")
             self.assertTrue(ov["doctor"]["initialized"])
-            self.assertEqual([t["id"] for t in ov["tabs"]], ["overview", "metrics", "bridge"])
+            self.assertEqual([t["id"] for t in ov["tabs"]], ["overview", "metrics", "architect"])
 
             by_id = {m["id"]: m for m in ov["modules"]}
             self.assertTrue(by_id["core"]["home_exists"])
             self.assertTrue(by_id["metrics"]["home_exists"])
-            self.assertFalse(by_id["bridge"]["home_exists"])
+            self.assertFalse(by_id["architect"]["home_exists"])
 
             unchanged = api.get_overview(
                 ov["signature"],
@@ -232,6 +230,7 @@ class TestCoreAndGenericProviders(unittest.TestCase):
             _write_module_plugin(plugins_root, mod_id="custom", plugin_name="gravity-custom")
             _write_module_plugin(plugins_root, mod_id="bridge", plugin_name="gravity-bridge")
             _write_module_plugin(plugins_root, mod_id="metrics", plugin_name="gravity-metrics")
+            _write_module_plugin(plugins_root, mod_id="architect", plugin_name="gravity-architect")
 
             custom_home = g_home / "custom"
             custom_home.mkdir(parents=True)
@@ -257,11 +256,15 @@ class TestCoreAndGenericProviders(unittest.TestCase):
 
             bridge_info = api.get_module_info("bridge", gravity_home=g_home, plugin_roots=[plugins_root])
             self.assertTrue(bridge_info["found"])
-            self.assertTrue(bridge_info["dedicated_provider"])
+            self.assertFalse(bridge_info["dedicated_provider"])
 
             metrics_info = api.get_module_info("metrics", gravity_home=g_home, plugin_roots=[plugins_root])
             self.assertTrue(metrics_info["found"])
             self.assertTrue(metrics_info["dedicated_provider"])
+
+            architect_info = api.get_module_info("architect", gravity_home=g_home, plugin_roots=[plugins_root])
+            self.assertTrue(architect_info["found"])
+            self.assertTrue(architect_info["dedicated_provider"])
 
 
 class TestWorkflowProvider(unittest.TestCase):
@@ -866,37 +869,51 @@ class TestArchitectProvider(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
             tmp_path = Path(tmp)
             g_home = tmp_path / "gravity-home"
+            arch_home = g_home / "architect"
+            arch_home.mkdir(parents=True)
             atelier = tmp_path / "gravity-studio"
             self._write_mini_atelier(atelier)
+            (arch_home / "ateliers.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "ateliers": [{"workspace_path": str(atelier), "updated_at": "2026-11-24T10:00:00Z"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            # Residual bridge.db pointing to another atelier must be ignored completely
             b_home = tmp_path / "bridge"
-            _create_sample_bridge_db(b_home / "bridge.db", studio_path=atelier)
+            other_bridge = tmp_path / "ignored-bridge-atelier"
+            self._write_mini_atelier(other_bridge)
+            _create_sample_bridge_db(b_home / "bridge.db", studio_path=other_bridge)
 
-            # Bridge RO discovery when no explicit workspace/env is set
-            via_bridge = api.get_architect_state(gravity_home=g_home, bridge_home=b_home)
-            self.assertTrue(via_bridge["available"])
-            self.assertEqual(via_bridge["discovery_source"], "bridge_discovery")
-            self.assertEqual(via_bridge["workspace_name"], "Atelier Test")
-            self.assertTrue(via_bridge["ecosystem"]["exists"])
-            self.assertEqual(via_bridge["ecosystem"]["alerts"], ["gravity : WIP local détecté."])
-            self.assertEqual(via_bridge["delta"]["editorial_status"], "EDITORIAL_UPDATE_REQUIRED")
-            self.assertEqual(len(via_bridge["projects"]), 1)
-            self.assertEqual([s["filename"] for s in via_bridge["specs"]], ["2026-11-23-dashboard.md"])
-            self.assertEqual(via_bridge["archived_specs_count"], 1)
-            self.assertEqual([h["filename"] for h in via_bridge["handoffs"]], ["2026-11-23-lot2.md"])
-            self.assertEqual(len(via_bridge["audits"]), 1)
-            self.assertEqual(via_bridge["audits"][0]["verdict"], "PASS")
-            self.assertEqual(via_bridge["audits"][0]["verdict_tone"], "ok")
-            self.assertIsNotNone(via_bridge["index_audit"])
-            self.assertEqual(via_bridge["index_audit"]["rel_path"], "README.md")
-            self.assertTrue(all("agent" not in a["rel_path"].lower() for a in via_bridge["audits"]))
+            via_registry = api.get_architect_state(gravity_home=g_home, bridge_home=b_home)
+            self.assertTrue(via_registry["available"])
+            self.assertEqual(via_registry["discovery_source"], "architect_registry")
+            self.assertEqual(Path(via_registry["atelier_root"]), atelier.resolve())
+            self.assertEqual(via_registry["workspace_name"], "Atelier Test")
+            self.assertTrue(via_registry["ecosystem"]["exists"])
+            self.assertEqual(via_registry["ecosystem"]["alerts"], ["gravity : WIP local détecté."])
+            self.assertEqual(via_registry["delta"]["editorial_status"], "EDITORIAL_UPDATE_REQUIRED")
+            self.assertEqual(len(via_registry["projects"]), 1)
+            self.assertEqual([s["filename"] for s in via_registry["specs"]], ["2026-11-23-dashboard.md"])
+            self.assertEqual(via_registry["archived_specs_count"], 1)
+            self.assertEqual([h["filename"] for h in via_registry["handoffs"]], ["2026-11-23-lot2.md"])
+            self.assertEqual(len(via_registry["audits"]), 1)
+            self.assertEqual(via_registry["audits"][0]["verdict"], "PASS")
+            self.assertEqual(via_registry["audits"][0]["verdict_tone"], "ok")
+            self.assertIsNotNone(via_registry["index_audit"])
+            self.assertEqual(via_registry["index_audit"]["rel_path"], "README.md")
+            self.assertTrue(all("agent" not in a["rel_path"].lower() for a in via_registry["audits"]))
 
             # Fast-path since_signature
             unchanged = api.get_architect_state(
-                since_signature=via_bridge["signature"], gravity_home=g_home, bridge_home=b_home
+                since_signature=via_registry["signature"], gravity_home=g_home, bridge_home=b_home
             )
-            self.assertEqual(unchanged, {"changed": False, "unchanged": True, "signature": via_bridge["signature"]})
+            self.assertEqual(unchanged, {"changed": False, "unchanged": True, "signature": via_registry["signature"]})
 
-            # Explicit architect_workspace overrides bridge_discovery
+            # Explicit architect_workspace overrides architect_registry
             other = tmp_path / "other-atelier"
             other.mkdir()
             explicit = api.get_architect_state(
@@ -905,7 +922,7 @@ class TestArchitectProvider(unittest.TestCase):
             self.assertEqual(explicit["discovery_source"], "arg_workspace")
             self.assertFalse(explicit["available"])
 
-    def test_architect_registry_mru_dedup_bridge_merge_and_invalidation(self) -> None:
+    def test_architect_registry_mru_dedup_ignores_bridge_and_invalidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
             tmp_path = Path(tmp)
             g_home = tmp_path / "gravity-home"
@@ -953,9 +970,9 @@ class TestArchitectProvider(unittest.TestCase):
             self.assertEqual(res["workspace_name"], "Atelier Nouveau")
             self.assertEqual(
                 [Path(item["workspace_path"]) for item in res["ateliers"]],
-                [a_new.resolve(), a_old.resolve(), a_bridge.resolve()],
+                [a_new.resolve(), a_old.resolve()],
             )
-            self.assertEqual([item["source"] for item in res["ateliers"]], ["architect_registry", "architect_registry", "bridge_discovery"])
+            self.assertEqual([item["source"] for item in res["ateliers"]], ["architect_registry", "architect_registry"])
 
             unchanged = api.get_architect_state(since_signature=res["signature"], gravity_home=g_home)
             self.assertTrue(unchanged["unchanged"])
@@ -1036,15 +1053,16 @@ class TestArchitectProvider(unittest.TestCase):
             self.assertEqual(Path(r5["atelier_root"]), a_reg.resolve())
             self.assertEqual(r5["warnings"], [])
 
-            # 6. architect_registry > bridge_discovery
+            # 6. architect_registry default
             r6 = api.get_architect_state(gravity_home=g_home)
             self.assertEqual(r6["discovery_source"], "architect_registry")
 
-            # 7. Remove ateliers.json -> bridge_discovery
+            # 7. Remove ateliers.json -> module_home unavailable (no bridge.db fallback)
             (arch_home / "ateliers.json").unlink()
             r7 = api.get_architect_state(gravity_home=g_home)
-            self.assertEqual(r7["discovery_source"], "bridge_discovery")
-            self.assertEqual(Path(r7["atelier_root"]), a_bridge.resolve())
+            self.assertEqual(r7["discovery_source"], "module_home")
+            self.assertFalse(r7["available"])
+            self.assertEqual(r7["warnings"], [])
 
             # Fail-closed selected_atelier: nonexistent, non-atelier, symlink
             bad_missing = api.get_architect_state(atelier=str(tmp_path / "nope"), gravity_home=g_home)
@@ -1076,20 +1094,25 @@ class TestArchitectProvider(unittest.TestCase):
             arch_home.mkdir(parents=True)
             b_home = g_home / "bridge"
             a_bridge = tmp_path / "atelier-bridge"
+            a_ws = tmp_path / "atelier-ws"
             self._write_mini_atelier(a_bridge)
+            self._write_mini_atelier(a_ws)
             _create_sample_bridge_db(b_home / "bridge.db", studio_path=a_bridge)
 
             reg_path = arch_home / "ateliers.json"
             reg_path.write_text("{broken-json", encoding="utf-8")
-            res_corrupt = api.get_architect_state(gravity_home=g_home)
+            res_corrupt = api.get_architect_state(ws=str(a_ws), gravity_home=g_home)
             self.assertTrue(res_corrupt["available"])
-            self.assertEqual(res_corrupt["discovery_source"], "bridge_discovery")
+            self.assertEqual(res_corrupt["discovery_source"], "ws_hint")
             self.assertTrue(any("ateliers.json" in w for w in res_corrupt["warnings"]))
+            res_corrupt_no_ws = api.get_architect_state(gravity_home=g_home)
+            self.assertFalse(res_corrupt_no_ws["available"])
+            self.assertEqual(res_corrupt_no_ws["discovery_source"], "module_home")
 
             reg_path.write_text(json.dumps({"ateliers": "not-a-list"}), encoding="utf-8")
-            res_bad_field = api.get_architect_state(gravity_home=g_home)
+            res_bad_field = api.get_architect_state(ws=str(a_ws), gravity_home=g_home)
             self.assertTrue(res_bad_field["available"])
-            self.assertEqual(res_bad_field["discovery_source"], "bridge_discovery")
+            self.assertEqual(res_bad_field["discovery_source"], "ws_hint")
             self.assertTrue(any("ateliers" in w for w in res_bad_field["warnings"]))
 
             reg_path.unlink()
@@ -1099,9 +1122,9 @@ class TestArchitectProvider(unittest.TestCase):
                 reg_path.symlink_to(real_target)
             except (OSError, NotImplementedError):
                 return
-            res_sym = api.get_architect_state(gravity_home=g_home)
+            res_sym = api.get_architect_state(ws=str(a_ws), gravity_home=g_home)
             self.assertTrue(res_sym["available"])
-            self.assertEqual(res_sym["discovery_source"], "bridge_discovery")
+            self.assertEqual(res_sym["discovery_source"], "ws_hint")
             self.assertTrue(any("symlink" in w.lower() for w in res_sym["warnings"]))
 
 
@@ -1123,11 +1146,14 @@ class TestDashboardFacade(unittest.TestCase):
                 gravity_home=g_home,
                 plugin_roots=[plugins_root],
                 home_dir=fake_user,
+                bridge={"available": True},
+                bridge_home=g_home / "bridge",
+                db_path=g_home / "bridge" / "bridge.db",
             )
             self.assertIn("Gravity Dashboard", summary)
             self.assertIn("Workflow:", summary)
             self.assertIn("Metrics", summary)
-            self.assertIn("Bridge:", summary)
+            self.assertNotIn("Bridge:", summary)
             self.assertIn("Architect:", summary)
 
 
