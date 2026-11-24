@@ -51,6 +51,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
+from core.bundle import export_bundle, format_bundle_report, import_bundle, set_drive_dir  # noqa: E402
 from core.registry import (  # noqa: E402
     default_plugin_roots,
     detect_legacy_homes,
@@ -1325,6 +1326,9 @@ def _print_guide_report(payload: dict[str, Any]) -> None:
 
 def _print_human_report(payload: dict[str, Any]) -> None:
     mode = payload.get("mode")
+    if mode in ("set-drive-dir", "export", "import"):
+        print(format_bundle_report(payload))
+        return
     if mode == "overview":
         print(format_overview_markdown(payload))
         return
@@ -1383,64 +1387,24 @@ def _print_human_report(payload: dict[str, Any]) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Initialize, inspect, or diagnose the Gravity Core environment."
-    )
-    parser.add_argument(
-        "--gravity-home",
-        type=Path,
-        default=None,
-        help="Override Gravity home directory (default: $GRAVITY_HOME or ~/.gemini/gravity).",
-    )
-    parser.add_argument(
-        "--plugins-dir",
-        type=Path,
-        action="append",
-        default=None,
-        help="Plugin root directory to scan for Gravity modules (repeatable).",
-    )
+    parser = argparse.ArgumentParser(description="Initialize, inspect, or diagnose the Gravity Core environment.")
+    parser.add_argument("--gravity-home", type=Path, default=None, help="Override Gravity home directory (default: $GRAVITY_HOME or ~/.gemini/gravity).")
+    parser.add_argument("--plugins-dir", type=Path, action="append", default=None, help="Plugin root directory to scan for Gravity modules (repeatable).")
     mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument(
-        "--status",
-        action="store_true",
-        help="Read-only inspection of current environment and discovered modules.",
-    )
-    mode_group.add_argument(
-        "--check",
-        action="store_true",
-        help="Read-only validation check of discovered module contracts and environment.",
-    )
-    mode_group.add_argument(
-        "--migration-plan",
-        action="store_true",
-        help="Read-only 4-step manual migration plan for legacy directories.",
-    )
-    mode_group.add_argument(
-        "--dashboard",
-        action="store_true",
-        help="Read-only diagnostics for the Gravity MCP App dashboard, config, and tabs.",
-    )
-    mode_group.add_argument(
-        "--guide",
-        action="store_true",
-        help="Read-only quick guide, discovered module commands, and docs/ pointers.",
-    )
-    mode_group.add_argument(
-        "--overview",
-        action="store_true",
-        help="Read-only consolidated overview (home, modules health, MCP, app version, 5-journey help).",
-    )
-    parser.add_argument(
-        "--shell",
-        choices=("auto", "powershell", "bash"),
-        default="auto",
-        help="Target shell syntax for --migration-plan commands (default: auto).",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON output.",
-    )
+    mode_group.add_argument("--status", action="store_true", help="Read-only inspection of current environment and discovered modules.")
+    mode_group.add_argument("--check", action="store_true", help="Read-only validation check of discovered module contracts and environment.")
+    mode_group.add_argument("--migration-plan", action="store_true", help="Read-only 4-step manual migration plan for legacy directories.")
+    mode_group.add_argument("--dashboard", action="store_true", help="Read-only diagnostics for the Gravity MCP App dashboard, config, and tabs.")
+    mode_group.add_argument("--guide", action="store_true", help="Read-only quick guide, discovered module commands, and docs/ pointers.")
+    mode_group.add_argument("--overview", action="store_true", help="Read-only consolidated overview (home, modules health, MCP, app version, 5-journey help).")
+    mode_group.add_argument("--export", action="store_true", help="Export portable Gravity state (and optional ateliers) to a verified ZIP bundle.")
+    mode_group.add_argument("--import", dest="import_zip", type=Path, default=None, help="Verify and import a portable Gravity ZIP bundle into $GRAVITY_HOME.")
+    parser.add_argument("--out", type=Path, default=None, help="Output ZIP file or directory for --export (overrides sync.json drive_dir).")
+    parser.add_argument("--include-atelier", type=Path, action="append", default=None, help="Include an Architect atelier workspace in --export (repeatable).")
+    parser.add_argument("--set-drive-dir", type=Path, default=None, help="Persist default local Google Drive sync directory in <gravity_home>/core/sync.json.")
+    parser.add_argument("--dry-run", action="store_true", help="Verify --import bundle integrity and path remapping without writing to disk.")
+    parser.add_argument("--shell", choices=("auto", "powershell", "bash"), default="auto", help="Target shell syntax for --migration-plan commands (default: auto).")
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON output.")
     return parser
 
 
@@ -1449,19 +1413,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    other_modes = (args.status, args.check, args.migration_plan, args.dashboard, args.guide, args.overview, args.import_zip is not None)
+    if args.set_drive_dir is not None and any(other_modes):
+        parser.error("--set-drive-dir cannot be combined with modes other than --export.")
+
     try:
-        payload, rc = run_environment(
-            gravity_home=args.gravity_home,
-            plugins_dirs=args.plugins_dir,
-            status_only=args.status,
-            check_only=args.check,
-            migration_plan=args.migration_plan,
-            dashboard=args.dashboard,
-            guide=args.guide,
-            overview=args.overview,
-            shell=args.shell,
-        )
-    except OSError as exc:
+        drive_res = set_drive_dir(args.set_drive_dir, gravity_home=args.gravity_home) if args.set_drive_dir is not None else None
+        if args.export:
+            payload = export_bundle(args.gravity_home, out=args.out, include_ateliers=args.include_atelier or (), plugins_dirs=args.plugins_dir)
+            if drive_res is not None:
+                payload["drive_config"] = drive_res
+            rc = 0
+        elif drive_res is not None:
+            payload, rc = drive_res, 0
+        elif args.import_zip is not None:
+            payload, rc = import_bundle(args.import_zip, gravity_home=args.gravity_home, dry_run=args.dry_run), 0
+        else:
+            payload, rc = run_environment(
+                gravity_home=args.gravity_home, plugins_dirs=args.plugins_dir,
+                status_only=args.status, check_only=args.check, migration_plan=args.migration_plan,
+                dashboard=args.dashboard, guide=args.guide, overview=args.overview, shell=args.shell,
+            )
+    except (OSError, ValueError) as exc:
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         else:

@@ -57,11 +57,12 @@ python scripts/ecosystem_install.py --uninstall --dry-run
 
 ### Auditeur de dérive multi-dépôts (`scripts/audit_ecosystem.py`)
 
-Contrôle en **lecture seule stricte** (100 % stdlib Python 3.10+, inspection AST/statique) l'alignement des 5 dépôts (`--repos-root`, `--repos`, `--json`, `--strict`) : contrat CLI `install.py` (11 drapeaux), contrat `validate.py`, budgets `AGENTS.md` / D4, synchronisation `plugin.json` ↔ `CHANGELOG.md` + `suggestedPrompts` et dette monolithique `plugin/**/*.py` (avec exemption `plugin/mcp/ui/*.py`) :
+Contrôle en **lecture seule stricte** (100 % stdlib Python 3.10+, inspection AST/statique) l'alignement des 5 dépôts (`--repos-root`, `--repos`, `--check-installed`, `--plugins-dir`, `--json`, `--strict`) : contrat CLI `install.py` (11 drapeaux), contrat `validate.py`, `INT-01..05`/`INT-08`, budgets `AGENTS.md` / D4 / cumulés, synchronisation `plugin.json` ↔ `CHANGELOG.md` + `suggestedPrompts`, contradictions inter-règles et dette monolithique `plugin/**/*.py` (avec exemption `plugin/mcp/ui/*.py`) :
 
 ```powershell
-# Audit synthétique de l'écosystème local
+# Audit synthétique de l'écosystème local (avec vérification copies installées)
 python scripts/audit_ecosystem.py
+python scripts/audit_ecosystem.py --check-installed
 
 # Mode CI strict (échoue sur avertissement) avec sortie JSON
 python scripts/audit_ecosystem.py --strict --json
@@ -93,15 +94,20 @@ python plugin/scripts/init_env.py --guide --json
 # Vue d'ensemble unifiée en lecture seule (appelée aussi à 0 token par le hook PreInvocation /gravity)
 python plugin/scripts/init_env.py --overview
 python plugin/scripts/init_env.py --overview --json
+
+# Sauvegarde / restauration portable vers Drive local (ZIP vérifié SHA-256 + remapping)
+python plugin/scripts/init_env.py --set-drive-dir /chemin/vers/GoogleDrive/Gravity
+python plugin/scripts/init_env.py --export --include-atelier /chemin/vers/atelier --out ./backup.zip
+python plugin/scripts/init_env.py --import ./backup.zip --dry-run
 ```
 
-Dans Antigravity, `/gravity` (nu) répond à **0 token** via le hook `PreInvocation` (`--overview`), les sous-commandes passent par **`/gravity [init|status|modules|doctor|dashboard|help]`**, et le tableau de bord s'ouvre depuis la **barre latérale gauche (`Gravity`)** ou le **menu `+` du panneau latéral droit** (`open_gravity_dashboard`, 0 token interactif). L'onglet **Architect (RO)** découvre automatiquement les ateliers enregistrés dans `$GRAVITY_ARCHITECT_HOME/ateliers.json` (et via l'indice `ws`, le sélecteur `#g-arch-ws` ou `bridge.db`), sans écriture workspace ; `--check` sonde également la version Antigravity App (`winreg` Windows, `snap`, `dpkg-query`).
+Dans Antigravity, `/gravity` (nu) répond à **0 token** via le hook `PreInvocation` (`--overview`), les sous-commandes passent par **`/gravity [init|status|modules|doctor|dashboard|help|export|import]`**, et le tableau de bord s'ouvre depuis la **barre latérale gauche (`Gravity`)** ou le **menu `+` du panneau latéral droit** (`open_gravity_dashboard`, 0 token interactif). L'onglet **Architect (RO)** découvre automatiquement les ateliers enregistrés dans `$GRAVITY_ARCHITECT_HOME/ateliers.json` (`specs/`, `tasks/`, `audits/code/`, et via l'indice `ws`, le sélecteur `#g-arch-ws` ou `bridge.db`), sans écriture workspace ; `--check` sonde également la version Antigravity App (`winreg` Windows, `snap`, `dpkg-query`).
 Les anciens répertoires éventuels (`~/.gemini/gravity-bridge`, `~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow`, `~/.gravity`) sont détectés en **lecture seule uniquement** : rien n'est jamais modifié ni supprimé automatiquement.
 
 ## Parcours utilisateur & Guides UX (`docs/`)
 
 - **Démarrer en 5 minutes :** [`docs/getting-started.md`](docs/getting-started.md) *(prérequis, 3 paliers, séquences PowerShell/bash, check-list)*
-- **Parcours complet :** [`docs/user-journey.md`](docs/user-journey.md) *(diagramme, scénario fil rouge Paliers 1→3, matrice 7 phases, frontières d'or)*
+- **Parcours complet :** [`docs/user-journey.md`](docs/user-journey.md) *(diagramme, scénario fil rouge Paliers 1→3, matrice 4 phases, frontières d'or)*
 - **Aide-mémoire des commandes :** [`docs/command-cheatsheet.md`](docs/command-cheatsheet.md) *(matrice intentionnelle `/gravity*`, `/caveman`, `/learn`, anti-patterns)*
 - **Dépannage & cycle de vie :** [`docs/troubleshooting-and-lifecycle.md`](docs/troubleshooting-and-lifecycle.md) *(mises à jour `--update`, migration 4 étapes, dépannage Windows/POSIX, `--uninstall`)*
 

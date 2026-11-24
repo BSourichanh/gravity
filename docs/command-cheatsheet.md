@@ -17,6 +17,8 @@ Référence rapide orientée **intention utilisateur**, combinaisons efficaces e
 | Auditer la santé et préparer une migration | `/gravity doctor` | Vérifie les contrats v1 et la santé RO (`--check`) ; `--migration-plan` génère un plan manuel en 4 étapes |
 | Ouvrir l'interface unifiée | `/gravity dashboard` | Ouvre la MCP App `open_gravity_dashboard` (`0` token interactif) ; CLI `--dashboard` audite la config |
 | Obtenir le guide complet | `/gravity help` | Lecture seule (`init_env.py --guide`, sans troncature) : boucle 3 temps, commandes des modules et liens `docs/` |
+| Sauvegarder `$GRAVITY_HOME` (ZIP) | `/gravity export` | Exporte l'état portable (`metrics/`, `bridge.db` via `sqlite3.backup()`, `workflow/*/profile.json`, `ateliers.json`, `--include-atelier`) vers `--out` ou Drive local `sync.json` (`--set-drive-dir`, détection locale `gdrive`) |
+| Restaurer un bundle vérifié | `/gravity import` | Vérifie SHA-256/intégrité et remappe les chemins vers `$GRAVITY_HOME` (`init_env.py --import <zip> [--dry-run]`) |
 
 ### Orchestration & concision (`gravity-workflow` : `/gravity-workflow`, `/caveman`)
 
@@ -51,7 +53,7 @@ Référence rapide orientée **intention utilisateur**, combinaisons efficaces e
 | Envoyer, lire, prendre ou clôturer un fil | `/gravity-bridge send\|read\|take\|reply\|status\|done\|prune` | Échange `question`/`handoff`/`info` (`approved=true` requis si `dispatch=true` ; 0 sous-dispatch en `depth>=1`) |
 | Initialiser ou étendre un atelier Hot/Cold | `/gravity-architect init` · `add <chemin...>` | Découverte `--discover --json` puis suivi multi-dépôts lecture seule dans `projects.json` |
 | Synchroniser et résumer l'atelier | `/gravity-architect [sync\|status]` | Micro-delta `sync_tracking.py --print-delta` ou lecture directe de `delta.md` |
-| Produire specs, handoffs, archives, audits | `/gravity-architect spec\|handoff\|archive\|audit` | Crée `specs/`, `handoffs/`, archive les livrés ou audite `audits/code/` |
+| Produire specs, tasks, archives, audits | `/gravity-architect spec\|task\|archive\|audit` | Crée `specs/`, `tasks/`, archive les livrés ou audite `audits/code/` |
 | Capitaliser une règle apprise en session | `/learn` *(natif Antigravity)* | Persiste une correction ou un setup complexe pour les sessions futures (hors module Gravity) |
 
 > **Autres commandes natives Antigravity utiles :** `/plan` et `/grill-me` (cadrage avant exécution), `/boost` (raisonnement profond), `/teamwork` (travail en équipe d'agents).
@@ -63,7 +65,9 @@ Référence rapide orientée **intention utilisateur**, combinaisons efficaces e
 - **Session instrumentée optimale (Palier 2) :**
   `/gravity-metrics start lot-auth` → `/gravity-workflow evo` + `/caveman auto` → implémentation → `/gravity-metrics stop` → vérification dans `/gravity dashboard`.
 - **Chantier multi-dépôts encadré (Palier 3) :**
-  `/gravity-architect spec mon-lot` → `/gravity-architect handoff mon-repo mon-lot` → `/gravity-bridge send mon-repo` *(après validation)* → `/gravity-architect archive mon-lot` *(auto-archive les métriques)*.
+  `/gravity-architect spec mon-lot` → `/gravity-architect task mon-repo mon-lot` → `/gravity-bridge send mon-repo` *(après validation)* → `/gravity-architect archive mon-lot` *(auto-archive les métriques)*.
+- **Sauvegarde portable vers Drive local :**
+  `python plugin/scripts/init_env.py --set-drive-dir <dossier-drive>` → `/gravity export` *(ou `--import <zip> --dry-run` sur un autre poste)*.
 - **Vérification rapide avant commit :**
   `/gravity doctor` → `python plugin/scripts/validate.py --strict` → `/caveman commit`.
 

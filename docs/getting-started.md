@@ -24,7 +24,7 @@ L'orchestrateur hors-ligne [`scripts/ecosystem_install.py`](../scripts/ecosystem
 |---|---|---|---|
 | **Palier 1 — *Essentiel*** | `--tier 1` | `gravity`, `gravity-workflow` | Exécution fiable sur un dépôt (garde-fous `PreToolUse`, profils `quick`/`standard`/`deep`, `/caveman`) |
 | **Palier 2 — *Pilotage*** | `--tier 2` | Palier 1 + `gravity-metrics` | Suivi des coûts, tokens, économies de cache, jalons et audits agents |
-| **Palier 3 — *Multi-projets*** | `--tier 3` *(défaut)* | Palier 2 + `gravity-architect`, `gravity-bridge` | Atelier de conception Hot/Cold (`specs/`, `handoffs/`, `audits/code/`) et relais inter-workspaces SQLite + `agentapi` |
+| **Palier 3 — *Multi-projets*** | `--tier 3` *(défaut)* | Palier 2 + `gravity-architect`, `gravity-bridge` | Atelier de conception Hot/Cold (`specs/`, `tasks/`, `audits/code/`) et relais inter-workspaces SQLite + `agentapi` |
 
 ---
 
@@ -67,7 +67,7 @@ python3 plugin/scripts/init_env.py --check
 python3 plugin/scripts/init_env.py --guide
 ```
 
-> **Dans le chat Antigravity :** `/gravity` (nu) affiche instantanément la vue d'ensemble à **0 token** (`PreInvocation`), puis vous pouvez lancer `/gravity init`, `/gravity doctor` et `/gravity help`.
+> **Dans le chat Antigravity :** `/gravity` (nu) affiche instantanément la vue d'ensemble à **0 token** (`PreInvocation`), puis vous pouvez lancer `/gravity init`, `/gravity doctor`, `/gravity help` ainsi que `/gravity export` / `/gravity import` pour sauvegarder ou restaurer `$GRAVITY_HOME`.
 
 ---
 

@@ -12,8 +12,9 @@ Plugin maître de l'écosystème **Gravity** pour **Google Antigravity**, 100 % 
 - **Découverte, santé & validation (`config/module.json` v1) :** inspecte les plugins installés, contrôle la santé RO (`architect`, `bridge.db`, `metrics`, `workflow`, MCP, version App `winreg`/`snap`/`dpkg`) et écrit `<gravity_home>/core/modules.json`.
 - **Vue d'ensemble 0-token (`/gravity` via `PreInvocation`) :** `hooks/pre_invocation_gravity.py` exécute `init_env.py --overview` en lecture seule sans consommer de tokens LLM.
 - **Détection legacy en lecture seule :** signale sans jamais les modifier ni les supprimer d'éventuels anciens dossiers (`~/.gemini/gravity-bridge`, `~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow`, `~/.gravity`).
-- **Dashboard MCP App unifié (`open_gravity_dashboard`) :** UI HTML5/SVG SEP-1865 lecture seule (`Overview/Doctor`, `Workflow Live`, `Metrics & Audits Agents`, `Bridge RO`, `Architect RO` avec découverte `ateliers.json` / indice `ws` / sélecteur d'atelier, onglets génériques OCP) accessible via `/gravity dashboard` ou la **barre latérale gauche (`Gravity`)** ou le **menu `+` du panneau latéral droit** (`0` token interactif).
-- **Commandes `/gravity` :** `/gravity` (0-token `--overview`), `/gravity init`, `/gravity status`, `/gravity modules`, `/gravity doctor`, `/gravity dashboard`, `/gravity help` *(guide complet sans troncature, skill [`SKILL.md`](skills/gravity/SKILL.md))*.
+- **Dashboard MCP App unifié (`open_gravity_dashboard`) :** UI HTML5/SVG SEP-1865 lecture seule (`Overview/Doctor`, `Workflow Live`, `Metrics & Audits Agents`, `Bridge RO`, `Architect RO` avec découverte `ateliers.json` / `tasks/` / `specs/`, sélecteur d'atelier, onglets génériques OCP) accessible via `/gravity dashboard` ou la **barre latérale gauche (`Gravity`)** ou le **menu `+` du panneau latéral droit** (`0` token interactif).
+- **Sauvegarde / restauration portable (`core/bundle.py`) :** export ZIP vérifié SHA-256 (`--export`, `--out`, `--include-atelier`, `--set-drive-dir` dans `core/sync.json`) et import sécurisé avec remapping (`--import`, `--dry-run`).
+- **Commandes `/gravity` :** `/gravity` (0-token `--overview`), `/gravity init`, `/gravity status`, `/gravity modules`, `/gravity doctor`, `/gravity dashboard`, `/gravity help`, `/gravity export`, `/gravity import` *(skill [`SKILL.md`](skills/gravity/SKILL.md))*.
 
 ## Écosystème Gravity
 
@@ -39,6 +40,11 @@ python scripts/init_env.py --status --json
 python scripts/init_env.py --migration-plan --shell auto
 python scripts/init_env.py --dashboard
 python scripts/init_env.py --guide
+
+# Sauvegarde et restauration portable (ZIP vérifié SHA-256 + sync.json)
+python scripts/init_env.py --set-drive-dir /chemin/vers/GoogleDrive/Gravity
+python scripts/init_env.py --export --include-atelier /chemin/vers/atelier --out ./backup.zip
+python scripts/init_env.py --import ./backup.zip --dry-run
 
 # Validation stricte du plugin
 python scripts/validate.py --strict

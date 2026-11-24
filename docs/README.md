@@ -7,7 +7,7 @@ Bienvenue dans la documentation de **Gravity Core** (`BSourichanh/gravity`) et d
 | Guide | Contenu |
 |---|---|
 | [`getting-started.md`](getting-started.md) | Prérequis, 3 paliers (*Essentiel*, *Pilotage*, *Multi-projets*), séquences PowerShell & bash, MCP App et check-list 5 points |
-| [`user-journey.md`](user-journey.md) | Diagramme Mermaid du parcours, scénario fil rouge annoté, matrice 7 phases et 3 frontières d'or |
+| [`user-journey.md`](user-journey.md) | Diagramme Mermaid du parcours, scénario fil rouge annoté, matrice 4 phases et 3 frontières d'or |
 | [`command-cheatsheet.md`](command-cheatsheet.md) | Matrice intentionnelle complète (`/gravity*`, `/caveman`, `/learn`), combinaisons gagnantes et anti-patterns |
 | [`troubleshooting-and-lifecycle.md`](troubleshooting-and-lifecycle.md) | Mises à jour `--update`, migration legacy 4 étapes (`--migration-plan`), dépannage Windows/POSIX et `--uninstall` |
 
