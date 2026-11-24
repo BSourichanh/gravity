@@ -30,7 +30,7 @@ flowchart LR
 3. **Palier 3 (*Multi-projets* — conception transversale et relais App) :**
    - Vous ajoutez `gravity-architect` et `gravity-bridge`. Dans votre atelier dédié (ex. `gravity-studio`), `/gravity-architect spec` et `/gravity-architect handoff` préparent les briefs autonomes.
    - Vous liez les dépôts cibles une fois (`/gravity-bridge link <slug>`), envoyez le handoff avec feu vert humain (`/gravity-bridge send`), puis archivez le chantier (`/gravity-architect archive <slug>`), ce qui déclenche aussi l'archivage métriques si aucun job Bridge n'est actif.
-   - À tout moment, **Plugins -> Gravity** (`/gravity dashboard`) consolide les 5 modules en lecture seule sans consommer de tokens.
+   - À tout moment, la **barre latérale gauche (`Gravity`)** ou le **menu `+` du panneau latéral droit** (`/gravity dashboard`) consolide les 5 modules en lecture seule sans consommer de tokens.
 
 ---
 
@@ -44,7 +44,7 @@ flowchart LR
 | **4. Exécution** *(Palier 1+)* | `/gravity-workflow [quick\|standard\|deep\|evo]`, `/caveman` | `workflow/workspaces/<slug>-<hash>/` | Optimisé (`/caveman` + profils) | Plan/Code/Revue isolée, hooks `PreToolUse` actifs, 0 pollution repo |
 | **5. Capture & Coûts** *(Palier 2+)* | `/gravity-metrics [start\|stop\|pending\|archive]` | `metrics/{data/history.jsonl,METRICS.md,reports/}` | `0` sur `start` (`PreInvocation`) | Fenêtre capturée, jalons calculés, rapport archivé |
 | **6. Coordination** *(Palier 3)* | `/gravity-bridge [workspaces\|link\|send\|read\|take\|reply]` | `bridge/bridge.db` (SQLite WAL) | Modéré (conversations cibles natives) | Fils structurés et callbacks retour tracés sans pollution des dépôts |
-| **7. Supervision** | `/gravity dashboard` ou **Plugins -> Gravity** | Lecture seule transversale | `0` token interactif (MCP App) | Vue unifiée `Overview`, `Workflow Live`, `Metrics`, `Bridge`, `Architect` |
+| **7. Supervision** | `/gravity dashboard` ou barre latérale gauche (`Gravity`) / menu `+` panneau droit | Lecture seule transversale | `0` token interactif (MCP App) | Vue unifiée `Overview`, `Workflow Live`, `Metrics`, `Bridge`, `Architect` |
 
 ---
 

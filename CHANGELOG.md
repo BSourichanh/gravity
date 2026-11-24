@@ -5,7 +5,14 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Fixed
+- **Libellés d'accès UI du dashboard (`install.py`, `plugin/README.md`, `plugin/skills/gravity/SKILL.md`, `README.md`, `docs/getting-started.md`, `docs/user-journey.md`) :** remplacement des 8 libellés d'accès obsolètes vers le dashboard par l'accès réel via la barre latérale gauche (`Gravity`) ou le menu `+` du panneau latéral droit.
+
 ### Added
+- **Détection hôte MCP Apps (`initialize`, `init_env.py` & dépannage) :**
+  - `plugin/mcp/server.py` : inspection des capacités UI et `clientInfo` au handshake `initialize` (`_inspect_client_ui_support()`, `MIN_ANTIGRAVITY_MCP_APP_VERSION = (2, 34, 0)`) et avertissement `[WARN UI]` non bloquant sur `open_gravity_dashboard` uniquement lorsque `ui_supported is False`.
+  - `plugin/scripts/init_env.py` : sonde lecture seule *best-effort* de version Antigravity App (`_detect_antigravity_app_version()` via `snap` / `dpkg-query` sans jamais lancer `antigravity`), intégrée en warning non bloquant dans `--check` (`/gravity doctor`) et dans le diagnostic `--dashboard` (`antigravity_app`).
+  - Documentation (`docs/troubleshooting-and-lifecycle.md` §3) et tests unitaires isolés (`tests/test_mcp_server.py`, `tests/test_init_env.py`).
 - **Découverte autonome d'ateliers Architect & sélecteur UI (`ateliers.json`, `ws_hint`, `atelier`) :**
   - `plugin/dashboard/providers/architect_provider.py` : lecture seule de `<architect_home>/ateliers.json` (`_load_registered_ateliers_ro()` / `_discover_from_registry_ro()`, refus symlinks, tri MRU, déduplication canonique), précédence étendue à 9 niveaux (`arg_workspace` > `selected_atelier` fail-closed > `env_workspace` > `architect_home` > `env_architect_home` > `ws_hint` > `architect_registry` > `bridge_discovery` > `module_home`), fusion multi-ateliers `ateliers` (registre + Bridge + courant) et invalidation `since_signature` sur `ateliers.json`, `atelier` et `ws`.
   - `plugin/dashboard/api.py` & `plugin/mcp/server.py` : ajout du paramètre optionnel `atelier` sur `open_gravity_dashboard` (`initial_atelier` + propagation `ws`) et `gravity_get_architect_state` (avec propagation optionnelle `ws` / `ws_hint` au rafraîchissement), tout en conservant les 8 outils `EXPECTED_MCP_TOOLS`.

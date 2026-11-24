@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -10,9 +12,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-INIT_SCRIPT = REPO_ROOT / "plugin" / "scripts" / "init_env.py"
+PLUGIN_ROOT = REPO_ROOT / "plugin"
+INIT_SCRIPT = PLUGIN_ROOT / "scripts" / "init_env.py"
+if str(PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT))
+
+from scripts import init_env  # noqa: E402
 
 
 def _isolated_env(fake_home: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -400,7 +408,9 @@ class TestInitEnvCLI(unittest.TestCase):
             _create_fake_module(plugins_dir, "bridge", "gravity-bridge", "GRAVITY_BRIDGE_HOME")
 
             gravity_home = tmp_path / "doctor-home"
-            env = _isolated_env(fake_home)
+            empty_bin = tmp_path / "empty-bin"
+            empty_bin.mkdir()
+            env = _isolated_env(fake_home, {"PATH": str(empty_bin)})
 
             # 1) Missing ateliers.json and missing bridge.db -> non-blocking warnings, exit 0, strictly RO
             p_missing = subprocess.run(
@@ -529,6 +539,172 @@ class TestInitEnvCLI(unittest.TestCase):
             out_clean = json.loads(p_clean.stdout)
             self.assertTrue(out_clean["ok"])
             self.assertEqual(out_clean["warnings"], [])
+
+    def test_detect_antigravity_app_version_probes_and_integration(self) -> None:
+        # 1) Snap 2.33.0 -> below 2.34.0
+        with mock.patch.object(
+            init_env.shutil,
+            "which",
+            side_effect=lambda cmd: "/usr/bin/snap" if cmd == "snap" else None,
+        ), mock.patch.object(
+            init_env.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["/usr/bin/snap", "list", "antigravity"],
+                returncode=0,
+                stdout="Nom          Version  Revision\nantigravity  2.33.0   75\n",
+                stderr="",
+            ),
+        ) as run_mock:
+            info_old = init_env._detect_antigravity_app_version()
+            self.assertEqual(info_old["version"], "2.33.0")
+            self.assertEqual(info_old["source"], "snap")
+            self.assertFalse(info_old["meets_mcp_app_min"])
+            self.assertEqual(info_old["min_required"], "2.34.0")
+            self.assertIn("sudo snap refresh antigravity", info_old["update_hint"])
+            called_bins = [Path(c.args[0][0]).name for c in run_mock.call_args_list]
+            self.assertEqual(called_bins, ["snap"])
+            self.assertNotIn("antigravity", called_bins)
+
+        # 2) Snap 2.35.0 -> meets 2.34.0
+        with mock.patch.object(
+            init_env.shutil,
+            "which",
+            side_effect=lambda cmd: "/usr/bin/snap" if cmd == "snap" else None,
+        ), mock.patch.object(
+            init_env.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["/usr/bin/snap", "list", "antigravity"],
+                returncode=0,
+                stdout="Name         Version  Rev\nantigravity  2.35.0   79\n",
+                stderr="",
+            ),
+        ):
+            info_ok = init_env._detect_antigravity_app_version()
+            self.assertEqual(info_ok["version"], "2.35.0")
+            self.assertEqual(info_ok["source"], "snap")
+            self.assertTrue(info_ok["meets_mcp_app_min"])
+
+        # 3) Fallback to dpkg-query when snap unavailable (or misses package)
+        def _which_dpkg(cmd: str) -> str | None:
+            return "/usr/bin/dpkg-query" if cmd == "dpkg-query" else None
+
+        with mock.patch.object(init_env.shutil, "which", side_effect=_which_dpkg), mock.patch.object(
+            init_env.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["/usr/bin/dpkg-query", "-W", "-f=${Version}", "antigravity"],
+                returncode=0,
+                stdout="2.33.0-1732400000",
+                stderr="",
+            ),
+        ) as run_dpkg:
+            info_dpkg = init_env._detect_antigravity_app_version()
+            self.assertEqual(info_dpkg["version"], "2.33.0")
+            self.assertEqual(info_dpkg["source"], "dpkg")
+            self.assertFalse(info_dpkg["meets_mcp_app_min"])
+            self.assertEqual(info_dpkg["update_hint"], "sudo apt update && sudo apt upgrade antigravity")
+            self.assertEqual(Path(run_dpkg.call_args.args[0][0]).name, "dpkg-query")
+
+        # 4) Neither snap nor dpkg-query -> unknown (silent)
+        with mock.patch.object(init_env.shutil, "which", return_value=None):
+            info_none = init_env._detect_antigravity_app_version()
+            self.assertIsNone(info_none["version"])
+            self.assertEqual(info_none["source"], "none")
+            self.assertIsNone(info_none["meets_mcp_app_min"])
+            self.assertEqual(info_none["update_hint"], "")
+
+        # 5) Integration with run_environment(--check & --dashboard) via detector injection
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_home = tmp_path / "user-home"
+            fake_home.mkdir()
+            plugins_dir = tmp_path / "plugins"
+            shutil.copytree(
+                REPO_ROOT / "plugin",
+                plugins_dir / "gravity",
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+            gravity_home = tmp_path / "gravity-home"
+
+            # 5a) Old version 2.33.0 -> non-blocking warning in --check & --dashboard
+            p_chk_old, rc_chk_old = init_env.run_environment(
+                gravity_home=gravity_home,
+                plugins_dirs=[plugins_dir],
+                home_dir=fake_home,
+                check_only=True,
+                app_version_detector=lambda: info_old,
+            )
+            self.assertEqual(rc_chk_old, 0)
+            self.assertTrue(p_chk_old["ok"])
+            self.assertEqual(len(p_chk_old["warnings"]), 1)
+            self.assertIn("2.33.0", p_chk_old["warnings"][0])
+            self.assertIn("2.34.0", p_chk_old["warnings"][0])
+            self.assertIn("sudo snap refresh antigravity", p_chk_old["warnings"][0])
+
+            p_dash_old, rc_dash_old = init_env.run_environment(
+                gravity_home=gravity_home,
+                plugins_dirs=[plugins_dir],
+                home_dir=fake_home,
+                dashboard=True,
+                app_version_detector=lambda: info_old,
+            )
+            self.assertEqual(rc_dash_old, 0)
+            self.assertTrue(p_dash_old["ok"])
+            self.assertEqual(p_dash_old["antigravity_app"]["version"], "2.33.0")
+            buf_old = io.StringIO()
+            with redirect_stdout(buf_old):
+                init_env._print_dashboard_report(p_dash_old)
+            self.assertIn("Antigravity   : [WARN] v2.33.0", buf_old.getvalue())
+
+            # 5b) Version 2.35.0 -> clean --check & OK in --dashboard
+            p_chk_ok, rc_chk_ok = init_env.run_environment(
+                gravity_home=gravity_home,
+                plugins_dirs=[plugins_dir],
+                home_dir=fake_home,
+                check_only=True,
+                app_version_detector=lambda: info_ok,
+            )
+            self.assertEqual(rc_chk_ok, 0)
+            self.assertEqual(p_chk_ok["warnings"], [])
+
+            p_dash_ok, rc_dash_ok = init_env.run_environment(
+                gravity_home=gravity_home,
+                plugins_dirs=[plugins_dir],
+                home_dir=fake_home,
+                dashboard=True,
+                app_version_detector=lambda: info_ok,
+            )
+            self.assertEqual(rc_dash_ok, 0)
+            buf_ok = io.StringIO()
+            with redirect_stdout(buf_ok):
+                init_env._print_dashboard_report(p_dash_ok)
+            self.assertIn("Antigravity   : OK (v2.35.0 via snap, >= 2.34.0)", buf_ok.getvalue())
+
+            # 5c) Unavailable -> silent in --check & unknown in --dashboard
+            p_chk_none, rc_chk_none = init_env.run_environment(
+                gravity_home=gravity_home,
+                plugins_dirs=[plugins_dir],
+                home_dir=fake_home,
+                check_only=True,
+                app_version_detector=lambda: info_none,
+            )
+            self.assertEqual(rc_chk_none, 0)
+            self.assertEqual(p_chk_none["warnings"], [])
+
+            p_dash_none, rc_dash_none = init_env.run_environment(
+                gravity_home=gravity_home,
+                plugins_dirs=[plugins_dir],
+                home_dir=fake_home,
+                dashboard=True,
+                app_version_detector=lambda: info_none,
+            )
+            self.assertEqual(rc_dash_none, 0)
+            buf_none = io.StringIO()
+            with redirect_stdout(buf_none):
+                init_env._print_dashboard_report(p_dash_none)
+            self.assertIn("Antigravity   : unknown", buf_none.getvalue())
 
 
 if __name__ == "__main__":

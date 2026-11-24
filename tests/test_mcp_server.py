@@ -62,6 +62,12 @@ def _write_fake_plugin(
 
 
 class TestMcpServer(unittest.TestCase):
+    def setUp(self) -> None:
+        mcp_server._reset_host_client_state()
+
+    def tearDown(self) -> None:
+        mcp_server._reset_host_client_state()
+
     def test_protocol_lifecycle_tools_and_resources(self) -> None:
         self.assertEqual(mcp_server.SERVER_NAME, "gravity")
         self.assertEqual(mcp_server.APP_URI, "ui://gravity/dashboard.html")
@@ -683,6 +689,140 @@ class TestMcpServer(unittest.TestCase):
             self.assertEqual(out_objs[0]["error"]["code"], -32700)
             self.assertEqual(out_objs[1]["id"], 1)
             self.assertEqual(out_objs[2]["result"], {"prompts": []})
+
+    def test_initialize_ui_capability_detection_and_open_dashboard_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            g_home = tmp_path / "gravity-home"
+            fake_user = tmp_path / "user-home"
+            fake_user.mkdir()
+            plugins_root = tmp_path / "plugins"
+            (g_home / "core").mkdir(parents=True)
+            _write_fake_plugin(plugins_root, mod_id="core", plugin_name="gravity", ui_mode="core")
+            write_modules_registry(
+                g_home,
+                [
+                    {
+                        "id": "core",
+                        "plugin_name": "gravity",
+                        "display_name": "Gravity",
+                        "version": "0.3.0",
+                        "valid": True,
+                        "errors": [],
+                        "storage": {"subdir": "core", "env_override": "GRAVITY_CORE_HOME"},
+                        "commands": ["/gravity"],
+                        "capabilities": ["test"],
+                        "ui": {"mode": "core", "target": "gravity"},
+                        "signals": {"produces": [], "consumes": []},
+                    }
+                ],
+            )
+            ctx = {
+                "gravity_home": g_home,
+                "plugin_roots": [plugins_root],
+                "home_dir": fake_user,
+            }
+
+            def _call_open(req_id: int) -> dict[str, object]:
+                resp = mcp_server.handle_jsonrpc_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "method": "tools/call",
+                        "params": {"name": "open_gravity_dashboard", "arguments": {}},
+                    },
+                    ctx=ctx,
+                )
+                assert resp is not None
+                return resp["result"]  # type: ignore[return-value]
+
+            # 1) Without initialize -> no [WARN UI]
+            res_uninit = _call_open(100)
+            self.assertFalse(res_uninit["isError"])
+            self.assertNotIn("[WARN UI]", res_uninit["content"][0]["text"])  # type: ignore[index]
+
+            # 2) initialize without capabilities or with empty capabilities & no clientInfo -> ui_supported=None, no [WARN UI]
+            for idx, params in enumerate(
+                ({}, {"protocolVersion": "2025-06-18"}, {"capabilities": {}}),
+                start=101,
+            ):
+                mcp_server._reset_host_client_state()
+                mcp_server.handle_jsonrpc_message(
+                    {"jsonrpc": "2.0", "id": idx, "method": "initialize", "params": params}
+                )
+                self.assertIsNone(mcp_server._HOST_CLIENT_STATE["ui_supported"])
+                res_unknown = _call_open(idx + 10)
+                self.assertFalse(res_unknown["isError"])
+                self.assertNotIn("[WARN UI]", res_unknown["content"][0]["text"])  # type: ignore[index]
+
+            # 3) initialize with MCP Apps capabilities -> ui_supported=True, no [WARN UI]
+            for idx, cap_payload in enumerate(
+                (
+                    {"extensions": {"io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}}},
+                    {"experimental": {"io.modelcontextprotocol/ui": True}},
+                    {"extensions": {"com.google.antigravity/ui": {"entrypoints": True}}},
+                    {"experimental": {"com.google.antigravity/ui": True}},
+                    {"ui": {"enabled": True}},
+                ),
+                start=120,
+            ):
+                mcp_server._reset_host_client_state()
+                mcp_server.handle_jsonrpc_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": idx,
+                        "method": "initialize",
+                        "params": {
+                            "capabilities": cap_payload,
+                            "clientInfo": {"name": "antigravity", "version": "2.35.0"},
+                        },
+                    }
+                )
+                self.assertTrue(mcp_server._HOST_CLIENT_STATE["ui_supported"])
+                res_ok = _call_open(idx + 20)
+                self.assertFalse(res_ok["isError"])
+                self.assertNotIn("[WARN UI]", res_ok["content"][0]["text"])  # type: ignore[index]
+
+            # 4) initialize with Antigravity < 2.34.0 -> ui_supported=False, [WARN UI] appended, isError=False
+            mcp_server._reset_host_client_state()
+            mcp_server.handle_jsonrpc_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 150,
+                    "method": "initialize",
+                    "params": {
+                        "capabilities": {},
+                        "clientInfo": {"name": "antigravity", "version": "2.33.0"},
+                    },
+                }
+            )
+            self.assertIs(mcp_server._HOST_CLIENT_STATE["ui_supported"], False)
+            res_old = _call_open(151)
+            self.assertFalse(res_old["isError"])
+            txt_old = res_old["content"][0]["text"]  # type: ignore[index]
+            self.assertIn("[WARN UI]", txt_old)
+            self.assertIn("antigravity 2.33.0", txt_old)
+            self.assertIn("v2.34.0+", txt_old)
+
+            # 5) initialize with non-UI client (e.g. agy CLI) -> ui_supported=False, [WARN UI] appended
+            mcp_server._reset_host_client_state()
+            mcp_server.handle_jsonrpc_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 160,
+                    "method": "initialize",
+                    "params": {
+                        "capabilities": {"roots": {"listChanged": True}},
+                        "clientInfo": {"name": "agy", "version": "1.0.0"},
+                    },
+                }
+            )
+            self.assertIs(mcp_server._HOST_CLIENT_STATE["ui_supported"], False)
+            res_cli = _call_open(161)
+            self.assertFalse(res_cli["isError"])
+            txt_cli = res_cli["content"][0]["text"]  # type: ignore[index]
+            self.assertIn("[WARN UI]", txt_cli)
+            self.assertIn("agy 1.0.0", txt_cli)
 
 
 if __name__ == "__main__":

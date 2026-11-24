@@ -505,7 +505,7 @@ def print_next_steps(target_dir: Optional[Path]) -> None:
         print(f"  - Installed plugin location : {target_dir}")
     print(f"  - Unified Gravity home      : {gravity_home}")
     print("  - Initialize environment    : python plugin/scripts/init_env.py (or /gravity init)")
-    print("  - Open dashboard            : /gravity dashboard or Plugins -> Gravity (zero tokens)")
+    print("  - Open dashboard            : /gravity dashboard or the left sidebar (Gravity) or the + menu in the right side pane (zero tokens)")
     print("  - Manage plugin in Antigravity : [Gravity](customization://gravity)")
 
 

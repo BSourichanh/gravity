@@ -74,7 +74,7 @@ python3 plugin/scripts/init_env.py --guide
 `gravity` embarque sa propre configuration MCP (`plugin/mcp_config.json`) et le serveur `open_gravity_dashboard` : **aucune édition manuelle de `~/.gemini/config/config.json` n'est requise**.
 
 1. **Depuis le chat :** lancez `/gravity dashboard` (appelle `open_gravity_dashboard` en panneau auxiliaire `aux_pane`).
-2. **Depuis l'interface Antigravity :** ouvrez **Plugins -> Gravity** (`0` token interactif).
+2. **Depuis l'interface Antigravity :** ouvrez la **barre latérale gauche (`Gravity`)** ou le **menu `+` du panneau latéral droit** (`0` token interactif).
 3. **Diagnostic CLI lecture seule :** `python plugin/scripts/init_env.py --dashboard` (vérifie `mcp_config.json`, `mcp/server.py`, `dashboard/api.py` et liste les onglets découverts).
 
 *(En Palier 3, seule la liaison optionnelle de sidecars Bridge pour la messagerie active utilise `/gravity-bridge link <slug>` ou `install.py --link`.)*
@@ -87,6 +87,6 @@ python3 plugin/scripts/init_env.py --guide
 2. `~/.gemini/gravity/core/modules.json` existe après `/gravity init` et recense tous vos modules (`valid: true`).
 3. `/gravity doctor` (`init_env.py --check`) retourne `0` erreur et signale d'éventuels dossiers legacy sans y toucher.
 4. `/gravity help` (`init_env.py --guide`) affiche la boucle en 3 temps et uniquement les commandes de vos modules installés.
-5. `/gravity dashboard` (ou **Plugins -> Gravity**) ouvre le tableau de bord MCP App sans erreur.
+5. `/gravity dashboard` (ou la **barre latérale gauche (`Gravity`)** ou le **menu `+` du panneau latéral droit**) ouvre le tableau de bord MCP App sans erreur.
 
 **Pour aller plus loin :** [Parcours utilisateur](user-journey.md) · [Aide-mémoire des commandes](command-cheatsheet.md) · [Dépannage & cycle de vie](troubleshooting-and-lifecycle.md)

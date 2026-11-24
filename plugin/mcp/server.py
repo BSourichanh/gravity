@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any, Mapping, Optional
 
@@ -22,6 +23,71 @@ APP_MIME = "text/html;profile=mcp-app"
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 MAX_TRAJECTORY_BYTES = 450_000
 VALID_VIEWS = ("overview", "workflow", "metrics", "bridge", "architect", "module")
+MIN_ANTIGRAVITY_MCP_APP_VERSION = (2, 34, 0)
+
+_HOST_CLIENT_STATE: dict[str, Any] = {
+    "initialized": False,
+    "ui_supported": None,
+    "client_desc": "",
+}
+
+
+def _reset_host_client_state() -> None:
+    """Reset cached MCP host capabilities for isolated unit tests."""
+    _HOST_CLIENT_STATE["initialized"] = False
+    _HOST_CLIENT_STATE["ui_supported"] = None
+    _HOST_CLIENT_STATE["client_desc"] = ""
+
+
+def _parse_semver(raw: Any) -> Optional[tuple[int, int, int]]:
+    if not isinstance(raw, str):
+        return None
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", raw)
+    if not match:
+        return None
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def _inspect_client_ui_support(params: Mapping[str, Any]) -> tuple[Optional[bool], str]:
+    """Determine whether the initialized MCP client supports MCP Apps UI."""
+    client_info = params.get("clientInfo")
+    client_name = ""
+    client_ver = ""
+    if isinstance(client_info, Mapping):
+        raw_name = client_info.get("name")
+        if isinstance(raw_name, str):
+            client_name = raw_name.strip()
+        raw_ver = client_info.get("version")
+        if isinstance(raw_ver, str):
+            client_ver = raw_ver.strip()
+    client_desc = f"{client_name} {client_ver}".strip() if (client_name or client_ver) else "client inconnu"
+
+    capabilities = params.get("capabilities")
+    if isinstance(capabilities, Mapping):
+        extensions = capabilities.get("extensions")
+        experimental = capabilities.get("experimental")
+        ui_candidates = (
+            extensions.get("io.modelcontextprotocol/ui") if isinstance(extensions, Mapping) else None,
+            experimental.get("io.modelcontextprotocol/ui") if isinstance(experimental, Mapping) else None,
+            extensions.get("com.google.antigravity/ui") if isinstance(extensions, Mapping) else None,
+            experimental.get("com.google.antigravity/ui") if isinstance(experimental, Mapping) else None,
+            capabilities.get("ui"),
+        )
+        if any(bool(candidate) for candidate in ui_candidates):
+            return True, client_desc
+
+    lower_name = client_name.lower()
+    if "antigravity" in lower_name and "cli" not in lower_name:
+        parsed_ver = _parse_semver(client_ver)
+        if parsed_ver is not None and parsed_ver < MIN_ANTIGRAVITY_MCP_APP_VERSION:
+            return False, client_desc
+
+    if not isinstance(capabilities, Mapping):
+        return None, client_desc
+    if len(capabilities) == 0 and not client_name:
+        return None, client_desc
+
+    return False, client_desc
 
 
 def _read_plugin_version() -> str:
@@ -415,6 +481,14 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
         architect_workspace=ctx.get("architect_workspace"),
     )
 
+    if _HOST_CLIENT_STATE.get("initialized") and _HOST_CLIENT_STATE.get("ui_supported") is False:
+        client_desc = str(_HOST_CLIENT_STATE.get("client_desc") or "client inconnu").strip() or "client inconnu"
+        summary = (
+            f"{summary}\n"
+            f"[WARN UI] Client MCP sans support MCP Apps détecté ({client_desc}) : "
+            "affichage texte uniquement ; Antigravity App v2.34.0+ requis pour l'interface graphique."
+        )
+
     structured: dict[str, Any] = {
         "initial_view": initial_view,
         "initial_project": initial_project,
@@ -637,6 +711,10 @@ def handle_jsonrpc_message(
 
     try:
         if method == "initialize":
+            ui_supported, client_desc = _inspect_client_ui_support(params)
+            _HOST_CLIENT_STATE["initialized"] = True
+            _HOST_CLIENT_STATE["ui_supported"] = ui_supported
+            _HOST_CLIENT_STATE["client_desc"] = client_desc
             client_proto = str(params.get("protocolVersion") or DEFAULT_PROTOCOL_VERSION)
             result: dict[str, Any] = {
                 "protocolVersion": client_proto,

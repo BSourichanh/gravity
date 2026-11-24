@@ -91,7 +91,7 @@ python plugin/scripts/init_env.py --guide
 python plugin/scripts/init_env.py --guide --json
 ```
 
-Dans Antigravity, utiliser le skill **`/gravity [init|status|modules|doctor|dashboard|help]`** ou ouvrir directement le tableau de bord depuis **Plugins -> Gravity** (`open_gravity_dashboard`, 0 token interactif). L'onglet **Architect (RO)** découvre automatiquement les ateliers enregistrés dans `$GRAVITY_ARCHITECT_HOME/ateliers.json` (et via l'indice `ws`, le sélecteur `#g-arch-ws` ou `bridge.db`), sans écriture workspace.
+Dans Antigravity, utiliser le skill **`/gravity [init|status|modules|doctor|dashboard|help]`** ou ouvrir directement le tableau de bord depuis la **barre latérale gauche (`Gravity`)** ou le **menu `+` du panneau latéral droit** (`open_gravity_dashboard`, 0 token interactif). L'onglet **Architect (RO)** découvre automatiquement les ateliers enregistrés dans `$GRAVITY_ARCHITECT_HOME/ateliers.json` (et via l'indice `ws`, le sélecteur `#g-arch-ws` ou `bridge.db`), sans écriture workspace.
 Les anciens répertoires éventuels (`~/.gemini/gravity-bridge`, `~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow`, `~/.gravity`) sont détectés en **lecture seule uniquement** : rien n'est jamais modifié ni supprimé automatiquement.
 
 ## Parcours utilisateur & Guides UX (`docs/`)

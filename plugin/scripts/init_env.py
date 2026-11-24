@@ -8,15 +8,18 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
+import subprocess
 import sys
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 MAX_SCAN_FILES = 10_000
 MAX_SCAN_DEPTH = 32
 MAX_COLLISIONS_SHOWN = 50
 MAX_GUIDE_LINES = 20
+MIN_ANTIGRAVITY_MCP_APP_VERSION: tuple[int, int, int] = (2, 34, 0)
 
 GUIDE_QUICKSTART: tuple[str, ...] = (
     "1. Initialiser : /gravity init (cree $GRAVITY_HOME/core/modules.json)",
@@ -427,7 +430,85 @@ def _inspect_architect_registry_ro(ateliers_path: Path) -> tuple[bool, bool]:
     return True, False
 
 
-def _collect_doctor_warnings(modules: Sequence[dict[str, Any]]) -> list[str]:
+def _parse_semver_str(raw: str) -> Optional[tuple[int, int, int]]:
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", raw)
+    if not match:
+        return None
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def _detect_antigravity_app_version() -> dict[str, Any]:
+    """Best-effort read-only probe of installed Antigravity App version via snap or dpkg-query."""
+    min_required = ".".join(str(x) for x in MIN_ANTIGRAVITY_MCP_APP_VERSION)
+    snap_cmd = shutil.which("snap")
+    if snap_cmd:
+        try:
+            proc = subprocess.run(
+                [snap_cmd, "list", "antigravity"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=2.0,
+                shell=False,
+                check=False,
+            )
+            if proc.returncode == 0:
+                for line in proc.stdout.splitlines():
+                    cols = line.split()
+                    if len(cols) >= 2 and cols[0] == "antigravity":
+                        parsed = _parse_semver_str(cols[1])
+                        if parsed is not None:
+                            return {
+                                "version": f"{parsed[0]}.{parsed[1]}.{parsed[2]}",
+                                "source": "snap",
+                                "meets_mcp_app_min": parsed >= MIN_ANTIGRAVITY_MCP_APP_VERSION,
+                                "min_required": min_required,
+                                "update_hint": "fermer Antigravity App puis exécuter : sudo snap refresh antigravity",
+                            }
+        except Exception:
+            pass
+
+    dpkg_cmd = shutil.which("dpkg-query")
+    if dpkg_cmd:
+        try:
+            proc = subprocess.run(
+                [dpkg_cmd, "-W", "-f=${Version}", "antigravity"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=2.0,
+                shell=False,
+                check=False,
+            )
+            if proc.returncode == 0:
+                parsed = _parse_semver_str(proc.stdout.strip())
+                if parsed is not None:
+                    return {
+                        "version": f"{parsed[0]}.{parsed[1]}.{parsed[2]}",
+                        "source": "dpkg",
+                        "meets_mcp_app_min": parsed >= MIN_ANTIGRAVITY_MCP_APP_VERSION,
+                        "min_required": min_required,
+                        "update_hint": "sudo apt update && sudo apt upgrade antigravity",
+                    }
+        except Exception:
+            pass
+
+    return {
+        "version": None,
+        "source": "none",
+        "meets_mcp_app_min": None,
+        "min_required": min_required,
+        "update_hint": "",
+    }
+
+
+def _collect_doctor_warnings(
+    modules: Sequence[dict[str, Any]],
+    *,
+    app_version: Optional[dict[str, Any]] = None,
+) -> list[str]:
     """Collect non-blocking read-only warnings for valid discovered modules."""
     warnings: list[str] = []
     for mod in modules:
@@ -468,6 +549,17 @@ def _collect_doctor_warnings(modules: Sequence[dict[str, Any]]) -> list[str]:
                     f"Module 'bridge' actif mais {bridge_db} absente : "
                     "exécutez /gravity-bridge pour initialiser la base SQLite."
                 )
+
+    app_info = app_version if app_version is not None else _detect_antigravity_app_version()
+    if app_info.get("meets_mcp_app_min") is False:
+        ver = str(app_info.get("version") or "?")
+        min_req = str(app_info.get("min_required") or "2.34.0")
+        hint = str(app_info.get("update_hint") or "").strip()
+        hint_suffix = f" ; {hint}" if hint else ""
+        warnings.append(
+            f"Antigravity App v{ver} détectée (< {min_req}) : "
+            f"interface MCP Apps non supportée{hint_suffix}."
+        )
     return warnings
 
 
@@ -545,6 +637,7 @@ def _run_dashboard_diagnostic(
     gravity_home: Optional[Path] = None,
     plugins_dirs: Optional[Sequence[Path]] = None,
     home_dir: Optional[Path] = None,
+    app_version_detector: Optional[Callable[[], dict[str, Any]]] = None,
 ) -> tuple[dict[str, Any], int]:
     """Run strictly read-only diagnostics for the Gravity MCP App dashboard."""
     from dashboard import api as dashboard_api
@@ -552,6 +645,8 @@ def _run_dashboard_diagnostic(
     resolved_home = resolve_gravity_home(gravity_home)
     roots = list(plugins_dirs) if plugins_dirs else default_plugin_roots()
     diag = _diagnose_mcp_dashboard(PLUGIN_ROOT)
+    detector = app_version_detector or _detect_antigravity_app_version
+    app_info = detector()
     overview = dashboard_api.get_overview(
         gravity_home=resolved_home,
         plugin_roots=roots,
@@ -572,6 +667,7 @@ def _run_dashboard_diagnostic(
         "registry_source": overview["registry_source"],
         "plugin_roots": [str(Path(p).expanduser().resolve()) for p in roots],
         "dashboard": diag,
+        "antigravity_app": app_info,
         "doctor": overview["doctor"],
         "tabs": overview["tabs"],
         "modules": overview["modules"],
@@ -630,6 +726,7 @@ def run_environment(
     dashboard: bool = False,
     guide: bool = False,
     shell: str = "auto",
+    app_version_detector: Optional[Callable[[], dict[str, Any]]] = None,
 ) -> tuple[dict[str, Any], int]:
     """Execute init, status, check, migration-plan, dashboard, or guide workflow and return (payload, exit_code)."""
     if guide:
@@ -642,6 +739,7 @@ def run_environment(
             gravity_home=gravity_home,
             plugins_dirs=plugins_dirs,
             home_dir=home_dir,
+            app_version_detector=app_version_detector,
         )
 
     resolved_home = resolve_gravity_home(gravity_home)
@@ -676,7 +774,11 @@ def run_environment(
     ok = True
     if mode == "check" and (invalid_count > 0 or bool(duplicates)):
         ok = False
-    warnings = _collect_doctor_warnings(modules) if mode == "check" else []
+    if mode == "check":
+        detector = app_version_detector or _detect_antigravity_app_version
+        warnings = _collect_doctor_warnings(modules, app_version=detector())
+    else:
+        warnings = []
 
     payload: dict[str, Any] = {
         "mode": mode,
@@ -766,6 +868,23 @@ def _print_dashboard_report(payload: dict[str, Any]) -> None:
     print(f"  Dashboard API : {'present' if diag.get('api_exists') else 'missing'} ({diag.get('api_path')})")
     py3_lbl = "yes" if diag.get("real_python3") else "no (Windows copy adapts to python/py -3)"
     print(f"  Real python3  : {py3_lbl}")
+    app_info = payload.get("antigravity_app") or {}
+    meets = app_info.get("meets_mcp_app_min")
+    if meets is True:
+        app_lbl = (
+            f"OK (v{app_info.get('version') or '?'} via {app_info.get('source') or '?'}, "
+            f">= {app_info.get('min_required') or '2.34.0'})"
+        )
+    elif meets is False:
+        hint = str(app_info.get("update_hint") or "").strip()
+        hint_suffix = f" ; {hint}" if hint else ""
+        app_lbl = (
+            f"[WARN] v{app_info.get('version') or '?'} via {app_info.get('source') or '?'} "
+            f"(< {app_info.get('min_required') or '2.34.0'}{hint_suffix})"
+        )
+    else:
+        app_lbl = "unknown (non détecté)"
+    print(f"  Antigravity   : {app_lbl}")
     print(
         f"  Doctor        : {doctor.get('status', 'unknown')} "
         f"({doctor.get('valid_count', 0)}/{doctor.get('module_count', 0)} modules valid)"
