@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 from typing import Any, Optional, Sequence
 
 from core.registry import resolve_module_home
@@ -17,6 +18,7 @@ from dashboard.providers import (
     extract_md_title,
     extract_md_verdict,
     file_uri_if_exists,
+    open_sqlite_ro,
     read_json_ro,
     short_digest,
     stat_token,
@@ -249,14 +251,93 @@ def _matches_query(rec: dict[str, Any], q_cf: str) -> bool:
     return False
 
 
+def _resolve_bridge_db_path(
+    *,
+    gravity_home: Optional[Path] = None,
+    bridge_home: Optional[Path] = None,
+) -> Path:
+    """Resolve `bridge.db` (`$GRAVITY_BRIDGE_HOME` > `$GRAVITY_HOME/bridge` > `~/.gemini/gravity/bridge`)."""
+    b_home = (
+        Path(bridge_home).expanduser().resolve()
+        if bridge_home is not None
+        else resolve_module_home("bridge", env_override="GRAVITY_BRIDGE_HOME", gravity_home=gravity_home)
+    )
+    return (b_home / "bridge.db").resolve()
+
+
+def _load_bridge_roles_ro(
+    bridge_db_path: Path,
+    warnings: list[str],
+) -> tuple[set[str], set[str]]:
+    """Load `(caller_ids, target_ids)` strictly read-only from `bridge.db`."""
+    caller_ids: set[str] = set()
+    target_ids: set[str] = set()
+    conn = open_sqlite_ro(bridge_db_path, warnings)
+    if conn is None:
+        return caller_ids, target_ids
+    try:
+        t_cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(threads)").fetchall()}
+        t_sel = [c for c in ("caller_conversation_id", "target_conversation_id") if c in t_cols]
+        if t_sel:
+            for row in conn.execute(f"SELECT {', '.join(t_sel)} FROM threads").fetchall():
+                if "caller_conversation_id" in t_cols:
+                    val = str(row["caller_conversation_id"] or "").strip()
+                    if val:
+                        caller_ids.add(val)
+                if "target_conversation_id" in t_cols:
+                    val = str(row["target_conversation_id"] or "").strip()
+                    if val:
+                        target_ids.add(val)
+
+        j_cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+        j_sel = [c for c in ("target_conversation_id", "caller_conversation_id") if c in j_cols]
+        if j_sel:
+            clauses = []
+            if "direction" in j_cols:
+                clauses.append("LOWER(COALESCE(direction, '')) != 'callback'")
+            if "action" in j_cols:
+                clauses.append("LOWER(COALESCE(action, '')) != 'send_message'")
+            where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+            for row in conn.execute(f"SELECT {', '.join(j_sel)} FROM jobs{where}").fetchall():
+                if "target_conversation_id" in j_cols:
+                    val = str(row["target_conversation_id"] or "").strip()
+                    if val:
+                        target_ids.add(val)
+                if "caller_conversation_id" in j_cols:
+                    val = str(row["caller_conversation_id"] or "").strip()
+                    if val:
+                        caller_ids.add(val)
+    except sqlite3.Error as exc:
+        warnings.append(f"Bridge SQLite read-only query failed in {bridge_db_path.name}: {exc}")
+    finally:
+        conn.close()
+    return caller_ids, target_ids
+
+
+def _is_worktree_cwd(cwd: Any) -> bool:
+    """Return True if `cwd` points inside an Antigravity worktree directory."""
+    if not isinstance(cwd, str) or not cwd.strip():
+        return False
+    low = cwd.strip().casefold()
+    norm = low.replace("\\", "/")
+    return (
+        "/.gemini/antigravity/worktrees/" in norm
+        or norm.endswith("/.gemini/antigravity/worktrees")
+        or "\\worktrees\\" in low
+        or low.endswith("\\worktrees")
+    )
+
+
 def _derive_pending_states_ro(
     *,
     records: Sequence[dict[str, Any]],
     active_captures: dict[str, dict[str, Any]],
     ignored_map: dict[str, dict[str, Any]],
     session_meta: dict[str, dict[str, Any]],
+    bridge_callers: Optional[set[str]] = None,
+    bridge_targets: Optional[set[str]] = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Derive pending and ignored lifecycle entries strictly from metrics state files (no brain scan)."""
+    """Derive pending and ignored lifecycle entries strictly from metrics/Bridge state (no brain scan)."""
     archived_cids = {
         str(r.get("conversation_id") or "").strip()
         for r in records
@@ -268,12 +349,15 @@ def _derive_pending_states_ro(
         if cid and str(rec.get("status") or "").strip().lower() == "active":
             active_history_by_cid[cid] = rec
 
+    callers = {str(c).strip() for c in (bridge_callers or set()) if str(c).strip()}
+    targets = {str(c).strip() for c in (bridge_targets or set()) if str(c).strip()}
+
     candidate_cids = (
         set(active_captures.keys())
         | set(ignored_map.keys())
-        | set(session_meta.keys())
         | set(active_history_by_cid.keys())
-    ) - archived_cids
+        | (callers - targets)
+    ) - archived_cids - targets
 
     pending: list[dict[str, Any]] = []
     ignored: list[dict[str, Any]] = []
@@ -284,6 +368,8 @@ def _derive_pending_states_ro(
         cap = active_captures.get(cid)
         ign = ignored_map.get(cid)
         meta = session_meta.get(cid) or {}
+        if cid not in active_captures and _is_worktree_cwd(meta.get("cwd")):
+            continue
         hist_active = active_history_by_cid.get(cid) or {}
 
         item = {
@@ -517,6 +603,7 @@ def get_metrics_state(
     *,
     gravity_home: Optional[Path] = None,
     metrics_home: Optional[Path] = None,
+    bridge_home: Optional[Path] = None,
     audits_dirs: Optional[Sequence[Path]] = None,
 ) -> dict[str, Any]:
     """Return read-only Gravity Metrics KPIs, filtered history, lifecycle state, and agents audits."""
@@ -534,32 +621,45 @@ def get_metrics_state(
     ignored_path = m_home / "ignored.json"
     session_meta_path = m_home / "session_meta.json"
     metrics_md_path = m_home / "METRICS.md"
+    bridge_db_path = _resolve_bridge_db_path(gravity_home=gravity_home, bridge_home=bridge_home)
+    bridge_wal_path = Path(f"{bridge_db_path}-wal")
+    bridge_shm_path = Path(f"{bridge_db_path}-shm")
 
     warnings: list[str] = []
     session_meta = _load_state_map_ro(session_meta_path, "sessions", warnings)
     audit_roots = _discover_audit_roots_ro(audits_dirs=audits_dirs, session_meta=session_meta)
     audit_files = _collect_audit_files_ro(audit_roots)
 
-    sig = short_digest(
-        [
-            str(m_home),
-            project_clean.casefold(),
-            eff_limit,
-            q_clean.casefold(),
-            stat_token(history_path),
-            stat_token(active_captures_path),
-            stat_token(ignored_path),
-            stat_token(session_meta_path),
-            stat_token(metrics_md_path),
-            *[(f"{r['root_id']}:{rel}", stat_token(fpath)) for r, fpath, rel in audit_files],
-        ]
-    )
-    if since_signature and since_signature == sig:
-        return unchanged_response(sig)
+    def _compute_sig() -> str:
+        return short_digest(
+            [
+                str(m_home),
+                str(bridge_db_path),
+                project_clean.casefold(),
+                eff_limit,
+                q_clean.casefold(),
+                stat_token(history_path),
+                stat_token(active_captures_path),
+                stat_token(ignored_path),
+                stat_token(session_meta_path),
+                stat_token(metrics_md_path),
+                stat_token(bridge_db_path),
+                stat_token(bridge_wal_path),
+                stat_token(bridge_shm_path),
+                *[(f"{r['root_id']}:{rel}", stat_token(fpath)) for r, fpath, rel in audit_files],
+            ]
+        )
+
+    pre_sig = _compute_sig()
+    if since_signature and since_signature == pre_sig:
+        return unchanged_response(pre_sig)
 
     all_records = _load_history_ro(history_path, warnings)
     active_captures = _load_state_map_ro(active_captures_path, "captures", warnings)
     ignored_map = _load_state_map_ro(ignored_path, "ignored", warnings)
+    bridge_callers, bridge_targets = _load_bridge_roles_ro(bridge_db_path, warnings)
+    # Recompute after closing SQLite so WAL/SHM attachment on initial RO read is reflected in `signature`.
+    sig = _compute_sig()
 
     proj_cf = project_clean.casefold()
     q_cf = q_clean.casefold()
@@ -578,6 +678,8 @@ def get_metrics_state(
         active_captures=active_captures,
         ignored_map=ignored_map,
         session_meta=session_meta,
+        bridge_callers=bridge_callers,
+        bridge_targets=bridge_targets,
     )
     audits_bundle = _build_audits_bundle_ro(audit_files)
     records_page = list(reversed(filtered))[:eff_limit]

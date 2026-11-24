@@ -495,7 +495,7 @@ class TestMetricsProvider(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            state = api.get_metrics_state(metrics_home=m_home)
+            state = api.get_metrics_state(gravity_home=tmp_path, metrics_home=m_home)
             self.assertEqual(state["total_records"], 3)
             self.assertEqual(state["kpis"]["sessions_count"], 3)
             self.assertEqual(state["kpis"]["archived_count"], 2)
@@ -518,16 +518,20 @@ class TestMetricsProvider(unittest.TestCase):
             self.assertEqual(state["index_audit"]["rel_path"], "README.md")
 
             # Filter by project & query
-            filtered = api.get_metrics_state(project="GRAVITY", q="legacy", metrics_home=m_home)
+            filtered = api.get_metrics_state(project="GRAVITY", q="legacy", gravity_home=tmp_path, metrics_home=m_home)
             self.assertEqual(filtered["total_matching"], 1)
             self.assertEqual(filtered["records"][0]["label"], "legacy-run")
 
             # Fast-path since_signature
-            unchanged = api.get_metrics_state(since_signature=state["signature"], metrics_home=m_home)
+            unchanged = api.get_metrics_state(
+                since_signature=state["signature"],
+                gravity_home=tmp_path,
+                metrics_home=m_home,
+            )
             self.assertEqual(unchanged, {"changed": False, "unchanged": True, "signature": state["signature"]})
 
             # Explicit audits_dir pointing to audits/code must yield 0 audits
-            no_code = api.get_metrics_state(metrics_home=m_home, audits_dirs=[code_dir])
+            no_code = api.get_metrics_state(gravity_home=tmp_path, metrics_home=m_home, audits_dirs=[code_dir])
             self.assertEqual(no_code["audits"], [])
 
     def test_metrics_payload_cap_under_450kb(self) -> None:
@@ -549,7 +553,7 @@ class TestMetricsProvider(unittest.TestCase):
             ]
             (m_home / "data" / "history.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-            res = api.get_metrics_state(limit=999, metrics_home=m_home, audits_dirs=[])
+            res = api.get_metrics_state(limit=999, gravity_home=Path(tmp), metrics_home=m_home, audits_dirs=[])
             self.assertEqual(res["filters"]["limit"], 500)
             self.assertEqual(res["total_matching"], 250)
             self.assertEqual(res["kpis"]["sessions_count"], 250)

@@ -6,6 +6,10 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 ## [Unreleased]
 
 ### Fixed
+- **Filtrage strict de `pending_sessions` (`plugin/dashboard/providers/metrics_provider.py`) :**
+  - Ajout de `_resolve_bridge_db_path()` (`$GRAVITY_BRIDGE_HOME` > `$GRAVITY_HOME/bridge` > `~/.gemini/gravity/bridge`) et `_load_bridge_roles_ro()` (`?mode=ro` tolérant schéma `v0.1.0` et absence/corruption, excluant les jobs callback `direction = 'callback'` / `action = 'send_message'`).
+  - Exclusion de `session_meta.json` comme source de candidats dans `_derive_pending_states_ro()`, exclusion des enfants Bridge (`target_conversation_id`) et des worktrees (`/.gemini/antigravity/worktrees/` ou `\worktrees\` hors `active_captures`), tout en conservant `session_meta` pour l'enrichissement (`project`, `cwd`, `started_at`, `updated_at`) et `_discover_audit_roots_ro()`.
+  - Invalidation de signature dans `get_metrics_state()` sur `stat_token(bridge_db_path)` (et `-wal`/`-shm`) et suite isolée `tests/test_metrics_provider_pending.py`.
 - **Libellés d'accès UI du dashboard (`install.py`, `plugin/README.md`, `plugin/skills/gravity/SKILL.md`, `README.md`, `docs/getting-started.md`, `docs/user-journey.md`) :** remplacement des 8 libellés d'accès obsolètes vers le dashboard par l'accès réel via la barre latérale gauche (`Gravity`) ou le menu `+` du panneau latéral droit.
 
 ### Added
