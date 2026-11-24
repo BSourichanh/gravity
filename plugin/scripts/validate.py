@@ -58,7 +58,6 @@ EXPECTED_MCP_TOOLS = {
     "gravity_get_workflow_state",
     "gravity_get_metrics_state",
     "gravity_get_session_detail",
-    "gravity_get_bridge_state",
     "gravity_get_architect_state",
     "gravity_get_module_info",
 }
@@ -757,7 +756,6 @@ def _run_mcp_dry_run(root: Path, report: Report) -> None:
             "GRAVITY_CORE_HOME",
             "GRAVITY_WORKFLOW_HOME",
             "GRAVITY_METRICS_HOME",
-            "GRAVITY_BRIDGE_HOME",
             "GRAVITY_ARCHITECT_HOME",
             "GRAVITY_ARCHITECT_WORKSPACE",
             "GRAVITY_AUDITS_DIR",

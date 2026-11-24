@@ -22,7 +22,7 @@ APP_URI = "ui://gravity/dashboard.html"
 APP_MIME = "text/html;profile=mcp-app"
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 MAX_TRAJECTORY_BYTES = 450_000
-VALID_VIEWS = ("overview", "workflow", "metrics", "bridge", "architect", "module")
+VALID_VIEWS = ("overview", "workflow", "metrics", "architect", "module")
 MIN_ANTIGRAVITY_MCP_APP_VERSION = (2, 34, 0)
 
 _HOST_CLIENT_STATE: dict[str, Any] = {
@@ -118,8 +118,6 @@ def _normalize_ctx(ctx: Optional[Mapping[str, Any]]) -> dict[str, Any]:
         "home_dir",
         "workflow_home",
         "metrics_home",
-        "bridge_home",
-        "db_path",
         "architect_home",
         "architect_workspace",
     ):
@@ -183,15 +181,6 @@ def _enforce_trajectory_budget(result: dict[str, Any], initial_view: str) -> dic
             events = events[len(events) // 2 + 1 :] if len(events) > 1 else []
             wf["events"] = events
 
-    br = sc.get("bridge")
-    if isinstance(br, dict):
-        for list_key in ("threads", "jobs", "workspaces"):
-            items = br.get(list_key)
-            while _encoded_bytes(result) > MAX_TRAJECTORY_BYTES and isinstance(items, list) and items:
-                br["truncated"] = True
-                items = items[: max(0, len(items) // 2)]
-                br[list_key] = items
-
     arch = sc.get("architect")
     if isinstance(arch, dict):
         for list_key in ("audits", "handoffs", "specs", "projects"):
@@ -201,7 +190,7 @@ def _enforce_trajectory_budget(result: dict[str, Any], initial_view: str) -> dic
                 items = items[: max(0, len(items) // 2)]
                 arch[list_key] = items
 
-    for section in ("metrics", "workflow", "bridge", "architect"):
+    for section in ("metrics", "workflow", "architect"):
         if _encoded_bytes(result) > MAX_TRAJECTORY_BYTES and initial_view != section:
             sc.pop(section, None)
 
@@ -215,7 +204,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "title": "Ouvrir Gravity Dashboard",
             "description": (
                 "Ouvre le tableau de bord unifié Gravity (Overview/Doctor, Workflow Live, "
-                "Metrics, Bridge RO, Architect RO et modules OCP) dans Antigravity."
+                "Metrics, Architect RO et modules OCP) dans Antigravity."
             ),
             "inputSchema": {
                 "type": "object",
@@ -223,7 +212,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "view": {
                         "type": "string",
                         "enum": list(VALID_VIEWS),
-                        "description": "Vue initiale : overview, workflow, metrics, bridge, architect ou module.",
+                        "description": "Vue initiale : overview, workflow, metrics, architect ou module.",
                     },
                     "project": {
                         "type": "string",
@@ -334,29 +323,6 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "_meta": {"ui": {"visibility": ["app"]}},
         },
         {
-            "name": "gravity_get_bridge_state",
-            "title": "État Gravity Bridge (RO)",
-            "description": "Retourne workspaces, sidecars, threads et jobs Bridge en lecture seule (?mode=ro).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "status": {
-                        "type": "string",
-                        "description": "Filtre statut des threads : '', 'open' ou 'done'.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Nombre maximal de threads/jobs retournés (1..200).",
-                    },
-                    "since_signature": {
-                        "type": "string",
-                        "description": "Signature précédente pour fast-path inchangé.",
-                    },
-                },
-            },
-            "_meta": {"ui": {"visibility": ["app"]}},
-        },
-        {
             "name": "gravity_get_architect_state",
             "title": "État Gravity Architect (RO)",
             "description": "Retourne ECOSYSTEM.md, delta.md, projets, specs, handoffs et audits/code/ en lecture seule.",
@@ -388,7 +354,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "properties": {
                     "module_id": {
                         "type": "string",
-                        "description": "Identifiant du module Gravity (ex. bridge, architect).",
+                        "description": "Identifiant du module Gravity (ex. workflow, architect).",
                     }
                 },
                 "required": ["module_id"],
@@ -430,21 +396,12 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
             audits_dirs=ctx.get("audits_dirs"),
         )
 
-    bridge: Optional[dict[str, Any]] = None
-    if initial_view == "bridge" or "bridge" in tab_ids:
-        bridge = api.get_bridge_state(
-            gravity_home=ctx.get("gravity_home"),
-            bridge_home=ctx.get("bridge_home"),
-            db_path=ctx.get("db_path"),
-        )
-
     architect: Optional[dict[str, Any]] = None
     if initial_view == "architect" or initial_atelier or "architect" in tab_ids:
         architect = api.get_architect_state(
             atelier=initial_atelier,
             ws=initial_ws,
             gravity_home=ctx.get("gravity_home"),
-            bridge_home=ctx.get("bridge_home"),
             architect_home=ctx.get("architect_home"),
             architect_workspace=ctx.get("architect_workspace"),
         )
@@ -466,7 +423,6 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
         overview=overview,
         workflow=workflow,
         metrics=metrics,
-        bridge=bridge,
         architect=architect,
         module_info=module_info,
         gravity_home=ctx.get("gravity_home"),
@@ -475,8 +431,6 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
         workflow_home=ctx.get("workflow_home"),
         metrics_home=ctx.get("metrics_home"),
         audits_dirs=ctx.get("audits_dirs"),
-        bridge_home=ctx.get("bridge_home"),
-        db_path=ctx.get("db_path"),
         architect_home=ctx.get("architect_home"),
         architect_workspace=ctx.get("architect_workspace"),
     )
@@ -501,8 +455,6 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
         structured["workflow"] = workflow
     if metrics is not None:
         structured["metrics"] = metrics
-    if bridge is not None:
-        structured["bridge"] = bridge
     if architect is not None:
         structured["architect"] = architect
     if module_info is not None:
@@ -593,35 +545,6 @@ def _handle_get_session_detail(args: dict[str, Any], ctx: dict[str, Any]) -> dic
     return _enforce_trajectory_budget(res, "metrics")
 
 
-def _handle_get_bridge_state(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    status = str(args.get("status") or "").strip().lower()
-    since_sig = str(args.get("since_signature") or "").strip()
-    raw_limit = args.get("limit", 50)
-    try:
-        limit = int(raw_limit) if raw_limit is not None else 50
-    except (TypeError, ValueError):
-        limit = 50
-
-    data = api.get_bridge_state(
-        since_signature=since_sig,
-        status=status,
-        limit=limit,
-        gravity_home=ctx.get("gravity_home"),
-        bridge_home=ctx.get("bridge_home"),
-        db_path=ctx.get("db_path"),
-    )
-    if data.get("unchanged"):
-        return _tool_ok("Inchangé.", data)
-    kpis = data.get("kpis") or {}
-    txt = (
-        f"Bridge: {kpis.get('online_count', 0)}/{kpis.get('workspaces_count', 0)} sidecar(s), "
-        f"{kpis.get('threads_open', 0)} ouvert(s)."
-        if data.get("available")
-        else "Bridge: inactif."
-    )
-    return _enforce_trajectory_budget(_tool_ok(txt, data), "bridge")
-
-
 def _handle_get_architect_state(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     atelier = str(args.get("atelier") or "").strip()
     ws = str(args.get("ws") or "").strip()
@@ -631,7 +554,6 @@ def _handle_get_architect_state(args: dict[str, Any], ctx: dict[str, Any]) -> di
         atelier=atelier,
         ws=ws,
         gravity_home=ctx.get("gravity_home"),
-        bridge_home=ctx.get("bridge_home"),
         architect_home=ctx.get("architect_home"),
         architect_workspace=ctx.get("architect_workspace"),
     )
@@ -671,7 +593,6 @@ _TOOL_DISPATCH = {
     "gravity_get_workflow_state": _handle_get_workflow_state,
     "gravity_get_metrics_state": _handle_get_metrics_state,
     "gravity_get_session_detail": _handle_get_session_detail,
-    "gravity_get_bridge_state": _handle_get_bridge_state,
     "gravity_get_architect_state": _handle_get_architect_state,
     "gravity_get_module_info": _handle_get_module_info,
 }

@@ -598,12 +598,10 @@ def get_architect_state(
     atelier: str = "",
     ws: str = "",
     gravity_home: Optional[Path] = None,
-    bridge_home: Optional[Path] = None,
     architect_home: Optional[Path] = None,
     architect_workspace: Optional[Path] = None,
 ) -> dict[str, Any]:
     """Return read-only Gravity Architect atelier state, specs, handoffs, and `audits/code/`."""
-    _ = bridge_home  # Transitional W2 compat kwarg for mcp/server.py; removed in W3.
     warnings: list[str] = []
     registry_ateliers, ateliers_reg_path = _discover_from_registry_ro(
         gravity_home=gravity_home,

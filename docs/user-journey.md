@@ -9,8 +9,8 @@ Ce guide décrit le cycle complet d'utilisation de **Gravity**, du premier déma
 ```mermaid
 flowchart LR
     P1["1. Installer et Initialiser (/gravity init)"] --> P2["2. Cadrer et Decouper (specs/ et tasks/)"]
-    P2 --> P3["3. Executer, Mesurer et Relayer (workflow + metrics + bridge)"]
-    P3 --> P4["4. Superviser, Archiver et Sauvegarder (/gravity dashboard + export/import)"]
+    P2 --> P3["3. Executer et Mesurer (wave_runner / swarm + metrics)"]
+    P3 --> P4["4. Valider, Superviser et Archiver (--verify-parallel + dashboard)"]
     P4 --> P2
 ```
 
@@ -24,10 +24,10 @@ flowchart LR
 2. **Palier 2 (*Pilotage* — maîtriser coûts, cache et fiabilité) :**
    - Vous ajoutez `gravity-metrics`. Avant une session importante, vous lancez `/gravity-metrics start mon-lot` (`0` token LLM), basculez votre workflow sur `/gravity-workflow evo` et `/caveman auto`.
    - Les signaux `session-metrics` et `cost-telemetry` informent les suggestions d'adaptation (`evo`). En fin de lot, `/gravity-metrics stop` archive la capture de manière immuable.
-3. **Palier 3 (*Multi-projets* — conception transversale, relais App et sauvegarde) :**
-   - Vous ajoutez `gravity-architect` et `gravity-bridge`. Dans votre atelier dédié (ex. `gravity-studio`), `/gravity-architect spec` et `/gravity-architect task` préparent les briefs autonomes dans `specs/` et `tasks/`.
-   - Vous liez les dépôts cibles une fois (`/gravity-bridge link <slug>`), envoyez le brief avec feu vert humain (`/gravity-bridge send`), puis archivez le chantier (`/gravity-architect archive <slug>`), ce qui déclenche aussi l'archivage métriques si aucun job Bridge n'est actif.
-   - À tout moment, `/gravity dashboard` (barre latérale gauche `Gravity` ou menu `+` du panneau latéral droit) consolide les 5 modules à **0 token**, et `/gravity export` / `/gravity import` sauvegardent ou restaurent `$GRAVITY_HOME` (et vos ateliers via `--include-atelier`).
+3. **Palier 3 (*Multi-projets* — conception transversale, vagues natives & sauvegarde) :**
+   - Vous ajoutez `gravity-architect`. Dans votre atelier dédié (ex. `gravity-studio`), `/gravity-architect spec` et `/gravity-architect task` préparent les briefs autonomes dans `specs/` et `tasks/` (`<= 5` fichiers code/task).
+   - La production s'exécute à **100 % en natif Antigravity** sans sidecar externe : `run_workflow` (`wave_runner.py`, *fail-isolated* en `git worktree` détachés avec `Planner` sauté sur `plan_file`, routage `quick`/`standard` et watchdogs `900s`/`360s`) ou `/swarm` pour les chantiers couplés, puis validation parallèle des `4` dépôts (`audit_ecosystem.py --verify-parallel --strict`) et archivage (`/gravity-architect archive <slug>`).
+   - À tout moment, `/gravity dashboard` (barre latérale gauche `Gravity` ou menu `+` du panneau latéral droit) consolide les `4` modules (`4` onglets dédiés + OCP) à **0 token**, et `/gravity export` / `/gravity import` sauvegardent ou restaurent `$GRAVITY_HOME` (et vos ateliers via `--include-atelier`).
 
 ---
 
@@ -37,15 +37,15 @@ flowchart LR
 |---|---|---|---|---|
 | **1. Installer & Initialiser** | `python scripts/ecosystem_install.py --install --tier <1\|2\|3>`, `/gravity`, `/gravity init`, `/gravity doctor` | `core/modules.json` + dossiers `<module>/` | `0` sur `/gravity` (`PreInvocation`) et CLI | Plugins validés (`--strict`), registre atomique créé, legacy détecté RO |
 | **2. Cadrer & Découper** *(Palier 3)* | `/gravity-architect [init\|sync\|spec\|task]` | `architect/` + atelier Hot/Cold séparé | Faible (micro-delta `--print-delta`) | `ECOSYSTEM.md`, `specs/`, `tasks/`, `audits/code/` à jour |
-| **3. Exécuter, Mesurer & Relayer** *(Paliers 1→3)* | `/gravity-workflow [quick\|standard\|deep\|evo]`, `/caveman`, `/gravity-metrics [start\|stop\|pending\|archive]`, `/gravity-bridge [workspaces\|link\|send\|read\|take\|reply]` | `workflow/workspaces/<slug>-<hash>/`, `metrics/`, `bridge/bridge.db` | Optimisé (`/caveman` + `0` sur `metrics start`) | Plan/Code/Revue isolée, métriques archivées, fils Bridge tracés |
-| **4. Superviser, Archiver & Sauvegarder** | `/gravity dashboard` (ou barre latérale `Gravity` / menu `+`), `/gravity-architect archive`, `/gravity export`, `/gravity import` | Lecture seule transversale + `core/sync.json` + ZIP portable | `0` token interactif (MCP App & CLI export/import) | Vue unifiée 5 onglets, archive métriques/atelier, sauvegarde ZIP vérifiée SHA-256 |
+| **3. Exécuter & Mesurer** *(Paliers 1→3)* | `run_workflow` (`wave_runner.py`), `/swarm`, `/gravity-workflow [quick\|standard\|deep\|evo]`, `/caveman`, `/gravity-metrics [start\|stop\|pending\|archive]` | `workflow/workspaces/<slug>-<hash>/`, `workflow/worktrees/`, `metrics/` | Optimisé (`Planner` sauté sur `plan_file`, `/caveman`, `0` sur `metrics start`) | Plan/Code/Revue isolée sur `git worktree`, patches vérifiés sur `dev`, métriques archivées |
+| **4. Superviser, Valider & Sauvegarder** | `audit_ecosystem.py --verify-parallel --strict`, `/gravity dashboard` (ou barre latérale `Gravity` / menu `+`), `/gravity-architect archive`, `/gravity export`, `/gravity import` | Lecture seule transversale + `core/sync.json` + ZIP portable | `0` token interactif (MCP App & CLI export/import) | `4/4` dépôts validés en parallèle, vue unifiée `4` onglets + OCP, sauvegarde ZIP vérifiée SHA-256 |
 
 ---
 
 ## 4. Les 3 frontières d'or à retenir
 
 1. **`gravity-studio` vs dépôts produits :**
-   - La conception multi-projets (`ECOSYSTEM.md`, `specs/`, `tasks/`, fiches `tracking/`) vit dans un atelier séparé (ex. `gravity-studio`) — jamais dans les 5 dépôts plugins ni dans vos dépôts applicatifs.
+   - La conception multi-projets (`ECOSYSTEM.md`, `specs/`, `tasks/`, fiches `tracking/`) vit dans un atelier séparé (ex. `gravity-studio`) — jamais dans les 4 dépôts plugins ni dans vos dépôts applicatifs.
 2. **Branche `dev` vs branche `main` :**
    - Tout développement quotidien s'effectue sur `dev` (ou une branche dédiée). La fusion sur `main` et les tags `vX.Y.Z` sont réservés aux releases validées par le chef d'orchestre sur accord explicite.
 3. **`audits/code/` vs `audits/agents/` :**

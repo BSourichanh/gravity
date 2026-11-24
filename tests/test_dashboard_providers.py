@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,7 @@ if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
 from core.registry import write_modules_registry  # noqa: E402
+import dashboard  # noqa: E402
 from dashboard import api  # noqa: E402
 from dashboard.providers import (  # noqa: E402
     DEDICATED_PROVIDERS,
@@ -104,13 +106,20 @@ class TestDashboardHelpers(unittest.TestCase):
             p.write_text("hello", encoding="utf-8")
             self.assertRegex(stat_token(p), r"^\d+:5$")
 
-        modules = [
-            {"id": "custom", "plugin_name": "gravity-custom", "valid": True},
-            {"id": "bridge", "plugin_name": "gravity-bridge", "valid": True},
+        modules_4 = [
             {"id": "metrics", "plugin_name": "gravity-metrics", "valid": True},
             {"id": "architect", "plugin_name": "gravity-architect", "valid": True},
             {"id": "workflow", "plugin_name": "gravity-workflow", "valid": True},
             {"id": "core", "plugin_name": "gravity", "valid": True},
+        ]
+        tabs_4 = build_dashboard_tabs(modules_4)
+        self.assertEqual([t["id"] for t in tabs_4], ["overview", "workflow", "metrics", "architect"])
+        self.assertTrue(all(t["dedicated"] for t in tabs_4))
+
+        modules = [
+            {"id": "custom", "plugin_name": "gravity-custom", "valid": True},
+            {"id": "bridge", "plugin_name": "gravity-bridge", "valid": True},
+            *modules_4,
         ]
         tabs = build_dashboard_tabs(modules)
         self.assertEqual([t["id"] for t in tabs], ["overview", "workflow", "metrics", "architect", "custom", "bridge"])
@@ -738,65 +747,17 @@ def _create_sample_bridge_db(db_path: Path, *, studio_path: Optional[Path] = Non
         conn.close()
 
 
-class TestBridgeProvider(unittest.TestCase):
-    def test_bridge_absent_and_corrupt_returns_unavailable(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
-            b_home = Path(tmp) / "bridge"
-            res = api.get_bridge_state(bridge_home=b_home)
-            self.assertFalse(res["available"])
-            self.assertEqual(res["kpis"]["workspaces_count"], 0)
-            self.assertFalse(b_home.exists())
-
-            b_home.mkdir(parents=True)
-            (b_home / "bridge.db").write_text("not-a-sqlite-db", encoding="utf-8")
-            corrupt = api.get_bridge_state(bridge_home=b_home)
-            self.assertFalse(corrupt["available"])
-            self.assertTrue(corrupt["warnings"])
-
-    def test_bridge_ro_kpis_filters_preview_cap_and_signature(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
-            tmp_path = Path(tmp)
-            db_path = tmp_path / "bridge" / "bridge.db"
-            _create_sample_bridge_db(db_path)
-
-            state = api.get_bridge_state(db_path=db_path)
-            self.assertTrue(state["available"])
-            kpis = state["kpis"]
-            self.assertEqual(kpis["workspaces_count"], 3)
-            self.assertEqual(kpis["online_count"], 1)
-            self.assertEqual(kpis["offline_count"], 1)
-            self.assertEqual(kpis["unlinked_count"], 1)
-            self.assertEqual(kpis["threads_open"], 1)
-            self.assertEqual(kpis["threads_done"], 1)
-            self.assertEqual(kpis["notify_caller_threads"], 1)
-            self.assertEqual(kpis["outbound_jobs"], 1)
-            self.assertEqual(kpis["callback_jobs"], 1)
-            self.assertEqual(kpis["jobs_by_status"]["completed"], 1)
-            self.assertEqual(kpis["jobs_by_status"]["queued"], 1)
-
-            self.assertEqual(len(state["threads"]), 2)
-            t_open = next(t for t in state["threads"] if t["id"] == "thr-open-1")
-            self.assertEqual(t_open["message_count"], 2)
-            self.assertEqual(t_open["unread_count"], 1)
-            self.assertLessEqual(len(t_open["preview"]), 160)
-            self.assertNotIn("body", t_open)
-
-            unchanged = api.get_bridge_state(since_signature=state["signature"], db_path=db_path)
-            self.assertEqual(unchanged, {"changed": False, "unchanged": True, "signature": state["signature"]})
-            self.assertLess(len(json.dumps(state, ensure_ascii=False).encode("utf-8")), 450_000)
-
-            only_open = api.get_bridge_state(status="open", db_path=db_path)
-            self.assertEqual([t["id"] for t in only_open["threads"]], ["thr-open-1"])
-
-            clamped = api.get_bridge_state(limit=999, db_path=db_path)
-            self.assertEqual(clamped["filters"]["limit"], 200)
-            unchanged_clamped = api.get_bridge_state(
-                limit=999, since_signature=clamped["signature"], db_path=db_path
-            )
-            self.assertEqual(
-                unchanged_clamped,
-                {"changed": False, "unchanged": True, "signature": clamped["signature"]},
-            )
+class TestBridgeRetirement(unittest.TestCase):
+    def test_bridge_provider_and_w2_shims_removed(self) -> None:
+        self.assertFalse((PLUGIN_ROOT / "dashboard" / "providers" / "bridge_provider.py").exists())
+        self.assertFalse(hasattr(api, "get_bridge_state"))
+        self.assertFalse(hasattr(dashboard, "get_bridge_state"))
+        with self.assertRaises(ModuleNotFoundError):
+            importlib.import_module("dashboard.providers.bridge_provider")
+        with self.assertRaises(TypeError):
+            api.get_architect_state(bridge_home=Path("."))  # type: ignore[call-arg]
+        with self.assertRaises(TypeError):
+            api.build_initial_summary(bridge={}, bridge_home=Path("."), db_path=Path("x"))  # type: ignore[call-arg]
 
 
 class TestArchitectProvider(unittest.TestCase):
@@ -883,12 +844,12 @@ class TestArchitectProvider(unittest.TestCase):
                 encoding="utf-8",
             )
             # Residual bridge.db pointing to another atelier must be ignored completely
-            b_home = tmp_path / "bridge"
+            b_home = g_home / "bridge"
             other_bridge = tmp_path / "ignored-bridge-atelier"
             self._write_mini_atelier(other_bridge)
             _create_sample_bridge_db(b_home / "bridge.db", studio_path=other_bridge)
 
-            via_registry = api.get_architect_state(gravity_home=g_home, bridge_home=b_home)
+            via_registry = api.get_architect_state(gravity_home=g_home)
             self.assertTrue(via_registry["available"])
             self.assertEqual(via_registry["discovery_source"], "architect_registry")
             self.assertEqual(Path(via_registry["atelier_root"]), atelier.resolve())
@@ -909,7 +870,7 @@ class TestArchitectProvider(unittest.TestCase):
 
             # Fast-path since_signature
             unchanged = api.get_architect_state(
-                since_signature=via_registry["signature"], gravity_home=g_home, bridge_home=b_home
+                since_signature=via_registry["signature"], gravity_home=g_home
             )
             self.assertEqual(unchanged, {"changed": False, "unchanged": True, "signature": via_registry["signature"]})
 
@@ -917,7 +878,7 @@ class TestArchitectProvider(unittest.TestCase):
             other = tmp_path / "other-atelier"
             other.mkdir()
             explicit = api.get_architect_state(
-                gravity_home=g_home, bridge_home=b_home, architect_workspace=other
+                gravity_home=g_home, architect_workspace=other
             )
             self.assertEqual(explicit["discovery_source"], "arg_workspace")
             self.assertFalse(explicit["available"])
@@ -1137,18 +1098,14 @@ class TestDashboardFacade(unittest.TestCase):
             fake_user.mkdir()
             plugins_root = tmp_path / "plugins"
             _write_module_plugin(plugins_root, mod_id="core", plugin_name="gravity", ui_mode="core")
-            _write_module_plugin(plugins_root, mod_id="workflow", plugin_name="gravity-workflow", ui_mode="transition-sidecar")
+            _write_module_plugin(plugins_root, mod_id="workflow", plugin_name="gravity-workflow", ui_mode="none")
             _write_module_plugin(plugins_root, mod_id="metrics", plugin_name="gravity-metrics", ui_mode="transition-mcp")
-            _write_module_plugin(plugins_root, mod_id="bridge", plugin_name="gravity-bridge")
             _write_module_plugin(plugins_root, mod_id="architect", plugin_name="gravity-architect")
 
             summary = api.build_initial_summary(
                 gravity_home=g_home,
                 plugin_roots=[plugins_root],
                 home_dir=fake_user,
-                bridge={"available": True},
-                bridge_home=g_home / "bridge",
-                db_path=g_home / "bridge" / "bridge.db",
             )
             self.assertIn("Gravity Dashboard", summary)
             self.assertIn("Workflow:", summary)

@@ -26,6 +26,8 @@ class TestValidate(unittest.TestCase):
         return report
 
     def test_repo_plugin_passes_strict(self) -> None:
+        self.assertEqual(len(plugin_validator.EXPECTED_MCP_TOOLS), 7)
+        self.assertNotIn("gravity_get_bridge_state", plugin_validator.EXPECTED_MCP_TOOLS)
         rc = plugin_validator.main(["--plugin-root", str(PLUGIN_ROOT), "--strict"])
         self.assertEqual(rc, 0)
 

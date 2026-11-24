@@ -15,16 +15,15 @@ Bienvenue dans la documentation de **Gravity Core** (`BSourichanh/gravity`) et d
 
 | Document | Contenu |
 |---|---|
-| [`architecture.md`](architecture.md) | Architecture SRP des 5 modules, flux de signaux `metrics -> workflow auto`, convergence UI/UX vers `gravity` et séparation `gravity-studio` |
+| [`architecture.md`](architecture.md) | Architecture SRP des 4 modules, flux de signaux `metrics -> workflow auto`, convergence UI/UX vers `gravity` et séparation `gravity-studio` |
 | [`module-contract.md`](module-contract.md) | Spécification complète `plugin/config/module.json` v1, stockage `$GRAVITY_HOME/<module>/` et ajout d'un nouveau module sans modifier Core |
 | [`repo-standard.md`](repo-standard.md) | Standard uniforme des dépôts Gravity (`plugin/`, manifeste 9 champs, budgets `AGENTS.md`, hygiène UX/docs, contrat CLI 11 drapeaux, vérifications) |
-| [`roadmap.md`](roadmap.md) | Feuille de route `v0.1.0` → `v0.3.0` (UI MCP App unifiée dans `gravity`, vue 0-token `--overview`, transition `metrics`, boucle `metrics -> workflow auto`) |
+| [`roadmap.md`](roadmap.md) | Feuille de route `v0.1.0` → `v0.3.0` (UI MCP App 4 onglets dans `gravity`, vue 0-token `--overview`, orchestration native `wave_runner.py` / `/swarm`, boucle `metrics -> workflow auto`) |
 
 ## Rappel d'architecture
 
-- **`gravity`** (`/gravity`) : socle central, environnement `$GRAVITY_HOME`, registre `core/modules.json` et hôte UI MCP App unifié.
-- **`gravity-workflow`** (`/gravity-workflow`, `/caveman`) : harnais multi-agents, workflows, garde-fous et evals.
+- **`gravity`** (`/gravity`) : socle central, environnement `$GRAVITY_HOME`, registre `core/modules.json` et hôte UI MCP App unifié (`4` onglets dédiés + OCP).
+- **`gravity-workflow`** (`/gravity-workflow`, `/caveman`) : harnais multi-agents, orchestration native (`run_workflow` `wave_runner.py` / `/swarm`), garde-fous et evals.
 - **`gravity-architect`** (`/gravity-architect`) : conception, intégrité écosystème, stockage Hot/Cold et veille plateforme.
-- **`gravity-bridge`** (`/gravity-bridge`) : boîte aux lettres SQLite WAL inter-workspaces et sidecars `agentapi`.
 - **`gravity-metrics`** (`/gravity-metrics`) : métriques Antigravity, coûts/tokens et signaux d'optimisation.
-- **`gravity-studio`** : atelier de conception, specs, handoffs et suivi multi-projets séparé hors des 5 dépôts produits.
+- **`gravity-studio`** : atelier de conception, specs, handoffs et suivi multi-projets séparé hors des 4 dépôts produits.

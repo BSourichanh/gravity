@@ -12,7 +12,6 @@ APP_JS = r"""
     overview: null,
     workflow: null,
     metrics: null,
-    bridge: null,
     architect: null,
     moduleCache: {},
     moduleLoading: {},
@@ -23,8 +22,6 @@ APP_JS = r"""
     metricsQ: "",
     metricsTariff: "2026",
     metricsSub: "sessions",
-    bridgeStatus: "",
-    bridgeSub: "threads",
     architectSub: "projects",
     sessionTarget: "",
     sessionDetail: null,
@@ -135,7 +132,7 @@ APP_JS = r"""
       const match = tabs.find((t) => t.module_id === moduleId || t.id === moduleId);
       if (match) return match.id;
     }
-    if (v === "workflow" || v === "metrics" || v === "bridge" || v === "architect") {
+    if (v === "workflow" || v === "metrics" || v === "architect") {
       const match = tabs.find((t) => t.id === v || t.kind === v);
       if (match) return match.id;
     }
@@ -154,9 +151,6 @@ APP_JS = r"""
     }
     if (sc.metrics && typeof sc.metrics === "object") {
       state.metrics = sc.metrics;
-    }
-    if (sc.bridge && typeof sc.bridge === "object") {
-      state.bridge = sc.bridge;
     }
     if (sc.architect && typeof sc.architect === "object") {
       state.architect = sc.architect;
@@ -244,27 +238,6 @@ APP_JS = r"""
       }
     } catch (err) {
       if (!silent) showToast("Erreur Metrics : " + err.message, true);
-    } finally {
-      state.pollInFlight = false;
-    }
-  }
-
-  async function loadBridgeState(silent) {
-    if (!state.hostCaps.serverTools || state.pollInFlight) return;
-    state.pollInFlight = true;
-    try {
-      const sig = silent && state.bridge ? (state.bridge.signature || "") : "";
-      const res = await callServerTool("gravity_get_bridge_state", {
-        status: state.bridgeStatus || "",
-        since_signature: sig
-      });
-      const sc = extractStructured(res);
-      if (sc && sc.changed !== false && !sc.unchanged) {
-        state.bridge = sc;
-        render();
-      }
-    } catch (err) {
-      if (!silent) showToast("Erreur Bridge : " + err.message, true);
     } finally {
       state.pollInFlight = false;
     }
@@ -365,8 +338,6 @@ APP_JS = r"""
       loadWorkflowState(false);
     } else if (tab.kind === "metrics" && !state.metrics && state.hostCaps.serverTools) {
       loadMetricsState(false, false);
-    } else if (tab.kind === "bridge" && !state.bridge && state.hostCaps.serverTools) {
-      loadBridgeState(false);
     } else if (tab.kind === "architect" && !state.architect && state.hostCaps.serverTools) {
       loadArchitectState(false);
     } else if (tab.kind === "generic" && tab.module_id && !state.moduleCache[tab.module_id]) {
@@ -380,8 +351,6 @@ APP_JS = r"""
       loadWorkflowState(false);
     } else if (tab.kind === "metrics") {
       loadMetricsState(false, false);
-    } else if (tab.kind === "bridge") {
-      loadBridgeState(false);
     } else if (tab.kind === "architect") {
       loadArchitectState(false);
     } else if (tab.kind === "generic" && tab.module_id) {
@@ -452,8 +421,6 @@ APP_JS = r"""
         renderWorkflowView(main);
       } else if (activeTab.kind === "metrics") {
         renderMetricsView(main);
-      } else if (activeTab.kind === "bridge") {
-        renderBridgeView(main);
       } else if (activeTab.kind === "architect") {
         renderArchitectView(main);
       } else if (activeTab.kind === "generic") {
@@ -529,16 +496,6 @@ APP_JS = r"""
     }
     if (action === "open-file") {
       openMarkdownFile(target.getAttribute("data-uri") || "");
-      return;
-    }
-    if (action === "bridge-status") {
-      state.bridgeStatus = target.getAttribute("data-status") || "";
-      loadBridgeState(false);
-      return;
-    }
-    if (action === "bridge-sub") {
-      state.bridgeSub = target.getAttribute("data-sub") || "threads";
-      render();
       return;
     }
     if (action === "architect-sub") {

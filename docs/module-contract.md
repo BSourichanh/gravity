@@ -46,7 +46,7 @@ Exemple de référence (`gravity` Core) :
 | Champ | Type | Contrainte |
 |---|---|---|
 | `schema_version` | `int` | Doit valoir strictement `1` (pas de booléen ni chaîne) |
-| `id` | `str` | Slug non vide (`^[a-z0-9][a-z0-9_-]*$`), ex. `core`, `architect`, `workflow`, `bridge`, `metrics` |
+| `id` | `str` | Slug non vide (`^[a-z0-9][a-z0-9_-]*$`), ex. `core`, `architect`, `workflow`, `metrics` |
 | `plugin_name` | `str` | Chaîne non vide identique au champ `name` de `plugin/plugin.json` |
 | `role` | `str` | Description concise non vide du périmètre SRP du module |
 | `storage.subdir` | `str` | Sous-répertoire sûr sous `$GRAVITY_HOME` (`^[a-z0-9][a-z0-9_-]*$`) |
@@ -71,14 +71,13 @@ Lors de l'exécution de `init_env.py` (hors `--check` et `--status`), Gravity Co
 
 ---
 
-## 3. Contrats des 5 modules actuels
+## 3. Contrats des 4 modules actuels
 
 | `id` | `plugin_name` | `storage.env_override` | `ui.mode` | `signals.produces` | `signals.consumes` |
 |---|---|---|---|---|---|
 | `core` | `gravity` | `GRAVITY_CORE_HOME` | `core` | `environment-state` | `*` |
 | `architect` | `gravity-architect` | `GRAVITY_ARCHITECT_HOME` | `none` | `ecosystem-health`, `upgrade-deltas` | `—` |
 | `workflow` | `gravity-workflow` | `GRAVITY_WORKFLOW_HOME` | `none` | `workflow-state`, `routing-profile` | `session-metrics` |
-| `bridge` | `gravity-bridge` | `GRAVITY_BRIDGE_HOME` | `none` | `bridge-threads` | `—` |
 | `metrics` | `gravity-metrics` | `GRAVITY_METRICS_HOME` | `transition-mcp` | `session-metrics`, `cost-telemetry` | `—` |
 
 ---

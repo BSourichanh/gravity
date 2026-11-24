@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from dashboard.providers.architect_provider import get_architect_state
-from dashboard.providers.bridge_provider import get_bridge_state  # Transitional W2 shim for mcp/server.py; removed in W3.
 from dashboard.providers.core_provider import get_overview
 from dashboard.providers.generic_provider import get_module_info
 from dashboard.providers.metrics_provider import get_metrics_state, get_session_detail
@@ -23,7 +22,6 @@ def build_initial_summary(
     overview: Optional[dict[str, Any]] = None,
     workflow: Optional[dict[str, Any]] = None,
     metrics: Optional[dict[str, Any]] = None,
-    bridge: Optional[dict[str, Any]] = None,
     architect: Optional[dict[str, Any]] = None,
     module_info: Optional[dict[str, Any]] = None,
     gravity_home: Optional[Path] = None,
@@ -32,13 +30,10 @@ def build_initial_summary(
     workflow_home: Optional[Path] = None,
     metrics_home: Optional[Path] = None,
     audits_dirs: Optional[Sequence[Path]] = None,
-    bridge_home: Optional[Path] = None,
-    db_path: Optional[Path] = None,
     architect_home: Optional[Path] = None,
     architect_workspace: Optional[Path] = None,
 ) -> str:
     """Build a concise plain-text summary for `open_gravity_dashboard` responses."""
-    _ = (bridge, bridge_home, db_path)  # Transitional W2 compat kwargs for mcp/server.py; removed in W3.
     req_view = (view or "overview").strip().lower() or "overview"
     ov = overview if overview is not None else get_overview(
         gravity_home=gravity_home,
@@ -123,7 +118,6 @@ def build_initial_summary(
 __all__ = [
     "build_initial_summary",
     "get_architect_state",
-    "get_bridge_state",  # Transitional W2 shim for mcp/server.py; removed in W3.
     "get_metrics_state",
     "get_module_info",
     "get_overview",
