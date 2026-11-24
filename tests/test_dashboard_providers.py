@@ -204,7 +204,7 @@ class TestCoreAndGenericProviders(unittest.TestCase):
             tmp_path = Path(tmp)
             g_home = tmp_path / "gravity-home"
             fake_user = tmp_path / "user-home"
-            (fake_user / ".gemini" / "gravity-bridge").mkdir(parents=True)
+            (fake_user / ".gemini" / "gravity-metrics").mkdir(parents=True)
             plugins_root = tmp_path / "plugins"
             _write_module_plugin(plugins_root, mod_id="core", plugin_name="gravity", ui_mode="core")
 

@@ -53,6 +53,10 @@ class TestMigrationPlan(unittest.TestCase):
             tmp_path = Path(tmp)
             fake_home = tmp_path / "user-home"
             fake_home.mkdir()
+            # Retired gravity-bridge directory should be ignored cleanly without producing a plan
+            residual_bridge = fake_home / ".gemini" / "gravity-bridge"
+            residual_bridge.mkdir(parents=True)
+            (residual_bridge / "bridge.db").write_text("residual", encoding="utf-8")
             plugins_dir = tmp_path / "plugins"
             shutil.copytree(
                 REPO_ROOT / "plugin",
@@ -170,16 +174,16 @@ class TestMigrationPlan(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             fake_home = tmp_path / "user-home"
-            legacy_bridge = fake_home / ".gemini" / "gravity-bridge"
-            (legacy_bridge / "sub").mkdir(parents=True)
-            (legacy_bridge / "bridge.db").write_text("legacy-db", encoding="utf-8")
-            (legacy_bridge / "sub" / "extra.txt").write_text("extra", encoding="utf-8")
+            legacy_metrics = fake_home / ".gemini" / "gravity-metrics"
+            (legacy_metrics / "sub").mkdir(parents=True)
+            (legacy_metrics / "history.jsonl").write_text('{"legacy":true}\n', encoding="utf-8")
+            (legacy_metrics / "sub" / "extra.txt").write_text("extra", encoding="utf-8")
 
             gravity_home = tmp_path / "gravity-home"
-            target_bridge = gravity_home / "bridge"
-            target_bridge.mkdir(parents=True)
-            target_db = target_bridge / "bridge.db"
-            target_db.write_text("existing-new-db", encoding="utf-8")
+            target_metrics = gravity_home / "metrics"
+            target_metrics.mkdir(parents=True)
+            target_hist = target_metrics / "history.jsonl"
+            target_hist.write_text('{"existing":true}\n', encoding="utf-8")
 
             plugins_dir = tmp_path / "plugins"
             shutil.copytree(
@@ -208,7 +212,7 @@ class TestMigrationPlan(unittest.TestCase):
             plan = out["plans"][0]
             self.assertTrue(plan["conflict"])
             self.assertEqual(plan["collision_count"], 1)
-            self.assertEqual(plan["collisions"], ["bridge.db"])
+            self.assertEqual(plan["collisions"], ["history.jsonl"])
             self.assertEqual(plan["file_count"], 2)
 
             p_human = _run_init_env(
@@ -225,12 +229,12 @@ class TestMigrationPlan(unittest.TestCase):
             )
             self.assertEqual(p_human.returncode, 0, msg=p_human.stderr)
             self.assertIn("[CONFLICT]", p_human.stdout)
-            self.assertIn("bridge.db", p_human.stdout)
+            self.assertIn("history.jsonl", p_human.stdout)
             self.assertIn("# Remove-Item", p_human.stdout)
 
             # Target and source files untouched
-            self.assertEqual(target_db.read_text(encoding="utf-8"), "existing-new-db")
-            self.assertFalse((target_bridge / "sub" / "extra.txt").exists())
+            self.assertEqual(target_hist.read_text(encoding="utf-8"), '{"existing":true}\n')
+            self.assertFalse((target_metrics / "sub" / "extra.txt").exists())
             self.assertFalse((fake_home / "gravity-legacy-backup").exists())
 
     def test_symlink_escape_is_not_followed_and_mutual_exclusion(self) -> None:

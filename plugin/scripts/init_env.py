@@ -11,7 +11,6 @@ from pathlib import Path
 import re
 import shlex
 import shutil
-import sqlite3
 import subprocess
 import sys
 from typing import Any, Callable, Optional, Sequence
@@ -25,7 +24,6 @@ MAX_SCAN_FILES = 10_000
 MAX_SCAN_DEPTH = 32
 MAX_COLLISIONS_SHOWN = 50
 MIN_ANTIGRAVITY_MCP_APP_VERSION: tuple[int, int, int] = (2, 34, 0)
-BRIDGE_ONLINE_TTL_SECONDS = 45.0
 
 GUIDE_QUICKSTART: tuple[str, ...] = (
     "1. Initialiser : /gravity init (cree $GRAVITY_HOME/core/modules.json)",
@@ -550,61 +548,6 @@ def _read_json_file_ro(path: Path) -> tuple[Any, Optional[str]]:
         return None, f"{path} JSON invalide ({exc})."
 
 
-def _inspect_bridge_health_ro(mod_home: Path) -> tuple[str, str, list[str]]:
-    bridge_db = mod_home / "bridge.db"
-    try:
-        db_ok = (
-            not mod_home.is_symlink()
-            and not bridge_db.parent.is_symlink()
-            and not bridge_db.is_symlink()
-            and bridge_db.is_file()
-        )
-    except OSError:
-        db_ok = False
-    if not db_ok:
-        return (
-            "WARN",
-            "bridge.db absente",
-            [
-                f"Module 'bridge' actif mais {bridge_db} absente : "
-                "exécutez /gravity-bridge pour initialiser la base SQLite."
-            ],
-        )
-    try:
-        st_size = bridge_db.stat().st_size
-    except OSError as exc:
-        return "WARN", "bridge.db illisible", [f"Module 'bridge' : {bridge_db} illisible ({exc})."]
-    if st_size == 0:
-        return "OK", "bridge.db initialisée (0 o)", []
-
-    conn: Optional[sqlite3.Connection] = None
-    try:
-        conn = sqlite3.connect(f"file:{bridge_db}?mode=ro", uri=True, timeout=1.0)
-        conn.execute("PRAGMA query_only = ON")
-        tbl = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='workspaces'"
-        ).fetchone()
-        if not tbl:
-            return "WARN", "table workspaces absente", [f"Module 'bridge' : table 'workspaces' absente dans {bridge_db}."]
-        rows = conn.execute("SELECT sidecar_id, sidecar_last_seen_at FROM workspaces").fetchall()
-        now_utc = datetime.now(timezone.utc)
-        online = 0
-        for sid, seen in rows:
-            if isinstance(sid, str) and sid.strip():
-                seen_dt = _parse_iso_utc(seen)
-                if seen_dt is not None and (now_utc - seen_dt).total_seconds() <= BRIDGE_ONLINE_TTL_SECONDS:
-                    online += 1
-        return "OK", f"{online}/{len(rows)} sidecar(s) online", []
-    except (sqlite3.DatabaseError, OSError) as exc:
-        return "WARN", "bridge.db corrompue", [f"Module 'bridge' : {bridge_db} SQLite illisible/corrompue ({exc})."]
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
 def _inspect_metrics_health_ro(mod_home: Path) -> tuple[str, str, list[str]]:
     history_path = mod_home / "data" / "history.jsonl"
     metrics_md = mod_home / "METRICS.md"
@@ -771,8 +714,6 @@ def _inspect_module_health_ro(
             )
         else:
             status, summary, warns = "OK", f"{valid_count} atelier(s) valide(s)", []
-    elif mod_id == "bridge" or plugin_name == "gravity-bridge":
-        status, summary, warns = _inspect_bridge_health_ro(mod_home)
     elif mod_id == "metrics" or plugin_name == "gravity-metrics":
         status, summary, warns = _inspect_metrics_health_ro(mod_home)
     elif mod_id == "workflow" or plugin_name == "gravity-workflow":
@@ -1002,7 +943,7 @@ def _build_overview_help(modules: Sequence[dict[str, Any]]) -> list[dict[str, An
     ]
     comp_items = [
         f"{c['id']} (v{c['version']}) : {', '.join(c['commands']) or '-'}" for c in companions
-    ] or ["Aucun module compagnon détecté (Paliers 2/3 : metrics, architect, bridge, workflow)"]
+    ] or ["Aucun module compagnon détecté (Paliers 2/3 : workflow, metrics, architect)"]
     return [
         {"id": "quickstart", "title": "Démarrage / Init", "items": ["/gravity init — Créer $GRAVITY_HOME/core/modules.json et dossiers modules"]},
         {"id": "diagnostic", "title": "Diagnostic / Santé", "items": ["/gravity status — État RO", "/gravity doctor — Audit contrats & legacy (--migration-plan)", "/gravity modules — Liste JSON"]},
@@ -1312,7 +1253,7 @@ def _print_guide_report(payload: dict[str, Any]) -> None:
             cmds = ", ".join(commands.get(mod_id) or mod.get("commands") or []) or "-"
             lines.append(f"  - {mod_id} (v{ver}) : {cmds}")
     elif installed:
-        lines.append("Modules detectes : core uniquement (Paliers 2/3 : metrics, architect, bridge)")
+        lines.append("Modules detectes : core uniquement (Paliers 2/3 : workflow, metrics, architect)")
     else:
         lines.append("Modules detectes : aucun dans --plugins-dir")
 

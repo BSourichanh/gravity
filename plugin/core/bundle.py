@@ -9,7 +9,6 @@ import os
 from pathlib import Path, PurePosixPath
 import platform
 import re
-import sqlite3
 import stat
 import tempfile
 from typing import Any, Optional, Sequence
@@ -85,8 +84,6 @@ def _is_strictly_excluded(rel_posix: str) -> bool:
     norm = rel_posix.replace("\\", "/").lstrip("/")
     lower = norm.lower()
     if lower in _STRICT_EXCLUDED_EXACT:
-        return True
-    if lower == "bridge/logs" or lower.startswith("bridge/logs/"):
         return True
     name = PurePosixPath(lower).name
     if name.endswith(".lock") or name.endswith(".db-wal") or name.endswith(".db-shm"):
@@ -220,8 +217,6 @@ def _collect_dir_items(
             if entry.is_dir():
                 if entry.name in _EXCLUDED_DIR_NAMES:
                     continue
-                if rel_prefix == "bridge" and entry.name == "logs":
-                    continue
                 stack.append(entry)
                 continue
             if not entry.is_file():
@@ -259,23 +254,6 @@ def _collect_single_file(
         return
     seen_targets.add(target_rel)
     collected.append((target_rel, file_path.read_bytes(), kind))
-
-
-def _snapshot_sqlite_ro(db_path: Path) -> bytes:
-    """Create a consistent SQLite snapshot using sqlite3.backup() and release all handles."""
-    with tempfile.TemporaryDirectory() as tmp:
-        snap_path = Path(tmp) / "bridge.snapshot.db"
-        uri = f"file:{db_path.resolve()}?mode=ro"
-        src_conn = sqlite3.connect(uri, uri=True, timeout=5.0)
-        try:
-            dst_conn = sqlite3.connect(str(snap_path))
-            try:
-                src_conn.backup(dst_conn)
-            finally:
-                dst_conn.close()
-        finally:
-            src_conn.close()
-        return snap_path.read_bytes()
 
 
 def _resolve_export_zip_path(out: Optional[str | Path], drive_dir: Optional[str], stamp: str) -> Path:
@@ -328,14 +306,6 @@ def export_bundle(
         "architect/ateliers.json",
     ):
         _collect_single_file(base / rel_file, rel_file, "gravity_home", collected, skipped, seen_targets)
-
-    bridge_db = base / "bridge" / "bridge.db"
-    if bridge_db.is_symlink():
-        skipped.append(f"symlink:{bridge_db}")
-    elif bridge_db.is_file():
-        db_bytes = _snapshot_sqlite_ro(bridge_db)
-        seen_targets.add("bridge/bridge.db")
-        collected.append(("bridge/bridge.db", db_bytes, "sqlite_backup"))
 
     wf_root = base / "workflow" / "workspaces"
     if wf_root.is_dir() and not wf_root.is_symlink():

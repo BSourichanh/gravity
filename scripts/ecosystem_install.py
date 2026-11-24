@@ -19,7 +19,6 @@ TOPOLOGICAL_ORDER: tuple[str, ...] = (
     "gravity-workflow",
     "gravity-metrics",
     "gravity-architect",
-    "gravity-bridge",
 )
 
 TIERS: dict[int, tuple[str, ...]] = {
@@ -439,7 +438,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         choices=(1, 2, 3),
         default=None,
-        help="Suite tier: 1 (core+workflow), 2 (+metrics), 3 (all 5 repos, default).",
+        help="Suite tier: 1 (core+workflow), 2 (+metrics), 3 (all 4 repos, default).",
     )
     select_group.add_argument(
         "--modules",

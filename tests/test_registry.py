@@ -188,7 +188,6 @@ class TestRegistry(unittest.TestCase):
             self.assertEqual(detect_legacy_homes(fake_home), [])
 
             legacy_targets = (
-                fake_home / ".gemini" / "gravity-bridge",
                 fake_home / ".gemini" / "gravity-metrics",
                 fake_home / ".gemini" / "gravity-workflow",
                 fake_home / ".gravity",
@@ -200,12 +199,18 @@ class TestRegistry(unittest.TestCase):
                 sentinel.write_text(f"data-{idx}", encoding="utf-8")
                 sentinels.append(sentinel)
 
+            # Residual retired gravity-bridge directory must be ignored cleanly
+            residual_bridge = fake_home / ".gemini" / "gravity-bridge"
+            residual_bridge.mkdir(parents=True)
+            (residual_bridge / "bridge.db").write_text("residual", encoding="utf-8")
+
             detected = detect_legacy_homes(fake_home)
-            self.assertEqual(len(detected), 4)
+            self.assertEqual(len(detected), 3)
             self.assertEqual(
                 {item["name"] for item in detected},
-                {"gravity-bridge", "gravity-metrics", "gravity-workflow", "gravity"},
+                {"gravity-metrics", "gravity-workflow", "gravity"},
             )
+            self.assertEqual((residual_bridge / "bridge.db").read_text(encoding="utf-8"), "residual")
             # Ensure strictly read-only: sentinels intact
             for idx, sentinel in enumerate(sentinels):
                 self.assertTrue(sentinel.is_file())

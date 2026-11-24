@@ -15,7 +15,6 @@ GRAVITY_HOME_ENV = "GRAVITY_HOME"
 MODULE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 LEGACY_HOME_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    ("gravity-bridge", "bridge", (".gemini", "gravity-bridge")),
     ("gravity-metrics", "metrics", (".gemini", "gravity-metrics")),
     ("gravity-workflow", "workflow", (".gemini", "gravity-workflow")),
     ("gravity", "workflow", (".gravity",)),

@@ -129,10 +129,10 @@ class TestBundleExportImport(unittest.TestCase):
             (gravity_home / "core" / "sync.lock").write_text("lock", encoding="utf-8")
             (gravity_home / "workflow" / "live_workspaces.json").write_text("{}\n", encoding="utf-8")
             (gravity_home / "metrics" / "session_meta.json").write_text("{}\n", encoding="utf-8")
+            # Residual bridge/ directory (including WAL/logs) must be tolerated and excluded cleanly
             (gravity_home / "bridge" / "logs").mkdir(parents=True)
             (gravity_home / "bridge" / "logs" / "relay.log").write_text("log\n", encoding="utf-8")
 
-            # Active uncheckpointed SQLite WAL database
             db_path = gravity_home / "bridge" / "bridge.db"
             conn = sqlite3.connect(str(db_path))
             try:
@@ -184,18 +184,18 @@ class TestBundleExportImport(unittest.TestCase):
                 names = set(zf.namelist())
                 self.assertIn("manifest.json", names)
                 self.assertIn("metrics/data/history.jsonl", names)
-                self.assertIn("bridge/bridge.db", names)
                 self.assertIn("workflow/workspaces/app-1/profile.json", names)
                 self.assertIn("ateliers/studio/ECOSYSTEM.md", names)
                 self.assertIn("ateliers/studio/tasks/t1.md", names)
                 self.assertIn("ateliers/studio/audits/code/c1.md", names)
 
-                # Strict exclusions
+                # Strict exclusions and retired bridge assets omitted without error
                 for forbidden in (
                     "core/modules.json",
                     "core/sync.lock",
                     "workflow/live_workspaces.json",
                     "metrics/session_meta.json",
+                    "bridge/bridge.db",
                     "bridge/logs/relay.log",
                     "bridge/bridge.db-wal",
                     "bridge/bridge.db-shm",
@@ -206,14 +206,14 @@ class TestBundleExportImport(unittest.TestCase):
                 ):
                     self.assertNotIn(forbidden, names)
 
-                snap_db = tmp_path / "extracted.db"
-                snap_db.write_bytes(zf.read("bridge/bridge.db"))
-                chk = sqlite3.connect(str(snap_db))
-                try:
-                    rows = chk.execute("SELECT subject FROM threads").fetchall()
-                finally:
-                    chk.close()
-                self.assertEqual(rows, [("live-wal-row",)])
+            restored_home = tmp_path / "restored-home"
+            imp_proc = _run_init_env(
+                ["--gravity-home", str(restored_home), "--import", str(out_zip), "--json"],
+                fake_home=fake_home,
+            )
+            self.assertEqual(imp_proc.returncode, 0, msg=imp_proc.stderr or imp_proc.stdout)
+            self.assertTrue((restored_home / "metrics" / "data" / "history.jsonl").is_file())
+            self.assertFalse((restored_home / "bridge").exists())
 
     def test_import_dry_run_integrity_remapping_and_human_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -220,7 +219,7 @@ class TestInitEnvCLI(unittest.TestCase):
                 plugins_dir / "gravity",
                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
             )
-            _create_fake_module(plugins_dir, "bridge", "gravity-bridge", "GRAVITY_BRIDGE_HOME")
+            _create_fake_module(plugins_dir, "metrics", "gravity-metrics", "GRAVITY_METRICS_HOME")
 
             gravity_home = tmp_path / "uninit-dash-home"
             env = _isolated_env(fake_home)
@@ -253,7 +252,7 @@ class TestInitEnvCLI(unittest.TestCase):
             self.assertTrue(out["dashboard"]["mcp_config_ok"])
             self.assertTrue(out["dashboard"]["server_exists"])
             self.assertTrue(out["dashboard"]["api_exists"])
-            self.assertEqual([t["id"] for t in out["tabs"]], ["overview", "bridge"])
+            self.assertEqual([t["id"] for t in out["tabs"]], ["overview", "metrics"])
 
             p_txt = subprocess.run(
                 [
@@ -396,7 +395,7 @@ class TestInitEnvCLI(unittest.TestCase):
             self.assertEqual(p_help.returncode, 0)
             self.assertIn("--guide", p_help.stdout)
 
-    def test_check_warns_non_blocking_for_missing_architect_registry_and_bridge_db(self) -> None:
+    def test_check_warns_non_blocking_for_missing_architect_and_metrics_without_bridge(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             fake_home = tmp_path / "user-home"
@@ -408,14 +407,14 @@ class TestInitEnvCLI(unittest.TestCase):
                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
             )
             _create_fake_module(plugins_dir, "architect", "gravity-architect", "GRAVITY_ARCHITECT_HOME")
-            _create_fake_module(plugins_dir, "bridge", "gravity-bridge", "GRAVITY_BRIDGE_HOME")
+            _create_fake_module(plugins_dir, "metrics", "gravity-metrics", "GRAVITY_METRICS_HOME")
 
             gravity_home = tmp_path / "doctor-home"
             empty_bin = tmp_path / "empty-bin"
             empty_bin.mkdir()
             env = _isolated_env(fake_home, {"PATH": str(empty_bin)})
 
-            # 1) Missing ateliers.json and missing bridge.db -> non-blocking warnings, exit 0, strictly RO
+            # 1) Missing ateliers.json and missing history.jsonl/METRICS.md -> non-blocking warnings, exit 0, strictly RO
             p_missing = subprocess.run(
                 [
                     sys.executable,
@@ -444,8 +443,9 @@ class TestInitEnvCLI(unittest.TestCase):
             joined = "\n".join(out["warnings"])
             self.assertIn("ateliers.json", joined)
             self.assertIn("/gravity-architect init", joined)
-            self.assertIn("bridge.db", joined)
-            self.assertIn("/gravity-bridge", joined)
+            self.assertIn("history.jsonl", joined)
+            self.assertIn("/gravity-metrics", joined)
+            self.assertNotIn("bridge", joined.lower())
 
             # Human-readable output also displays non-blocking warnings
             p_txt = subprocess.run(
@@ -470,10 +470,10 @@ class TestInitEnvCLI(unittest.TestCase):
             self.assertEqual(p_txt.returncode, 0, msg=p_txt.stderr)
             self.assertIn("[WARN]", p_txt.stdout)
             self.assertIn("/gravity-architect", p_txt.stdout)
-            self.assertIn("/gravity-bridge", p_txt.stdout)
+            self.assertIn("/gravity-metrics", p_txt.stdout)
             self.assertFalse(gravity_home.exists())
 
-            # 2) Empty ateliers.json (0 valid ateliers) -> still warns for architect
+            # 2) Empty ateliers.json (0 valid ateliers) -> still warns for architect + metrics
             arch_home = gravity_home / "architect"
             arch_home.mkdir(parents=True)
             (arch_home / "ateliers.json").write_text(
@@ -505,7 +505,7 @@ class TestInitEnvCLI(unittest.TestCase):
             self.assertTrue(out_empty["ok"])
             self.assertEqual(len(out_empty["warnings"]), 2)
 
-            # 3) Valid atelier + bridge.db present -> 0 warning
+            # 3) Valid atelier + valid metrics + residual bridge/ directory -> 0 warning
             atelier_dir = tmp_path / "atelier-ok"
             atelier_dir.mkdir()
             (atelier_dir / "ECOSYSTEM.md").write_text("# Atelier\n", encoding="utf-8")
@@ -514,9 +514,13 @@ class TestInitEnvCLI(unittest.TestCase):
                 json.dumps({"schema_version": 1, "ateliers": [{"workspace_path": str(atelier_dir)}]}),
                 encoding="utf-8",
             )
-            bridge_home = gravity_home / "bridge"
-            bridge_home.mkdir(parents=True)
-            (bridge_home / "bridge.db").write_bytes(b"")
+            metrics_home = gravity_home / "metrics"
+            (metrics_home / "data").mkdir(parents=True)
+            (metrics_home / "data" / "history.jsonl").write_text('{"id":"s1"}\n', encoding="utf-8")
+            (metrics_home / "METRICS.md").write_text("# Metrics\n", encoding="utf-8")
+            residual_bridge = gravity_home / "bridge"
+            residual_bridge.mkdir(parents=True)
+            (residual_bridge / "bridge.db").write_bytes(b"corrupt residual")
 
             p_clean = subprocess.run(
                 [
@@ -785,27 +789,21 @@ class TestInitEnvCLI(unittest.TestCase):
         with mock.patch.object(init_env, "os", _NtOs()), mock.patch.object(init_env, "winreg", _FakeWinreg({})):
             self.assertIsNone(init_env._detect_windows_app_version())
 
-    def test_check_metrics_workflow_and_bridge_sqlite_health(self) -> None:
+    def test_check_metrics_workflow_health_and_residual_bridge_tolerance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             fake_home = tmp_path / "user-home"
             fake_home.mkdir()
             plugins_dir = tmp_path / "plugins"
             shutil.copytree(REPO_ROOT / "plugin", plugins_dir / "gravity", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-            _create_fake_module(plugins_dir, "bridge", "gravity-bridge", "GRAVITY_BRIDGE_HOME")
             _create_fake_module(plugins_dir, "metrics", "gravity-metrics", "GRAVITY_METRICS_HOME")
             _create_fake_module(plugins_dir, "workflow", "gravity-workflow", "GRAVITY_WORKFLOW_HOME")
             (plugins_dir / "gravity-workflow" / "hooks.json").write_text('{"g": {"enabled": true}}\n', encoding="utf-8")
 
             gravity_home = tmp_path / "g-home"
-            # Populate valid bridge.db (0 online sidecars -> [OK]), valid metrics, valid workflow
+            # Residual bridge/ directory (even corrupt) must be tolerated without errors or warnings
             (gravity_home / "bridge").mkdir(parents=True)
-            conn = sqlite3.connect(gravity_home / "bridge" / "bridge.db")
-            conn.execute("CREATE TABLE workspaces (slug TEXT, sidecar_id TEXT, sidecar_last_seen_at TEXT)")
-            stale = "2020-01-01T00:00:00Z"
-            conn.execute("INSERT INTO workspaces VALUES ('ws1', 'sc1', ?)", (stale,))
-            conn.commit()
-            conn.close()
+            (gravity_home / "bridge" / "bridge.db").write_bytes(b"residual corrupt")
 
             (gravity_home / "metrics" / "data").mkdir(parents=True)
             (gravity_home / "metrics" / "data" / "history.jsonl").write_text('{"id":"s1"}\n', encoding="utf-8")
@@ -826,10 +824,9 @@ class TestInitEnvCLI(unittest.TestCase):
             self.assertEqual(rc_ok, 0)
             self.assertEqual(p_ok["warnings"], [])
 
-            # Corrupt metrics JSONL, corrupt workflow runs.jsonl, corrupt bridge.db -> non-blocking warnings
+            # Corrupt metrics JSONL and corrupt workflow runs.jsonl -> non-blocking warnings (no bridge probe)
             (gravity_home / "metrics" / "data" / "history.jsonl").write_text("{corrupt\n", encoding="utf-8")
             (wf_ws / "runs.jsonl").write_text("{corrupt\n", encoding="utf-8")
-            (gravity_home / "bridge" / "bridge.db").write_bytes(b"not sqlite")
             p_warn, rc_warn = init_env.run_environment(
                 gravity_home=gravity_home,
                 plugins_dirs=[plugins_dir],
@@ -839,7 +836,7 @@ class TestInitEnvCLI(unittest.TestCase):
             )
             self.assertEqual(rc_warn, 0)
             joined = "\n".join(p_warn["warnings"])
-            self.assertIn("bridge", joined)
+            self.assertNotIn("bridge", joined.lower())
             self.assertIn("metrics", joined)
             self.assertIn("workflow", joined)
 
@@ -885,6 +882,22 @@ class TestInitEnvCLI(unittest.TestCase):
             self.assertGreater(len(p_guide.stdout.splitlines()), 20)
             for i in range(1, 11):
                 self.assertIn(f"mod{i}", p_guide.stdout)
+
+            # Core-only --overview and --guide must not advertise retired bridge
+            core_only_plugins = tmp_path / "core-only-plugins"
+            shutil.copytree(REPO_ROOT / "plugin", core_only_plugins / "gravity", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            p_core_ov = subprocess.run(
+                [sys.executable, "-B", str(INIT_SCRIPT), "--gravity-home", str(gravity_home), "--plugins-dir", str(core_only_plugins), "--overview"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=15, check=False,
+            )
+            self.assertEqual(p_core_ov.returncode, 0)
+            self.assertNotIn("bridge", p_core_ov.stdout.lower())
+            p_core_guide = subprocess.run(
+                [sys.executable, "-B", str(INIT_SCRIPT), "--gravity-home", str(gravity_home), "--plugins-dir", str(core_only_plugins), "--guide"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=15, check=False,
+            )
+            self.assertEqual(p_core_guide.returncode, 0)
+            self.assertNotIn("bridge", p_core_guide.stdout.lower())
 
 
 if __name__ == "__main__":

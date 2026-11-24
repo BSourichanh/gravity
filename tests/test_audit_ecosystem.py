@@ -177,9 +177,11 @@ def _create_compliant_repo(
     return repo_dir
 
 
-def _run_auditor(args: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_auditor(args: list[str], *, env_overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if env_overrides:
+        env.update(env_overrides)
     return subprocess.run(
         [sys.executable, "-B", str(AUDITOR), *args],
         capture_output=True,
@@ -187,9 +189,36 @@ def _run_auditor(args: list[str]) -> subprocess.CompletedProcess[str]:
         encoding="utf-8",
         errors="replace",
         env=env,
-        timeout=20,
+        timeout=30,
         check=False,
     )
+
+
+def _install_fake_agy(bin_dir: Path, *, fail_repo: str | None = None) -> None:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    runner = bin_dir / "agy_runner.py"
+    _write_lf(
+        runner,
+        (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "repo = Path.cwd().name\n"
+            "print(f'agy:{repo}:' + ' '.join(sys.argv[1:]))\n"
+            f"if repo == {fail_repo!r}:\n"
+            "    print(f'forced agy failure on {repo}', file=sys.stderr)\n"
+            "    raise SystemExit(1)\n"
+        ),
+    )
+    if os.name == "nt":
+        cmd_path = bin_dir / "agy.cmd"
+        cmd_path.write_text(
+            f'@echo off\r\n"{sys.executable}" -B "%~dp0agy_runner.py" %*\r\n',
+            encoding="utf-8",
+        )
+    else:
+        sh_path = bin_dir / "agy"
+        _write_lf(sh_path, f'#!/bin/sh\nexec "{sys.executable}" -B "$(dirname "$0")/agy_runner.py" "$@"\n')
+        sh_path.chmod(0o755)
 
 
 class TestAuditEcosystem(unittest.TestCase):
@@ -204,7 +233,8 @@ class TestAuditEcosystem(unittest.TestCase):
                 root / "gravity-architect" / "plugin" / "rules" / "AGENTS.md",
                 "# Gravity Architect\n\n- Hot/Cold, `audits/code/` isolé d'`audits/agents/`.\n",
             )
-            _create_compliant_repo(root, "gravity-bridge", with_mcp_config=True)
+            # Retired gravity-bridge directory on disk must not be audited by default
+            (root / "gravity-bridge").mkdir()
 
             # Embedded frontend bundle > 1500 lines under plugin/mcp/ui/ must be exempted
             _write_lf(
@@ -216,7 +246,9 @@ class TestAuditEcosystem(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, msg=proc.stdout + proc.stderr)
             payload = json.loads(proc.stdout)
             self.assertTrue(payload["ok"])
-            self.assertEqual(payload["summary"]["pass_count"], 5)
+            self.assertEqual(payload["summary"]["repo_count"], 4)
+            self.assertEqual(payload["summary"]["pass_count"], 4)
+            self.assertNotIn("gravity-bridge", [r["repo"] for r in payload["repos"]])
             self.assertEqual(payload["summary"]["total_errors"], 0)
             self.assertEqual(payload["summary"]["total_warnings"], 0)
 
@@ -242,13 +274,13 @@ class TestAuditEcosystem(unittest.TestCase):
     def test_validate_contract_detects_missing_fix_python_cmd_when_manifest_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            repo = _create_compliant_repo(root, "gravity-bridge", with_mcp_config=True)
+            repo = _create_compliant_repo(root, "gravity-metrics", with_mcp_config=True)
             _write_lf(
                 repo / "plugin" / "scripts" / "validate.py",
                 _make_validator_source(include_fix_python=False),
             )
 
-            proc = _run_auditor(["--repos-root", str(root), "--repos", "gravity-bridge", "--json"])
+            proc = _run_auditor(["--repos-root", str(root), "--repos", "gravity-metrics", "--json"])
             self.assertEqual(proc.returncode, 1)
             payload = json.loads(proc.stdout)
             missing = payload["repos"][0]["checks"]["validate_contract"]["missing"]
@@ -444,7 +476,7 @@ class TestAuditEcosystem(unittest.TestCase):
     def test_cross_repo_cumulative_rules_budget_contradictions_and_collisions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            names = ("gravity", "gravity-metrics", "gravity-architect", "gravity-bridge")
+            names = ("gravity", "gravity-workflow", "gravity-metrics", "gravity-architect")
             for n in names:
                 _create_compliant_repo(root, n)
 
@@ -461,15 +493,15 @@ class TestAuditEcosystem(unittest.TestCase):
             p_strict = _run_auditor(["--repos-root", str(root), "--repos", ",".join(names), "--strict"])
             self.assertEqual(p_strict.returncode, 1)
 
-            # Exceed 4500 B cumulative? Wait: keep each <= 1000 B? With 5 repos * 950 B = 4750 B > 4500 error!
+            # Exceed 4500 B cumulative with 5 repos * 950 B = 4750 B > 4500 error
             _create_compliant_repo(root, "gravity-extra")
             for n in (*names, "gravity-extra"):
                 _write_lf(root / n / "plugin" / "rules" / "AGENTS.md", "# R\n" + ("x" * 946))
 
-            # Add rule contradictions + id/command collision (keep gravity-bridge rules at 950 B -> total 4750 B > 4500)
+            # Add rule contradictions + id/command collision (keep gravity-workflow rules at 950 B -> total 4750 B > 4500)
             bridge_rule = "# Bridge\n- Activer le dispatch proactif automatique.\n"
             _write_lf(
-                root / "gravity-bridge" / "plugin" / "rules" / "AGENTS.md",
+                root / "gravity-workflow" / "plugin" / "rules" / "AGENTS.md",
                 bridge_rule + ("x" * (950 - len(bridge_rule.encode("utf-8")))),
             )
             _write_lf(
@@ -494,6 +526,124 @@ class TestAuditEcosystem(unittest.TestCase):
             self.assertTrue(any("Bridge" in c for c in cross["contradictions"]))
             self.assertTrue(any("main" in c for c in cross["contradictions"]))
             self.assertTrue(any("audits/" in c for c in cross["contradictions"]))
+
+    def test_verify_parallel_four_repos_pass_json_and_console(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repos = ("gravity", "gravity-workflow", "gravity-metrics", "gravity-architect")
+            for name in repos:
+                repo = _create_compliant_repo(root, name, with_rules=(name != "gravity-workflow"))
+                _write_lf(
+                    repo / "tests" / "test_ok.py",
+                    "import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n",
+                )
+
+            fake_bin = Path(tmp) / "fake-bin"
+            _install_fake_agy(fake_bin)
+            env_with_agy = {"PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", "")}
+
+            proc = _run_auditor(
+                ["--repos-root", str(root), "--verify-parallel", "--strict", "--json"],
+                env_overrides=env_with_agy,
+            )
+            self.assertEqual(proc.returncode, 0, msg=proc.stdout + proc.stderr)
+            payload = json.loads(proc.stdout)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["mode"], "verify-parallel")
+            self.assertTrue(payload["strict"])
+            self.assertEqual(payload["max_workers"], 4)
+            self.assertEqual([r["repo"] for r in payload["repos"]], list(repos))
+            self.assertEqual(payload["summary"]["repo_count"], 4)
+            self.assertEqual(payload["summary"]["pass_count"], 4)
+            self.assertEqual(payload["summary"]["fail_count"], 0)
+            self.assertEqual(payload["summary"]["checks_total"], 12)
+            self.assertEqual(payload["summary"]["checks_passed"], 12)
+            for item in payload["repos"]:
+                self.assertTrue(item["ok"])
+                self.assertEqual(set(item["checks"].keys()), {"validate", "agy", "unittest"})
+                self.assertTrue(all(c["ok"] and c["returncode"] == 0 for c in item["checks"].values()))
+
+            # Console output without --json
+            p_con = _run_auditor(
+                ["--repos-root", str(root), "--verify-parallel", "--strict"],
+                env_overrides=env_with_agy,
+            )
+            self.assertEqual(p_con.returncode, 0, msg=p_con.stdout + p_con.stderr)
+            self.assertIn("Gravity Ecosystem Parallel Verify", p_con.stdout)
+            self.assertIn("[PASS] 4/4 dépôts validés en parallèle", p_con.stdout)
+
+    def test_verify_parallel_fail_closed_on_check_or_missing_repo_or_missing_agy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repos = ("gravity", "gravity-workflow", "gravity-metrics", "gravity-architect")
+            for name in repos:
+                repo = _create_compliant_repo(root, name, with_rules=(name != "gravity-workflow"))
+                _write_lf(
+                    repo / "tests" / "test_ok.py",
+                    "import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n",
+                )
+
+            # 1) Failing unittest in 1 of 4 repos -> fail-closed exit 1
+            _write_lf(
+                root / "gravity-metrics" / "tests" / "test_ok.py",
+                "import unittest\nclass T(unittest.TestCase):\n    def test_fail(self):\n        self.fail('boom')\n",
+            )
+            fake_bin = Path(tmp) / "fake-bin"
+            _install_fake_agy(fake_bin)
+            env_with_agy = {"PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", "")}
+
+            p_fail_test = _run_auditor(
+                ["--repos-root", str(root), "--verify-parallel", "--strict", "--json"],
+                env_overrides=env_with_agy,
+            )
+            self.assertEqual(p_fail_test.returncode, 1)
+            out_fail = json.loads(p_fail_test.stdout)
+            self.assertFalse(out_fail["ok"])
+            self.assertEqual(out_fail["summary"]["pass_count"], 3)
+            self.assertEqual(out_fail["summary"]["fail_count"], 1)
+            gm = next(r for r in out_fail["repos"] if r["repo"] == "gravity-metrics")
+            self.assertFalse(gm["ok"])
+            self.assertFalse(gm["checks"]["unittest"]["ok"])
+            self.assertTrue(gm["checks"]["validate"]["ok"])
+            self.assertTrue(gm["checks"]["agy"]["ok"])
+
+            # Fix unittest, break agy on gravity-workflow -> fail-closed exit 1
+            _write_lf(
+                root / "gravity-metrics" / "tests" / "test_ok.py",
+                "import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n",
+            )
+            fake_bin_fail = Path(tmp) / "fake-bin-fail"
+            _install_fake_agy(fake_bin_fail, fail_repo="gravity-workflow")
+            p_fail_agy = _run_auditor(
+                ["--repos-root", str(root), "--verify-parallel", "--json"],
+                env_overrides={"PATH": str(fake_bin_fail) + os.pathsep + os.environ.get("PATH", "")},
+            )
+            self.assertEqual(p_fail_agy.returncode, 1)
+            gw = next(r for r in json.loads(p_fail_agy.stdout)["repos"] if r["repo"] == "gravity-workflow")
+            self.assertFalse(gw["checks"]["agy"]["ok"])
+
+            # 2) Missing agy executable on PATH -> fail-closed exit 1 (never skipped)
+            empty_bin = Path(tmp) / "empty-bin"
+            empty_bin.mkdir()
+            p_no_agy = _run_auditor(
+                ["--repos-root", str(root), "--verify-parallel", "--repos", "gravity", "--json"],
+                env_overrides={"PATH": str(empty_bin)},
+            )
+            self.assertEqual(p_no_agy.returncode, 1)
+            out_no_agy = json.loads(p_no_agy.stdout)
+            self.assertFalse(out_no_agy["ok"])
+            self.assertFalse(out_no_agy["repos"][0]["checks"]["agy"]["ok"])
+
+            # 3) Missing repo directory -> fail-closed exit 1
+            p_missing_repo = _run_auditor(
+                ["--repos-root", str(root), "--verify-parallel", "--repos", "gravity,missing-repo", "--json"],
+                env_overrides=env_with_agy,
+            )
+            self.assertEqual(p_missing_repo.returncode, 1)
+            out_miss = json.loads(p_missing_repo.stdout)
+            self.assertFalse(out_miss["ok"])
+            self.assertEqual(out_miss["summary"]["pass_count"], 1)
+            self.assertEqual(out_miss["summary"]["fail_count"], 1)
 
 
 if __name__ == "__main__":

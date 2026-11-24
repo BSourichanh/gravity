@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Read-only cross-repo drift detector for the 5 Gravity repositories (100% stdlib Python 3.10+)."""
+"""Read-only cross-repo drift detector and parallel verifier for the 4 active Gravity repositories (100% stdlib Python 3.10+)."""
 
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import sys
+import time
 from typing import Any, Optional, Sequence
 
 try:
@@ -59,8 +64,9 @@ DEFAULT_REPOS: tuple[str, ...] = (
     "gravity-workflow",
     "gravity-metrics",
     "gravity-architect",
-    "gravity-bridge",
 )
+VERIFY_PARALLEL_MAX_WORKERS = 4
+VERIFY_CMD_TIMEOUT_SECONDS = 300.0
 
 REQUIRED_INSTALL_FLAGS: tuple[str, ...] = (
     "--scope",
@@ -463,6 +469,265 @@ def audit_repo(
     }
 
 
+def _tail_lines(text: str, max_lines: int = 12) -> str:
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    return "\n".join(lines[-max_lines:])
+
+
+def _failed_check_result(
+    error: str,
+    *,
+    cmd: Optional[list[str]] = None,
+    returncode: int = 1,
+    duration_s: float = 0.0,
+) -> dict[str, Any]:
+    return {
+        "cmd": list(cmd or []),
+        "returncode": returncode,
+        "ok": False,
+        "duration_s": round(duration_s, 3),
+        "stdout_tail": "",
+        "stderr_tail": error,
+        "error": error,
+    }
+
+
+def _run_verify_cmd(cmd: list[str], cwd: Path, timeout_s: float) -> dict[str, Any]:
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            env=env,
+            shell=False,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        elapsed = time.monotonic() - started
+        res = _failed_check_result(
+            f"Timeout après {timeout_s:.0f}s : {' '.join(cmd)}",
+            cmd=cmd,
+            returncode=124,
+            duration_s=elapsed,
+        )
+        if exc.stdout:
+            out_txt = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else str(exc.stdout)
+            res["stdout_tail"] = _tail_lines(out_txt)
+        if exc.stderr:
+            err_txt = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr)
+            res["stderr_tail"] = _tail_lines(err_txt)
+        return res
+    except OSError as exc:
+        return _failed_check_result(
+            f"Erreur exécution ({exc}) : {' '.join(cmd)}",
+            cmd=cmd,
+            returncode=127,
+            duration_s=time.monotonic() - started,
+        )
+
+    elapsed = round(time.monotonic() - started, 3)
+    ok = proc.returncode == 0
+    result: dict[str, Any] = {
+        "cmd": cmd,
+        "returncode": proc.returncode,
+        "ok": ok,
+        "duration_s": elapsed,
+        "stdout_tail": _tail_lines(proc.stdout),
+        "stderr_tail": _tail_lines(proc.stderr),
+    }
+    if not ok:
+        detail = result["stderr_tail"] or result["stdout_tail"] or f"exit {proc.returncode}"
+        result["error"] = f"Échec commande (rc={proc.returncode}) : {detail.splitlines()[-1]}"
+    return result
+
+
+def verify_repo_checks(
+    repo_name: str,
+    repo_dir: Path,
+    *,
+    agy_bin: Optional[str] = None,
+    timeout_s: float = VERIFY_CMD_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Run validate.py --strict, agy plugin validate ./plugin --strict, and unittest discover for one repo."""
+    started = time.monotonic()
+    if not repo_dir.is_dir():
+        msg = f"Dépôt introuvable : {repo_dir}"
+        return {
+            "repo": repo_name,
+            "path": str(repo_dir),
+            "exists": False,
+            "ok": False,
+            "status": "FAIL",
+            "duration_s": 0.0,
+            "errors": [msg],
+            "checks": {
+                "validate": _failed_check_result(msg),
+                "agy": _failed_check_result(msg),
+                "unittest": _failed_check_result(msg),
+            },
+        }
+
+    checks: dict[str, dict[str, Any]] = {}
+    val_script = repo_dir / "plugin" / "scripts" / "validate.py"
+    if not val_script.is_file():
+        checks["validate"] = _failed_check_result("plugin/scripts/validate.py introuvable.")
+    else:
+        checks["validate"] = _run_verify_cmd(
+            [sys.executable, "-B", str(val_script), "--strict"],
+            repo_dir,
+            timeout_s,
+        )
+
+    plugin_dir = repo_dir / "plugin"
+    resolved_agy = agy_bin if agy_bin is not None else shutil.which("agy")
+    if not plugin_dir.is_dir():
+        checks["agy"] = _failed_check_result("Dossier plugin/ introuvable.")
+    elif not resolved_agy:
+        checks["agy"] = _failed_check_result("Exécutable 'agy' introuvable dans PATH (fail-closed).", returncode=127)
+    else:
+        checks["agy"] = _run_verify_cmd(
+            [resolved_agy, "plugin", "validate", "./plugin", "--strict"],
+            repo_dir,
+            timeout_s,
+        )
+
+    tests_dir = repo_dir / "tests"
+    if not tests_dir.is_dir():
+        checks["unittest"] = _failed_check_result("Dossier tests/ introuvable.")
+    else:
+        checks["unittest"] = _run_verify_cmd(
+            [sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"],
+            repo_dir,
+            timeout_s,
+        )
+
+    errors: list[str] = []
+    for cname, res in checks.items():
+        if not res.get("ok"):
+            errors.append(f"{cname}: {res.get('error') or 'failed'}")
+
+    repo_ok = len(errors) == 0 and all(bool(c.get("ok")) for c in checks.values())
+    return {
+        "repo": repo_name,
+        "path": str(repo_dir),
+        "exists": True,
+        "ok": repo_ok,
+        "status": "PASS" if repo_ok else "FAIL",
+        "duration_s": round(time.monotonic() - started, 3),
+        "errors": errors,
+        "checks": checks,
+    }
+
+
+def verify_ecosystem_parallel(
+    repos_root: Path,
+    repos: Sequence[str],
+    *,
+    strict: bool = False,
+    max_workers: int = VERIFY_PARALLEL_MAX_WORKERS,
+    agy_bin: Optional[str] = None,
+    timeout_s: float = VERIFY_CMD_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Run all 3 verification commands across target repositories in parallel (fail-closed)."""
+    started = time.monotonic()
+    repo_list = list(repos)
+    if not repo_list:
+        return {
+            "ok": False,
+            "mode": "verify-parallel",
+            "strict": strict,
+            "repos_root": str(repos_root),
+            "max_workers": max_workers,
+            "duration_s": 0.0,
+            "repos": [],
+            "errors": ["Aucun dépôt cible fourni (fail-closed)."],
+            "summary": {
+                "repo_count": 0,
+                "pass_count": 0,
+                "fail_count": 0,
+                "total_errors": 1,
+                "checks_total": 0,
+                "checks_passed": 0,
+                "checks_failed": 0,
+            },
+        }
+
+    ordered_results: list[Optional[dict[str, Any]]] = [None] * len(repo_list)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(
+                verify_repo_checks,
+                name,
+                repos_root / name,
+                agy_bin=agy_bin,
+                timeout_s=timeout_s,
+            ): idx
+            for idx, name in enumerate(repo_list)
+        }
+        for future in as_completed(future_map):
+            idx = future_map[future]
+            repo_name = repo_list[idx]
+            try:
+                ordered_results[idx] = future.result()
+            except Exception as exc:
+                msg = f"Exception interne worker ({exc})"
+                ordered_results[idx] = {
+                    "repo": repo_name,
+                    "path": str(repos_root / repo_name),
+                    "exists": (repos_root / repo_name).is_dir(),
+                    "ok": False,
+                    "status": "FAIL",
+                    "duration_s": 0.0,
+                    "errors": [msg],
+                    "checks": {
+                        "validate": _failed_check_result(msg),
+                        "agy": _failed_check_result(msg),
+                        "unittest": _failed_check_result(msg),
+                    },
+                }
+
+    repo_results = [r for r in ordered_results if r is not None]
+    pass_count = sum(1 for r in repo_results if r.get("ok"))
+    fail_count = len(repo_results) - pass_count
+    total_errors = sum(len(r.get("errors") or []) for r in repo_results)
+    checks_total = sum(len(r.get("checks") or {}) for r in repo_results)
+    checks_passed = sum(
+        1 for r in repo_results for c in (r.get("checks") or {}).values() if c.get("ok")
+    )
+    checks_failed = checks_total - checks_passed
+    overall_ok = (len(repo_results) == len(repo_list)) and (fail_count == 0) and (total_errors == 0)
+
+    return {
+        "ok": overall_ok,
+        "mode": "verify-parallel",
+        "strict": strict,
+        "repos_root": str(repos_root),
+        "max_workers": max_workers,
+        "duration_s": round(time.monotonic() - started, 3),
+        "repos": repo_results,
+        "summary": {
+            "repo_count": len(repo_results),
+            "pass_count": pass_count,
+            "fail_count": fail_count,
+            "total_errors": total_errors,
+            "checks_total": checks_total,
+            "checks_passed": checks_passed,
+            "checks_failed": checks_failed,
+        },
+    }
+
+
 def audit_ecosystem(
     repos_root: Path,
     repos: Sequence[str],
@@ -470,8 +735,11 @@ def audit_ecosystem(
     strict: bool = False,
     check_installed: bool = False,
     plugins_dir: Optional[Path] = None,
+    verify_parallel: bool = False,
 ) -> dict[str, Any]:
-    """Audit all requested Gravity repositories under repos_root in strict read-only mode."""
+    """Audit or parallel-verify all requested Gravity repositories under repos_root."""
+    if verify_parallel:
+        return verify_ecosystem_parallel(repos_root, repos, strict=strict)
     repo_reports = [
         audit_repo(name, repos_root / name, check_installed=check_installed, plugins_dir=plugins_dir)
         for name in repos
@@ -555,8 +823,76 @@ def _format_cell_integrity(checks: dict[str, Any]) -> str:
     return "OK" if fails == 0 else f"ERR({fails})"
 
 
+def _format_verify_cell(checks: dict[str, Any], key: str) -> str:
+    res = checks.get(key)
+    if not isinstance(res, dict):
+        return "-"
+    tag = "OK" if res.get("ok") else f"ERR({res.get('returncode', 1)})"
+    return f"{tag} {float(res.get('duration_s') or 0.0):.1f}s"
+
+
+def format_verify_parallel_report(report: dict[str, Any]) -> str:
+    """Render a compact summary table and failure details for --verify-parallel output."""
+    headers = ("Repo", "Status", "validate", "agy", "unittest", "Duration")
+    rows: list[tuple[str, ...]] = []
+    for item in report.get("repos") or []:
+        checks = item.get("checks") or {}
+        rows.append(
+            (
+                str(item.get("repo") or "?"),
+                str(item.get("status") or "FAIL"),
+                _format_verify_cell(checks, "validate"),
+                _format_verify_cell(checks, "agy"),
+                _format_verify_cell(checks, "unittest"),
+                f"{float(item.get('duration_s') or 0.0):.2f}s",
+            )
+        )
+
+    widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)] if rows else [len(h) for h in headers]
+
+    def fmt_row(vals: Sequence[str]) -> str:
+        return " | ".join(vals[i].ljust(widths[i]) for i in range(len(headers)))
+
+    lines: list[str] = [
+        f"Gravity Ecosystem Parallel Verify (repos-root={report.get('repos_root')}, "
+        f"workers={report.get('max_workers', VERIFY_PARALLEL_MAX_WORKERS)}, strict={bool(report.get('strict'))})",
+        fmt_row(headers),
+        "-+-".join("-" * w for w in widths),
+    ]
+    lines.extend(fmt_row(row) for row in rows)
+
+    for item in report.get("repos") or []:
+        errs = item.get("errors") or []
+        if not errs:
+            continue
+        lines.extend(["", f"[{item.get('repo')}] ({item.get('status')})"])
+        lines.extend(f"  [ERROR] {err}" for err in errs)
+        checks = item.get("checks") or {}
+        for cname in ("validate", "agy", "unittest"):
+            cres = checks.get(cname) or {}
+            if not cres.get("ok"):
+                tail = cres.get("stderr_tail") or cres.get("stdout_tail") or ""
+                if tail:
+                    lines.append(f"  [{cname} tail]")
+                    lines.extend(f"    {ln}" for ln in tail.splitlines())
+
+    summary = report.get("summary") or {}
+    verdict = "PASS" if report.get("ok") else "FAIL"
+    lines.extend(
+        [
+            "",
+            f"[{verdict}] {summary.get('pass_count', 0)}/{summary.get('repo_count', 0)} dépôts validés en parallèle "
+            f"({summary.get('checks_passed', 0)}/{summary.get('checks_total', 0)} vérifs OK, "
+            f"erreurs={summary.get('total_errors', 0)}, durée={float(report.get('duration_s') or 0.0):.2f}s).",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def format_console_report(report: dict[str, Any], *, strict: bool = False) -> str:
     """Render a compact summary table plus detailed findings for console output."""
+    if report.get("mode") == "verify-parallel":
+        return format_verify_parallel_report(report)
     headers = ("Repo", "Status", "install", "validate", "AGENTS", "rules D4", "SemVer/UX", "Monoliths", "INT")
     rows: list[tuple[str, ...]] = []
     for item in report["repos"]:
@@ -636,6 +972,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plugins-dir", type=Path, default=DEFAULT_PLUGINS_DIR, help="Dossier des plugins installés (défaut: ~/.gemini/config/plugins).")
     parser.add_argument("--json", action="store_true", help="Émet le rapport complet en JSON (CI-ready).")
     parser.add_argument("--strict", action="store_true", help="Échoue (exit 1) également en présence d'avertissements.")
+    parser.add_argument(
+        "--verify-parallel",
+        action="store_true",
+        help="Exécute en parallèle (max_workers=4) validate.py --strict, agy plugin validate ./plugin --strict et unittest discover.",
+    )
     return parser
 
 
@@ -661,6 +1002,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         strict=args.strict,
         check_installed=args.check_installed,
         plugins_dir=plugins_dir,
+        verify_parallel=args.verify_parallel,
     )
 
     if args.json:

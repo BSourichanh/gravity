@@ -18,7 +18,6 @@ ALL_REPOS = (
     "gravity-workflow",
     "gravity-metrics",
     "gravity-architect",
-    "gravity-bridge",
 )
 
 
@@ -76,7 +75,7 @@ def _create_stub_repos(
             "if mode == 'init':\n"
             "    reg.parent.mkdir(parents=True, exist_ok=True)\n"
             "    reg.write_text(json.dumps({'ok': True, 'modules': []}) + '\\n', encoding='utf-8')\n"
-            "print(json.dumps({'ok': True, 'mode': mode, 'registry_path': str(reg), 'module_count': 5, 'valid_count': 5}))\n"
+            "print(json.dumps({'ok': True, 'mode': mode, 'registry_path': str(reg), 'module_count': 4, 'valid_count': 4}))\n"
         )
         (init_dir / "init_env.py").write_text(stub_init, encoding="utf-8", newline="\n")
 
@@ -194,7 +193,7 @@ class TestEcosystemInstall(unittest.TestCase):
                 [
                     "--update",
                     "--modules",
-                    "gravity-bridge,gravity",
+                    "gravity-architect,gravity",
                     "--repos-root",
                     str(repos_root),
                     "--scope",
@@ -212,7 +211,7 @@ class TestEcosystemInstall(unittest.TestCase):
             )
             self.assertEqual(p_upd.returncode, 0, msg=p_upd.stderr or p_upd.stdout)
             entries = _read_exec_log(upd_log)
-            self.assertEqual([e["repo"] for e in entries], ["gravity", "gravity-bridge"])
+            self.assertEqual([e["repo"] for e in entries], ["gravity", "gravity-architect"])
             for entry in entries:
                 self.assertIn("--force", entry["args"])
                 self.assertIn("--dry-run", entry["args"])
@@ -240,8 +239,8 @@ class TestEcosystemInstall(unittest.TestCase):
             fake_home.mkdir()
             gravity_home = tmp_path / "gravity-home"
             repos_root = tmp_path / "repos"
-            # Only 4 of 5 repos present (missing gravity-bridge)
-            _create_stub_repos(repos_root, repos=ALL_REPOS[:4])
+            # Only 3 of 4 repos present (missing gravity-architect)
+            _create_stub_repos(repos_root, repos=ALL_REPOS[:3])
 
             miss_log = tmp_path / "miss.log"
             p_miss = _run_orchestrator(
@@ -251,13 +250,13 @@ class TestEcosystemInstall(unittest.TestCase):
             self.assertNotEqual(p_miss.returncode, 0)
             out_miss = json.loads(p_miss.stdout)
             self.assertFalse(out_miss["ok"])
-            self.assertEqual(out_miss["missing"][0]["repo"], "gravity-bridge")
+            self.assertEqual(out_miss["missing"][0]["repo"], "gravity-architect")
             # Fail-closed before running any installer
             self.assertEqual(_read_exec_log(miss_log), [])
             self.assertFalse((gravity_home / "core" / "modules.json").exists())
 
             # Missing install.py inside present repo directory
-            (repos_root / "gravity-bridge").mkdir()
+            (repos_root / "gravity-architect").mkdir()
             p_no_inst = _run_orchestrator(
                 ["--check", "--repos-root", str(repos_root), "--json"],
                 _isolated_env(fake_home, gravity_home, miss_log),
@@ -284,13 +283,14 @@ class TestEcosystemInstall(unittest.TestCase):
             )
             self.assertFalse((gravity_home / "core" / "modules.json").exists())
 
-            # Unknown module name in --modules fails closed
-            p_unk = _run_orchestrator(
-                ["--modules", "gravity,unknown-mod", "--repos-root", str(repos_root), "--json"],
-                _isolated_env(fake_home, gravity_home, miss_log),
-            )
-            self.assertNotEqual(p_unk.returncode, 0)
-            self.assertFalse(json.loads(p_unk.stdout)["ok"])
+            # Unknown or retired module name in --modules fails closed
+            for bad_mods in ("gravity,unknown-mod", "gravity,gravity-bridge"):
+                p_unk = _run_orchestrator(
+                    ["--modules", bad_mods, "--repos-root", str(repos_root), "--json"],
+                    _isolated_env(fake_home, gravity_home, miss_log),
+                )
+                self.assertNotEqual(p_unk.returncode, 0)
+                self.assertFalse(json.loads(p_unk.stdout)["ok"])
 
 
 if __name__ == "__main__":
