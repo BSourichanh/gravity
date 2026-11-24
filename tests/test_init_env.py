@@ -23,6 +23,8 @@ def _isolated_env(fake_home: Path, extra: dict[str, str] | None = None) -> dict[
     env.pop("GRAVITY_HOME", None)
     env.pop("GRAVITY_CORE_HOME", None)
     env.pop("GRAVITY_METRICS_HOME", None)
+    env.pop("GRAVITY_BRIDGE_HOME", None)
+    env.pop("GRAVITY_ARCHITECT_HOME", None)
     if extra:
         env.update(extra)
     return env
@@ -382,6 +384,151 @@ class TestInitEnvCLI(unittest.TestCase):
             )
             self.assertEqual(p_help.returncode, 0)
             self.assertIn("--guide", p_help.stdout)
+
+    def test_check_warns_non_blocking_for_missing_architect_registry_and_bridge_db(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_home = tmp_path / "user-home"
+            fake_home.mkdir()
+            plugins_dir = tmp_path / "plugins"
+            shutil.copytree(
+                REPO_ROOT / "plugin",
+                plugins_dir / "gravity",
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+            _create_fake_module(plugins_dir, "architect", "gravity-architect", "GRAVITY_ARCHITECT_HOME")
+            _create_fake_module(plugins_dir, "bridge", "gravity-bridge", "GRAVITY_BRIDGE_HOME")
+
+            gravity_home = tmp_path / "doctor-home"
+            env = _isolated_env(fake_home)
+
+            # 1) Missing ateliers.json and missing bridge.db -> non-blocking warnings, exit 0, strictly RO
+            p_missing = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(INIT_SCRIPT),
+                    "--gravity-home",
+                    str(gravity_home),
+                    "--plugins-dir",
+                    str(plugins_dir),
+                    "--check",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(p_missing.returncode, 0, msg=p_missing.stderr or p_missing.stdout)
+            self.assertFalse(gravity_home.exists())
+            out = json.loads(p_missing.stdout)
+            self.assertTrue(out["ok"])
+            self.assertEqual(len(out["warnings"]), 2)
+            joined = "\n".join(out["warnings"])
+            self.assertIn("ateliers.json", joined)
+            self.assertIn("/gravity-architect init", joined)
+            self.assertIn("bridge.db", joined)
+            self.assertIn("/gravity-bridge", joined)
+
+            # Human-readable output also displays non-blocking warnings
+            p_txt = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(INIT_SCRIPT),
+                    "--gravity-home",
+                    str(gravity_home),
+                    "--plugins-dir",
+                    str(plugins_dir),
+                    "--check",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(p_txt.returncode, 0, msg=p_txt.stderr)
+            self.assertIn("[WARN]", p_txt.stdout)
+            self.assertIn("/gravity-architect", p_txt.stdout)
+            self.assertIn("/gravity-bridge", p_txt.stdout)
+            self.assertFalse(gravity_home.exists())
+
+            # 2) Empty ateliers.json (0 valid ateliers) -> still warns for architect
+            arch_home = gravity_home / "architect"
+            arch_home.mkdir(parents=True)
+            (arch_home / "ateliers.json").write_text(
+                json.dumps({"schema_version": 1, "ateliers": [{"workspace_path": str(tmp_path / "missing-ws")}]}),
+                encoding="utf-8",
+            )
+            p_empty_reg = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(INIT_SCRIPT),
+                    "--gravity-home",
+                    str(gravity_home),
+                    "--plugins-dir",
+                    str(plugins_dir),
+                    "--check",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(p_empty_reg.returncode, 0)
+            out_empty = json.loads(p_empty_reg.stdout)
+            self.assertTrue(out_empty["ok"])
+            self.assertEqual(len(out_empty["warnings"]), 2)
+
+            # 3) Valid atelier + bridge.db present -> 0 warning
+            atelier_dir = tmp_path / "atelier-ok"
+            atelier_dir.mkdir()
+            (atelier_dir / "ECOSYSTEM.md").write_text("# Atelier\n", encoding="utf-8")
+            (atelier_dir / "projects.json").write_text("{}", encoding="utf-8")
+            (arch_home / "ateliers.json").write_text(
+                json.dumps({"schema_version": 1, "ateliers": [{"workspace_path": str(atelier_dir)}]}),
+                encoding="utf-8",
+            )
+            bridge_home = gravity_home / "bridge"
+            bridge_home.mkdir(parents=True)
+            (bridge_home / "bridge.db").write_bytes(b"")
+
+            p_clean = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(INIT_SCRIPT),
+                    "--gravity-home",
+                    str(gravity_home),
+                    "--plugins-dir",
+                    str(plugins_dir),
+                    "--check",
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=15,
+                check=False,
+            )
+            self.assertEqual(p_clean.returncode, 0)
+            out_clean = json.loads(p_clean.stdout)
+            self.assertTrue(out_clean["ok"])
+            self.assertEqual(out_clean["warnings"], [])
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ Exécuter depuis la racine du plugin `gravity` (sortie texte compacte par défau
 | `/gravity` ou `/gravity status` | `python scripts/init_env.py --status` | Lecture seule : état de `$GRAVITY_HOME`, `core/modules.json`, modules détectés et dossiers legacy. |
 | `/gravity modules` | `python scripts/init_env.py --status --json` | Liste complète des contrats découverts (`id`, `plugin_name`, `version`, `commands`, `capabilities`, `ui`, `signals`, `valid`). |
 | `/gravity doctor` | `python scripts/init_env.py --check` | Audit lecture seule (`config/module.json` v1, `$GRAVITY_*_HOME`, legacy). Plan manuel non destructif (0 écriture) : `python scripts/init_env.py --migration-plan [--shell auto|powershell|bash]`. |
-| `/gravity dashboard` | MCP `open_gravity_dashboard` / `python scripts/init_env.py --dashboard` | Ouvre le tableau de bord unifié MCP App (`aux_pane` ou `Plugins -> Gravity` à `0` token interactif) ; `--dashboard` diagnostique la config MCP et les onglets en lecture seule. |
+| `/gravity dashboard` | MCP `open_gravity_dashboard(ws="<Active Workspace>")` *(dépannage : `python scripts/init_env.py --dashboard`)* | Appelle directement l'outil MCP `open_gravity_dashboard(ws="<Active Workspace>")` (`aux_pane` ou `Plugins -> Gravity`, `0` token interactif) ; réserver `init_env.py --dashboard` au dépannage MCP/onglets en lecture seule. |
 | `/gravity help` | `python scripts/init_env.py --guide` | Lecture seule : boucle en 3 temps, commandes des modules découverts et pointeurs `docs/` *(afficher directement sans explorer d'autres fichiers)*. |
 
 ## Règles d'exécution

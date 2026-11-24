@@ -165,7 +165,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                     "ws": {
                         "type": "string",
-                        "description": "Workspace initial pour la vue Workflow Live.",
+                        "description": "Workspace initial pour la vue Workflow Live et repli Architect (ws_hint).",
+                    },
+                    "atelier": {
+                        "type": "string",
+                        "description": "Chemin d'atelier Architect cible (optionnel).",
                     },
                     "module_id": {
                         "type": "string",
@@ -293,10 +297,18 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "inputSchema": {
                 "type": "object",
                 "properties": {
+                    "atelier": {
+                        "type": "string",
+                        "description": "Chemin d'atelier Architect cible (optionnel).",
+                    },
+                    "ws": {
+                        "type": "string",
+                        "description": "Indice workspace courant pour repli Architect (ws_hint).",
+                    },
                     "since_signature": {
                         "type": "string",
                         "description": "Signature précédente pour fast-path inchangé.",
-                    }
+                    },
                 },
             },
             "_meta": {"ui": {"visibility": ["app"]}},
@@ -325,6 +337,7 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
     initial_view = raw_view if raw_view in VALID_VIEWS else "overview"
     initial_project = str(args.get("project") or "").strip()
     initial_ws = str(args.get("ws") or "").strip()
+    initial_atelier = str(args.get("atelier") or "").strip()
     initial_module_id = str(args.get("module_id") or "").strip()
 
     overview = api.get_overview(
@@ -360,8 +373,10 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
         )
 
     architect: Optional[dict[str, Any]] = None
-    if initial_view == "architect" or "architect" in tab_ids:
+    if initial_view == "architect" or initial_atelier or "architect" in tab_ids:
         architect = api.get_architect_state(
+            atelier=initial_atelier,
+            ws=initial_ws,
             gravity_home=ctx.get("gravity_home"),
             bridge_home=ctx.get("bridge_home"),
             architect_home=ctx.get("architect_home"),
@@ -380,6 +395,7 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
         view=initial_view,
         project=initial_project,
         ws=initial_ws,
+        atelier=initial_atelier,
         module_id=initial_module_id,
         overview=overview,
         workflow=workflow,
@@ -403,6 +419,7 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
         "initial_view": initial_view,
         "initial_project": initial_project,
         "initial_ws": initial_ws,
+        "initial_atelier": initial_atelier,
         "initial_module_id": initial_module_id,
         "overview": overview,
     }
@@ -532,9 +549,13 @@ def _handle_get_bridge_state(args: dict[str, Any], ctx: dict[str, Any]) -> dict[
 
 
 def _handle_get_architect_state(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    atelier = str(args.get("atelier") or "").strip()
+    ws = str(args.get("ws") or "").strip()
     since_sig = str(args.get("since_signature") or "").strip()
     data = api.get_architect_state(
         since_signature=since_sig,
+        atelier=atelier,
+        ws=ws,
         gravity_home=ctx.get("gravity_home"),
         bridge_home=ctx.get("bridge_home"),
         architect_home=ctx.get("architect_home"),

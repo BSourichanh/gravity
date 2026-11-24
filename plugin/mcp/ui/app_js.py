@@ -18,6 +18,7 @@ APP_JS = r"""
     moduleLoading: {},
     activeTab: "overview",
     selectedWs: "",
+    selectedAtelier: "",
     metricsProject: "",
     metricsQ: "",
     metricsTariff: "2026",
@@ -166,6 +167,9 @@ APP_JS = r"""
     if (typeof sc.initial_ws === "string") {
       state.selectedWs = sc.initial_ws;
     }
+    if (typeof sc.initial_atelier === "string") {
+      state.selectedAtelier = sc.initial_atelier;
+    }
     if (sc.module_info && sc.module_info.module_id) {
       state.moduleCache[sc.module_info.module_id] = sc.module_info;
     }
@@ -272,6 +276,8 @@ APP_JS = r"""
     try {
       const sig = silent && state.architect ? (state.architect.signature || "") : "";
       const res = await callServerTool("gravity_get_architect_state", {
+        atelier: state.selectedAtelier || "",
+        ws: state.selectedWs || "",
         since_signature: sig
       });
       const sc = extractStructured(res);
@@ -552,6 +558,9 @@ APP_JS = r"""
       state.sessionTarget = "";
       state.sessionDetail = null;
       loadMetricsState(false, true);
+    } else if (node.id === "g-arch-ws") {
+      state.selectedAtelier = node.value || "";
+      loadArchitectState(false);
     }
   });
 
@@ -600,6 +609,7 @@ APP_JS = r"""
       const args = (msg.params && msg.params.arguments) || {};
       if (typeof args.project === "string") state.metricsProject = args.project.trim();
       if (typeof args.ws === "string") state.selectedWs = args.ws.trim();
+      if (typeof args.atelier === "string") state.selectedAtelier = args.atelier.trim();
       if (typeof args.view === "string" && state.overview) {
         state.activeTab = resolveInitialTab(args.view, args.module_id);
         render();

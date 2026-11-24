@@ -52,6 +52,7 @@ Les **4 étapes** générées par le plan sont :
 | **Erreur `BOM UTF-8` ou `CRLF détecté` sous `validate.py --strict`** | Éditeur Windows ayant écrit un BOM ou `\r\n` | Respectez `.gitattributes` (`* text=auto eol=lf`) et réenregistrez en **UTF-8 sans BOM** + **LF** (`\n`). |
 | **Travail sans accès réseau / `sync_tracking.py` échoue en veille distante** | Fetch veille distante impossible hors-ligne | Utilisez `--offline` sur `gravity-architect` (`sync_tracking.py --offline --ack-editorial --print-delta`). `ecosystem_install.py` et `init_env.py` fonctionnent déjà 100 % hors-ligne. |
 | **Bridge refuse un envoi ou signale `depth >= 1` / `unlinked`** | Garde-fou anti-boucle (`GRAVITY_BRIDGE_DEPTH >= 1`) ou sidecar cible non lié | En `depth >= 1`, aucun sous-dispatch n'est autorisé : répondez via `reply_thread(..., dispatch=false, close=true)`. Si cible `unlinked`/`offline`, exécutez `/gravity-bridge link <slug>` (ou `install.py --link <chemin>`). |
+| **Onglet `Architect` affiche `atelier non détecté` dans le dashboard** | Aucun atelier enregistré dans `$GRAVITY_ARCHITECT_HOME/ateliers.json`, ni `GRAVITY_ARCHITECT_WORKSPACE` ni `bridge.db` actif | Exécutez `/gravity-architect init` ou `/gravity-architect sync` dans votre atelier (met à jour `ateliers.json`), ouvrez `open_gravity_dashboard(view="architect", atelier="<chemin>")` / `ws="<chemin>"`, ou définissez `GRAVITY_ARCHITECT_WORKSPACE`. |
 
 ---
 

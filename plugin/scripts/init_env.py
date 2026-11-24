@@ -385,6 +385,92 @@ def _find_duplicate_ids(modules: Sequence[dict[str, Any]]) -> list[str]:
     return sorted(mod_id for mod_id, count in counts.items() if count > 1)
 
 
+def _is_valid_atelier_dir(candidate: Path) -> bool:
+    try:
+        return (
+            not candidate.is_symlink()
+            and candidate.is_dir()
+            and (candidate / "ECOSYSTEM.md").is_file()
+            and (candidate / "projects.json").is_file()
+        )
+    except OSError:
+        return False
+
+
+def _inspect_architect_registry_ro(ateliers_path: Path) -> tuple[bool, bool]:
+    """Inspect <architect_home>/ateliers.json strictly read-only without following symlinks."""
+    try:
+        if ateliers_path.parent.is_symlink() or ateliers_path.is_symlink() or not ateliers_path.is_file():
+            return False, False
+        raw = ateliers_path.read_bytes()
+    except OSError:
+        return False, False
+
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return True, False
+
+    if not isinstance(data, dict) or not isinstance(data.get("ateliers"), list):
+        return True, False
+
+    for entry in data["ateliers"]:
+        if not isinstance(entry, dict):
+            continue
+        raw_ws = str(entry.get("workspace_path") or "").strip()
+        if not raw_ws:
+            continue
+        if _is_valid_atelier_dir(Path(raw_ws).expanduser()):
+            return True, True
+    return True, False
+
+
+def _collect_doctor_warnings(modules: Sequence[dict[str, Any]]) -> list[str]:
+    """Collect non-blocking read-only warnings for valid discovered modules."""
+    warnings: list[str] = []
+    for mod in modules:
+        if not mod.get("valid"):
+            continue
+        mod_id = str(mod.get("id") or "")
+        plugin_name = str(mod.get("plugin_name") or "")
+        raw_home = mod.get("resolved_home")
+        if not isinstance(raw_home, str) or not raw_home:
+            continue
+        mod_home = Path(raw_home)
+
+        if mod_id == "architect" or plugin_name == "gravity-architect":
+            ateliers_path = mod_home / "ateliers.json"
+            reg_exists, has_valid = _inspect_architect_registry_ro(ateliers_path)
+            if not reg_exists:
+                warnings.append(
+                    f"Module 'architect' actif mais {ateliers_path} absent : "
+                    "lancez /gravity-architect init ou /gravity-architect sync dans votre atelier."
+                )
+            elif not has_valid:
+                warnings.append(
+                    f"Module 'architect' actif mais {ateliers_path} ne contient aucun atelier valide : "
+                    "lancez /gravity-architect init ou /gravity-architect sync."
+                )
+        elif mod_id == "bridge" or plugin_name == "gravity-bridge":
+            bridge_db = mod_home / "bridge.db"
+            try:
+                db_ok = (
+                    not bridge_db.parent.is_symlink()
+                    and not bridge_db.is_symlink()
+                    and bridge_db.is_file()
+                )
+            except OSError:
+                db_ok = False
+            if not db_ok:
+                warnings.append(
+                    f"Module 'bridge' actif mais {bridge_db} absente : "
+                    "exécutez /gravity-bridge pour initialiser la base SQLite."
+                )
+    return warnings
+
+
 def _has_real_python3() -> bool:
     found = shutil.which("python3")
     if not found:
@@ -590,6 +676,7 @@ def run_environment(
     ok = True
     if mode == "check" and (invalid_count > 0 or bool(duplicates)):
         ok = False
+    warnings = _collect_doctor_warnings(modules) if mode == "check" else []
 
     payload: dict[str, Any] = {
         "mode": mode,
@@ -604,6 +691,7 @@ def run_environment(
         "valid_count": valid_count,
         "invalid_count": invalid_count,
         "duplicate_ids": duplicates,
+        "warnings": warnings,
         "modules": modules,
         "legacy_homes": legacy_homes,
     }
@@ -763,6 +851,12 @@ def _print_human_report(payload: dict[str, Any]) -> None:
 
     if payload["duplicate_ids"]:
         print(f"\nDuplicate module IDs detected: {', '.join(payload['duplicate_ids'])}")
+
+    warnings = payload.get("warnings") or []
+    if warnings:
+        print("\nWarnings (non-blocking):")
+        for warn in warnings:
+            print(f"  - [WARN] {warn}")
 
     legacy = payload["legacy_homes"]
     if legacy:

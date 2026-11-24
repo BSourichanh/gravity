@@ -973,6 +973,25 @@ VIEWS_JS = r"""
     head.appendChild(el("div", "panel-title", "Architect — Atelier Hot / Cold (lecture seule)"));
 
     const ctrls = el("div", "actions-row");
+    const ateliers = (arch && Array.isArray(arch.ateliers)) ? arch.ateliers : [];
+    if (ateliers.length) {
+      const archSel = el("select", "select", null, { id: "g-arch-ws" });
+      const activeRoot = (arch && arch.atelier_root) || state.selectedAtelier || "";
+      ateliers.forEach((a) => {
+        const val = String(a.workspace_path || "");
+        if (!val) return;
+        const lbl = a.workspace_name ? (a.workspace_name + " — " + val) : val;
+        const opt = el("option", null, lbl, { value: val });
+        if (val === activeRoot || val === state.selectedAtelier) opt.selected = true;
+        archSel.appendChild(opt);
+      });
+      if (!arch.available && state.selectedAtelier && !ateliers.some((a) => String(a.workspace_path || "") === state.selectedAtelier)) {
+        const invalidOpt = el("option", null, state.selectedAtelier + " (invalide)", { value: state.selectedAtelier });
+        invalidOpt.selected = true;
+        archSel.appendChild(invalidOpt);
+      }
+      ctrls.appendChild(archSel);
+    }
     if (arch && arch.discovery_source) {
       ctrls.appendChild(makeBadge("source: " + arch.discovery_source, "info"));
     }
@@ -1005,6 +1024,7 @@ VIEWS_JS = r"""
     if (!arch.available) {
       const emp = el("section", "panel");
       emp.appendChild(el("div", "empty", "Aucun atelier Gravity Architect (ECOSYSTEM.md / projects.json) détecté."));
+      emp.appendChild(el("div", "notice info", "Enregistrez un atelier via /gravity-architect init ou /gravity-architect sync (ateliers.json), ou définissez GRAVITY_ARCHITECT_WORKSPACE."));
       container.appendChild(emp);
       return;
     }

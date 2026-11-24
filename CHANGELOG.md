@@ -5,6 +5,15 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Added
+- **Découverte autonome d'ateliers Architect & sélecteur UI (`ateliers.json`, `ws_hint`, `atelier`) :**
+  - `plugin/dashboard/providers/architect_provider.py` : lecture seule de `<architect_home>/ateliers.json` (`_load_registered_ateliers_ro()` / `_discover_from_registry_ro()`, refus symlinks, tri MRU, déduplication canonique), précédence étendue à 9 niveaux (`arg_workspace` > `selected_atelier` fail-closed > `env_workspace` > `architect_home` > `env_architect_home` > `ws_hint` > `architect_registry` > `bridge_discovery` > `module_home`), fusion multi-ateliers `ateliers` (registre + Bridge + courant) et invalidation `since_signature` sur `ateliers.json`, `atelier` et `ws`.
+  - `plugin/dashboard/api.py` & `plugin/mcp/server.py` : ajout du paramètre optionnel `atelier` sur `open_gravity_dashboard` (`initial_atelier` + propagation `ws`) et `gravity_get_architect_state` (avec propagation optionnelle `ws` / `ws_hint` au rafraîchissement), tout en conservant les 8 outils `EXPECTED_MCP_TOOLS`.
+  - `plugin/mcp/ui/` (`app_js.py`, `views_js.py`) : ajout de `state.selectedAtelier`, transmission de `ws: state.selectedWs || ""` dans `loadArchitectState`, sélecteur `<select id="g-arch-ws">` dans `renderArchitectView`, message d'état vide enrichi (`/gravity-architect init` / `sync` / `GRAVITY_ARCHITECT_WORKSPACE`), zéro `innerHTML` ni URL externe.
+  - `plugin/skills/gravity/SKILL.md` : appel direct `open_gravity_dashboard(ws="<Active Workspace>")` sur `/gravity dashboard` (`init_env.py --dashboard` réservé au dépannage).
+  - `plugin/scripts/init_env.py` : avertissements non bloquants (`warnings`, `exit 0`, lecture seule stricte) sur `--check` (`/gravity doctor`) lorsque le module `architect` (`ateliers.json` absent ou sans atelier valide) ou `bridge` (`bridge.db` absente) est détecté sans état initialisé.
+  - Documentation (`README.md`, `plugin/README.md`, `docs/troubleshooting-and-lifecycle.md`) et tests isolés (`tests/test_dashboard_providers.py`, `tests/test_mcp_server.py`, `tests/test_init_env.py`, `tests/test_install.py` portable Linux/Windows).
+
 ## [0.3.0] - 2026-11-24
 
 ### Changed

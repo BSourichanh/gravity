@@ -242,9 +242,25 @@ class TestInstall(unittest.TestCase):
             self.assertIn("Real 'python3'", p_check.stdout)
 
             target_fix = tmp_path / "installed-fix"
+
+            class _FakeNtOs:
+                name = "nt"
+
+                def __getattr__(self, attr: str) -> object:
+                    return getattr(os, attr)
+
+            env_patch: dict[str, str] = {"USERPROFILE": str(fake_home), "HOME": str(fake_home)}
+            if os.name != "nt":
+                fake_bin = tmp_path / "fake-bin"
+                fake_bin.mkdir()
+                (fake_bin / "python").symlink_to(sys.executable)
+                env_patch["PATH"] = str(fake_bin)
+
             with (
-                mock.patch("install.os.name", "nt"),
+                mock.patch("install.os", _FakeNtOs()),
                 mock.patch("install.has_real_python3", return_value=False),
+                mock.patch.dict(os.environ, env_patch),
+                mock.patch.object(Path, "home", return_value=fake_home),
             ):
                 rc_fix = installer.install_copy(installer.PLUGIN_SOURCE, target_fix)
             self.assertEqual(rc_fix, 0)

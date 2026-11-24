@@ -896,6 +896,205 @@ class TestArchitectProvider(unittest.TestCase):
             self.assertEqual(explicit["discovery_source"], "arg_workspace")
             self.assertFalse(explicit["available"])
 
+    def test_architect_registry_mru_dedup_bridge_merge_and_invalidation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            g_home = tmp_path / "gravity-home"
+            arch_home = g_home / "architect"
+            arch_home.mkdir(parents=True)
+            b_home = g_home / "bridge"
+
+            a_old = tmp_path / "atelier-old"
+            a_new = tmp_path / "atelier-new"
+            a_bridge = tmp_path / "atelier-bridge"
+            a_invalid = tmp_path / "not-an-atelier"
+            for d in (a_old, a_new, a_bridge):
+                self._write_mini_atelier(d)
+            a_invalid.mkdir()
+            (a_new / "projects.json").write_text(
+                json.dumps({"schema_version": 5, "workspace_name": "Atelier Nouveau", "projects": []}),
+                encoding="utf-8",
+            )
+            (a_bridge / "projects.json").write_text(
+                json.dumps({"schema_version": 5, "workspace_name": "Atelier Bridge", "projects": []}),
+                encoding="utf-8",
+            )
+
+            _create_sample_bridge_db(b_home / "bridge.db", studio_path=a_bridge)
+            reg_path = arch_home / "ateliers.json"
+            reg_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "ateliers": [
+                            {"workspace_path": str(a_old), "workspace_name": "Old", "updated_at": "2026-11-20T10:00:00Z"},
+                            {"workspace_path": str(a_new), "workspace_name": "New", "updated_at": "2026-11-24T09:00:00Z"},
+                            {"workspace_path": str(a_new), "workspace_name": "New Dup", "updated_at": "2026-11-24T08:00:00Z"},
+                            {"workspace_path": str(a_invalid), "workspace_name": "Invalid", "updated_at": "2026-11-24T12:00:00Z"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            res = api.get_architect_state(gravity_home=g_home)
+            self.assertTrue(res["available"])
+            self.assertEqual(res["discovery_source"], "architect_registry")
+            self.assertEqual(Path(res["atelier_root"]), a_new.resolve())
+            self.assertEqual(res["workspace_name"], "Atelier Nouveau")
+            self.assertEqual(
+                [Path(item["workspace_path"]) for item in res["ateliers"]],
+                [a_new.resolve(), a_old.resolve(), a_bridge.resolve()],
+            )
+            self.assertEqual([item["source"] for item in res["ateliers"]], ["architect_registry", "architect_registry", "bridge_discovery"])
+
+            unchanged = api.get_architect_state(since_signature=res["signature"], gravity_home=g_home)
+            self.assertTrue(unchanged["unchanged"])
+
+            # Mutating ateliers.json must invalidate since_signature
+            reg_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "ateliers": [
+                            {"workspace_path": str(a_old), "workspace_name": "Old Updated", "updated_at": "2026-11-24T11:00:00Z"},
+                            {"workspace_path": str(a_new), "workspace_name": "New", "updated_at": "2026-11-24T09:00:00Z"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            updated = api.get_architect_state(since_signature=res["signature"], gravity_home=g_home)
+            self.assertTrue(updated["changed"])
+            self.assertEqual(Path(updated["atelier_root"]), a_old.resolve())
+
+    def test_architect_full_precedence_ws_hint_and_fail_closed_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            g_home = tmp_path / "gravity-home"
+            arch_home = g_home / "architect"
+            arch_home.mkdir(parents=True)
+            b_home = g_home / "bridge"
+
+            a_arg = tmp_path / "atelier-arg"
+            a_sel = tmp_path / "atelier-sel"
+            a_env = tmp_path / "atelier-env"
+            a_hint = tmp_path / "atelier-hint"
+            a_reg = tmp_path / "atelier-reg"
+            a_bridge = tmp_path / "atelier-bridge"
+            product_ws = tmp_path / "product-repo"
+            product_ws.mkdir()
+            (product_ws / "README.md").write_text("# Product\n", encoding="utf-8")
+
+            for d in (a_arg, a_sel, a_env, a_hint, a_reg, a_bridge):
+                self._write_mini_atelier(d)
+
+            _create_sample_bridge_db(b_home / "bridge.db", studio_path=a_bridge)
+            (arch_home / "ateliers.json").write_text(
+                json.dumps({"ateliers": [{"workspace_path": str(a_reg), "updated_at": "2026-11-24T10:00:00Z"}]}),
+                encoding="utf-8",
+            )
+
+            # 1. arg_workspace > selected_atelier
+            r1 = api.get_architect_state(
+                atelier=str(a_sel),
+                ws=str(a_hint),
+                gravity_home=g_home,
+                architect_workspace=a_arg,
+            )
+            self.assertEqual(r1["discovery_source"], "arg_workspace")
+            self.assertEqual(Path(r1["atelier_root"]), a_arg.resolve())
+
+            # 2. selected_atelier > env_workspace
+            with mock.patch.dict(os.environ, {"GRAVITY_ARCHITECT_WORKSPACE": str(a_env)}):
+                r2 = api.get_architect_state(atelier=str(a_sel), ws=str(a_hint), gravity_home=g_home)
+                self.assertEqual(r2["discovery_source"], "selected_atelier")
+                self.assertEqual(Path(r2["atelier_root"]), a_sel.resolve())
+
+                # 3. env_workspace > ws_hint
+                r3 = api.get_architect_state(ws=str(a_hint), gravity_home=g_home)
+                self.assertEqual(r3["discovery_source"], "env_workspace")
+                self.assertEqual(Path(r3["atelier_root"]), a_env.resolve())
+
+            # 4. ws_hint > architect_registry when ws is a valid atelier
+            r4 = api.get_architect_state(ws=str(a_hint), gravity_home=g_home)
+            self.assertEqual(r4["discovery_source"], "ws_hint")
+            self.assertEqual(Path(r4["atelier_root"]), a_hint.resolve())
+
+            # 5. ws ignored silently when product repo -> falls back to architect_registry
+            r5 = api.get_architect_state(ws=str(product_ws), gravity_home=g_home)
+            self.assertEqual(r5["discovery_source"], "architect_registry")
+            self.assertEqual(Path(r5["atelier_root"]), a_reg.resolve())
+            self.assertEqual(r5["warnings"], [])
+
+            # 6. architect_registry > bridge_discovery
+            r6 = api.get_architect_state(gravity_home=g_home)
+            self.assertEqual(r6["discovery_source"], "architect_registry")
+
+            # 7. Remove ateliers.json -> bridge_discovery
+            (arch_home / "ateliers.json").unlink()
+            r7 = api.get_architect_state(gravity_home=g_home)
+            self.assertEqual(r7["discovery_source"], "bridge_discovery")
+            self.assertEqual(Path(r7["atelier_root"]), a_bridge.resolve())
+
+            # Fail-closed selected_atelier: nonexistent, non-atelier, symlink
+            bad_missing = api.get_architect_state(atelier=str(tmp_path / "nope"), gravity_home=g_home)
+            self.assertFalse(bad_missing["available"])
+            self.assertEqual(bad_missing["discovery_source"], "selected_atelier")
+            self.assertTrue(bad_missing["warnings"])
+
+            bad_product = api.get_architect_state(atelier=str(product_ws), gravity_home=g_home)
+            self.assertFalse(bad_product["available"])
+            self.assertEqual(bad_product["discovery_source"], "selected_atelier")
+            self.assertTrue(bad_product["warnings"])
+
+            sym_atelier = tmp_path / "sym-atelier"
+            try:
+                sym_atelier.symlink_to(a_sel, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                sym_atelier = None
+            if sym_atelier is not None:
+                bad_sym = api.get_architect_state(atelier=str(sym_atelier), gravity_home=g_home)
+                self.assertFalse(bad_sym["available"])
+                self.assertEqual(bad_sym["discovery_source"], "selected_atelier")
+                self.assertTrue(bad_sym["warnings"])
+
+    def test_architect_corrupt_or_symlink_registry_resilience(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            g_home = tmp_path / "gravity-home"
+            arch_home = g_home / "architect"
+            arch_home.mkdir(parents=True)
+            b_home = g_home / "bridge"
+            a_bridge = tmp_path / "atelier-bridge"
+            self._write_mini_atelier(a_bridge)
+            _create_sample_bridge_db(b_home / "bridge.db", studio_path=a_bridge)
+
+            reg_path = arch_home / "ateliers.json"
+            reg_path.write_text("{broken-json", encoding="utf-8")
+            res_corrupt = api.get_architect_state(gravity_home=g_home)
+            self.assertTrue(res_corrupt["available"])
+            self.assertEqual(res_corrupt["discovery_source"], "bridge_discovery")
+            self.assertTrue(any("ateliers.json" in w for w in res_corrupt["warnings"]))
+
+            reg_path.write_text(json.dumps({"ateliers": "not-a-list"}), encoding="utf-8")
+            res_bad_field = api.get_architect_state(gravity_home=g_home)
+            self.assertTrue(res_bad_field["available"])
+            self.assertEqual(res_bad_field["discovery_source"], "bridge_discovery")
+            self.assertTrue(any("ateliers" in w for w in res_bad_field["warnings"]))
+
+            reg_path.unlink()
+            real_target = tmp_path / "real-reg.json"
+            real_target.write_text(json.dumps({"ateliers": [{"workspace_path": str(a_bridge)}]}), encoding="utf-8")
+            try:
+                reg_path.symlink_to(real_target)
+            except (OSError, NotImplementedError):
+                return
+            res_sym = api.get_architect_state(gravity_home=g_home)
+            self.assertTrue(res_sym["available"])
+            self.assertEqual(res_sym["discovery_source"], "bridge_discovery")
+            self.assertTrue(any("symlink" in w.lower() for w in res_sym["warnings"]))
+
 
 class TestDashboardFacade(unittest.TestCase):
     def test_build_initial_summary_isolated(self) -> None:

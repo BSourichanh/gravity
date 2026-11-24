@@ -18,6 +18,7 @@ def build_initial_summary(
     view: str = "overview",
     project: str = "",
     ws: str = "",
+    atelier: str = "",
     module_id: str = "",
     overview: Optional[dict[str, Any]] = None,
     workflow: Optional[dict[str, Any]] = None,
@@ -114,6 +115,8 @@ def build_initial_summary(
 
     if architect is not None or req_view == "architect" or "architect" in tab_ids:
         arch = architect if architect is not None else get_architect_state(
+            atelier=atelier,
+            ws=ws,
             gravity_home=gravity_home,
             bridge_home=bridge_home,
             architect_home=architect_home,

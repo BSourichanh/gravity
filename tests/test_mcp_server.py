@@ -102,10 +102,14 @@ class TestMcpServer(unittest.TestCase):
         )
 
         open_tool = tools[0]
+        self.assertIn("atelier", open_tool["inputSchema"]["properties"])
         self.assertEqual(open_tool["_meta"]["ui"]["resourceUri"], mcp_server.APP_URI)
         self.assertEqual(open_tool["_meta"]["ui"]["visibility"], ["model", "app"])
         eps = open_tool["_meta"]["com.google.antigravity/ui"]["entrypoints"]
         self.assertEqual([e["type"] for e in eps], ["aux_pane", "global"])
+
+        arch_tool = next(t for t in tools if t["name"] == "gravity_get_architect_state")
+        self.assertIn("atelier", arch_tool["inputSchema"]["properties"])
 
         for app_tool in tools[1:]:
             self.assertEqual(app_tool["_meta"]["ui"]["visibility"], ["app"])
@@ -135,6 +139,7 @@ class TestMcpServer(unittest.TestCase):
             'addEventListener("message"',
             "renderBridgeView",
             "renderArchitectView",
+            "g-arch-ws",
         ):
             self.assertIn(required, html_txt)
 
@@ -417,6 +422,222 @@ class TestMcpServer(unittest.TestCase):
                 ctx=ctx,
             )["result"]["structuredContent"]  # type: ignore[index]
             self.assertTrue(arch2["unchanged"])
+
+    def test_architect_mcp_ws_hint_and_atelier_selector_without_bridge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            g_home = tmp_path / "gravity-home"
+            fake_user = tmp_path / "user-home"
+            fake_user.mkdir()
+            plugins_root = tmp_path / "plugins"
+            arch_home = g_home / "architect"
+            (g_home / "core").mkdir(parents=True)
+            arch_home.mkdir(parents=True)
+
+            atelier_one = tmp_path / "atelier-one"
+            atelier_two = tmp_path / "atelier-two"
+            for idx, adir in enumerate((atelier_one, atelier_two), start=1):
+                (adir / "tracking" / "snapshots").mkdir(parents=True)
+                (adir / "ECOSYSTEM.md").write_text(f"# Atelier {idx}\n", encoding="utf-8")
+                (adir / "projects.json").write_text(
+                    json.dumps({"schema_version": 5, "workspace_name": f"Atelier {idx}", "projects": []}),
+                    encoding="utf-8",
+                )
+
+            (arch_home / "ateliers.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "ateliers": [
+                            {"workspace_path": str(atelier_one), "workspace_name": "Atelier 1", "updated_at": "2026-11-24T09:00:00Z"},
+                            {"workspace_path": str(atelier_two), "workspace_name": "Atelier 2", "updated_at": "2026-11-24T08:00:00Z"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            _write_fake_plugin(plugins_root, mod_id="core", plugin_name="gravity", ui_mode="core")
+            _write_fake_plugin(plugins_root, mod_id="architect", plugin_name="gravity-architect", ui_mode="none")
+            write_modules_registry(
+                g_home,
+                [
+                    {
+                        "id": "core",
+                        "plugin_name": "gravity",
+                        "display_name": "Gravity",
+                        "version": "0.3.0",
+                        "valid": True,
+                        "errors": [],
+                        "storage": {"subdir": "core", "env_override": "GRAVITY_CORE_HOME"},
+                        "commands": ["/gravity"],
+                        "capabilities": ["test"],
+                        "ui": {"mode": "core", "target": "gravity"},
+                        "signals": {"produces": [], "consumes": []},
+                    },
+                    {
+                        "id": "architect",
+                        "plugin_name": "gravity-architect",
+                        "display_name": "Gravity Architect",
+                        "version": "0.5.0",
+                        "valid": True,
+                        "errors": [],
+                        "storage": {"subdir": "architect", "env_override": "GRAVITY_ARCHITECT_HOME"},
+                        "commands": ["/gravity-architect"],
+                        "capabilities": ["test"],
+                        "ui": {"mode": "none", "target": "gravity"},
+                        "signals": {"produces": [], "consumes": []},
+                    },
+                ],
+            )
+
+            ctx = {
+                "gravity_home": g_home,
+                "plugin_roots": [plugins_root],
+                "home_dir": fake_user,
+                "bridge_home": g_home / "bridge",
+                "architect_home": arch_home,
+            }
+
+            open_ws = mcp_server.handle_jsonrpc_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 30,
+                    "method": "tools/call",
+                    "params": {"name": "open_gravity_dashboard", "arguments": {"view": "architect", "ws": str(atelier_two)}},
+                },
+                ctx=ctx,
+            )["result"]  # type: ignore[index]
+            self.assertFalse(open_ws["isError"])
+            sc = open_ws["structuredContent"]
+            self.assertEqual(sc["initial_atelier"], "")
+            self.assertTrue(sc["architect"]["available"])
+            self.assertEqual(sc["architect"]["discovery_source"], "ws_hint")
+            self.assertEqual(Path(sc["architect"]["atelier_root"]), atelier_two.resolve())
+            self.assertEqual(len(sc["architect"]["ateliers"]), 2)
+
+            switch_res = mcp_server.handle_jsonrpc_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 31,
+                    "method": "tools/call",
+                    "params": {"name": "gravity_get_architect_state", "arguments": {"atelier": str(atelier_one)}},
+                },
+                ctx=ctx,
+            )["result"]["structuredContent"]  # type: ignore[index]
+            self.assertTrue(switch_res["available"])
+            self.assertEqual(switch_res["discovery_source"], "selected_atelier")
+            self.assertEqual(Path(switch_res["atelier_root"]), atelier_one.resolve())
+
+            bad_res = mcp_server.handle_jsonrpc_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 32,
+                    "method": "tools/call",
+                    "params": {"name": "gravity_get_architect_state", "arguments": {"atelier": str(tmp_path / "missing")}},
+                },
+                ctx=ctx,
+            )["result"]["structuredContent"]  # type: ignore[index]
+            self.assertFalse(bad_res["available"])
+            self.assertEqual(bad_res["discovery_source"], "selected_atelier")
+            self.assertTrue(bad_res["warnings"])
+
+    def test_architect_ws_hint_preserved_on_refresh_without_registry_or_bridge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            g_home = tmp_path / "gravity-home"
+            fake_user = tmp_path / "user-home"
+            fake_user.mkdir()
+            plugins_root = tmp_path / "plugins"
+            arch_home = g_home / "architect"
+            (g_home / "core").mkdir(parents=True)
+            arch_home.mkdir(parents=True)
+
+            atelier_dir = tmp_path / "atelier-direct"
+            (atelier_dir / "tracking" / "snapshots").mkdir(parents=True)
+            (atelier_dir / "ECOSYSTEM.md").write_text("# Atelier Direct\n", encoding="utf-8")
+            (atelier_dir / "projects.json").write_text(
+                json.dumps({"schema_version": 5, "workspace_name": "Atelier Direct", "projects": []}),
+                encoding="utf-8",
+            )
+
+            _write_fake_plugin(plugins_root, mod_id="core", plugin_name="gravity", ui_mode="core")
+            _write_fake_plugin(plugins_root, mod_id="architect", plugin_name="gravity-architect", ui_mode="none")
+            write_modules_registry(
+                g_home,
+                [
+                    {
+                        "id": "core",
+                        "plugin_name": "gravity",
+                        "display_name": "Gravity",
+                        "version": "0.3.0",
+                        "valid": True,
+                        "errors": [],
+                        "storage": {"subdir": "core", "env_override": "GRAVITY_CORE_HOME"},
+                        "commands": ["/gravity"],
+                        "capabilities": ["test"],
+                        "ui": {"mode": "core", "target": "gravity"},
+                        "signals": {"produces": [], "consumes": []},
+                    },
+                    {
+                        "id": "architect",
+                        "plugin_name": "gravity-architect",
+                        "display_name": "Gravity Architect",
+                        "version": "0.5.0",
+                        "valid": True,
+                        "errors": [],
+                        "storage": {"subdir": "architect", "env_override": "GRAVITY_ARCHITECT_HOME"},
+                        "commands": ["/gravity-architect"],
+                        "capabilities": ["test"],
+                        "ui": {"mode": "none", "target": "gravity"},
+                        "signals": {"produces": [], "consumes": []},
+                    },
+                ],
+            )
+
+            ctx = {
+                "gravity_home": g_home,
+                "plugin_roots": [plugins_root],
+                "home_dir": fake_user,
+                "bridge_home": g_home / "bridge",
+                "architect_home": arch_home,
+            }
+
+            tools_resp = mcp_server.handle_jsonrpc_message(
+                {"jsonrpc": "2.0", "id": 40, "method": "tools/list", "params": {}},
+                ctx=ctx,
+            )["result"]["tools"]  # type: ignore[index]
+            arch_tool = next(t for t in tools_resp if t["name"] == "gravity_get_architect_state")
+            self.assertIn("ws", arch_tool["inputSchema"]["properties"])
+
+            open_res = mcp_server.handle_jsonrpc_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 41,
+                    "method": "tools/call",
+                    "params": {"name": "open_gravity_dashboard", "arguments": {"ws": str(atelier_dir)}},
+                },
+                ctx=ctx,
+            )["result"]["structuredContent"]  # type: ignore[index]
+            self.assertEqual(open_res["initial_ws"], str(atelier_dir))
+            self.assertTrue(open_res["architect"]["available"])
+            self.assertEqual(open_res["architect"]["discovery_source"], "ws_hint")
+
+            refresh_res = mcp_server.handle_jsonrpc_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 42,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "gravity_get_architect_state",
+                        "arguments": {"ws": str(atelier_dir), "atelier": ""},
+                    },
+                },
+                ctx=ctx,
+            )["result"]["structuredContent"]  # type: ignore[index]
+            self.assertTrue(refresh_res["available"])
+            self.assertEqual(refresh_res["discovery_source"], "ws_hint")
+            self.assertEqual(Path(refresh_res["atelier_root"]), atelier_dir.resolve())
 
     def test_stdio_subprocess_roundtrip_and_parse_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

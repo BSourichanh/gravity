@@ -9,7 +9,7 @@ import re
 import sqlite3
 from typing import Any, Optional
 
-from core.registry import resolve_module_home
+from core.registry import resolve_gravity_home, resolve_module_home
 from dashboard.providers import (
     clean_md_inline,
     enforce_payload_budget,
@@ -28,6 +28,7 @@ from dashboard.providers import (
 MAX_PAYLOAD_BYTES = 450_000
 MAX_HEAD_BYTES = 32_768
 MAX_ECOSYSTEM_BYTES = 65_536
+ATELIERS_REGISTRY_FILENAME = "ateliers.json"
 
 _HYGIENE_BLOCK_RE = re.compile(
     r"<!--\s*AUTO:START:ecosystem-hygiene\s*-->(.*?)<!--\s*AUTO:END:ecosystem-hygiene\s*-->",
@@ -72,12 +73,109 @@ def _has_atelier_markers(candidate: Path, *, require_both: bool = False) -> bool
         return False
 
 
+def _norm_path_key(path: Path) -> str:
+    try:
+        return os.path.normcase(str(path.resolve()))
+    except OSError:
+        return os.path.normcase(str(path))
+
+
+def _resolve_raw_architect_home(
+    *,
+    gravity_home: Optional[Path],
+    architect_home: Optional[Path],
+) -> Path:
+    if architect_home is not None:
+        return Path(architect_home).expanduser()
+    env_arch = os.environ.get("GRAVITY_ARCHITECT_HOME", "").strip()
+    if env_arch:
+        return Path(env_arch).expanduser()
+    return resolve_gravity_home(gravity_home) / "architect"
+
+
+def _load_registered_ateliers_ro(
+    reg_path: Path,
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    try:
+        if reg_path.parent.is_symlink() or reg_path.is_symlink():
+            warnings.append(f"Ignored symlinked ateliers registry: {reg_path}.")
+            return []
+        if not reg_path.is_file():
+            return []
+    except OSError:
+        return []
+
+    data, read_warn = read_json_ro(reg_path)
+    if read_warn:
+        warnings.append(read_warn)
+    if not isinstance(data, dict):
+        if data is not None:
+            warnings.append("Invalid structure in ateliers.json: expected JSON object.")
+        return []
+
+    entries = data.get("ateliers")
+    if not isinstance(entries, list):
+        warnings.append("Invalid 'ateliers' field in ateliers.json: expected list.")
+        return []
+
+    collected: list[dict[str, Any]] = []
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        raw_ws = str(raw.get("workspace_path") or "").strip()
+        if not raw_ws:
+            continue
+        candidate = Path(raw_ws).expanduser()
+        if not _has_atelier_markers(candidate, require_both=True):
+            continue
+        resolved = candidate.resolve()
+        ws_name = str(raw.get("workspace_name") or "").strip() or resolved.name
+        updated_at = str(raw.get("updated_at") or "").strip()
+        collected.append(
+            {
+                "workspace_path": str(resolved),
+                "workspace_name": ws_name,
+                "updated_at": updated_at,
+                "source": "architect_registry",
+            }
+        )
+
+    collected.sort(
+        key=lambda item: (str(item.get("updated_at") or ""), str(item.get("workspace_path") or "")),
+        reverse=True,
+    )
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in collected:
+        key = _norm_path_key(Path(item["workspace_path"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _discover_from_registry_ro(
+    *,
+    gravity_home: Optional[Path],
+    architect_home: Optional[Path],
+    warnings: list[str],
+) -> tuple[list[dict[str, Any]], Path]:
+    raw_home = _resolve_raw_architect_home(
+        gravity_home=gravity_home,
+        architect_home=architect_home,
+    )
+    reg_path = raw_home / ATELIERS_REGISTRY_FILENAME
+    return _load_registered_ateliers_ro(reg_path, warnings), reg_path
+
+
 def _discover_from_bridge_ro(
     *,
     gravity_home: Optional[Path],
     bridge_home: Optional[Path],
     warnings: list[str],
-) -> Optional[Path]:
+) -> list[dict[str, Any]]:
     b_home = (
         Path(bridge_home).expanduser().resolve()
         if bridge_home is not None
@@ -85,73 +183,111 @@ def _discover_from_bridge_ro(
     )
     db_path = b_home / "bridge.db"
     if not db_path.is_file() or db_path.is_symlink():
-        return None
+        return []
     conn = open_sqlite_ro(db_path, warnings)
     if conn is None:
-        return None
+        return []
     try:
         rows = conn.execute(
-            "SELECT canonical_path FROM workspaces ORDER BY last_seen_at DESC, slug ASC"
+            "SELECT canonical_path, display_name, last_seen_at FROM workspaces ORDER BY last_seen_at DESC, slug ASC"
         ).fetchall()
     except sqlite3.Error as exc:
         warnings.append(f"Bridge atelier discovery query failed: {exc}")
-        return None
+        return []
     finally:
         conn.close()
 
+    discovered: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for row in rows:
         raw_path = str(row["canonical_path"] or "").strip()
         if not raw_path:
             continue
         candidate = Path(raw_path).expanduser()
-        if _has_atelier_markers(candidate, require_both=True):
-            return candidate.resolve()
-    return None
+        if not _has_atelier_markers(candidate, require_both=True):
+            continue
+        resolved = candidate.resolve()
+        key = _norm_path_key(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        discovered.append(
+            {
+                "workspace_path": str(resolved),
+                "workspace_name": str(row["display_name"] or "").strip() or resolved.name,
+                "updated_at": str(row["last_seen_at"] or "").strip(),
+                "source": "bridge_discovery",
+            }
+        )
+    return discovered
 
 
 def _resolve_atelier_root(
     *,
+    atelier: str,
+    ws: str,
     gravity_home: Optional[Path],
-    bridge_home: Optional[Path],
     architect_home: Optional[Path],
     architect_workspace: Optional[Path],
+    registry_ateliers: list[dict[str, Any]],
+    bridge_ateliers: list[dict[str, Any]],
     warnings: list[str],
-) -> tuple[Path, str]:
+) -> tuple[Path, str, bool]:
     if architect_workspace is not None:
-        return Path(architect_workspace).expanduser().resolve(), "arg_workspace"
+        return Path(architect_workspace).expanduser().resolve(), "arg_workspace", False
+
+    selected = atelier.strip()
+    if selected:
+        cand = Path(selected).expanduser()
+        if _has_atelier_markers(cand, require_both=True):
+            return cand.resolve(), "selected_atelier", False
+        cand_key = _norm_path_key(cand) if not cand.is_symlink() else ""
+        if cand_key:
+            for known in (*registry_ateliers, *bridge_ateliers):
+                known_path = Path(str(known.get("workspace_path") or ""))
+                if _norm_path_key(known_path) == cand_key and _has_atelier_markers(known_path, require_both=True):
+                    return known_path.resolve(), "selected_atelier", False
+        warnings.append(
+            f"Atelier sélectionné invalide, symlink ou sans ECOSYSTEM.md + projects.json : {selected!r}."
+        )
+        return cand, "selected_atelier", True
 
     env_ws = os.environ.get("GRAVITY_ARCHITECT_WORKSPACE", "").strip()
     if env_ws:
-        return Path(env_ws).expanduser().resolve(), "env_workspace"
+        return Path(env_ws).expanduser().resolve(), "env_workspace", False
 
     if architect_home is not None:
         arch_arg = Path(architect_home).expanduser().resolve()
         if _has_atelier_markers(arch_arg, require_both=False):
-            return arch_arg, "architect_home"
+            return arch_arg, "architect_home", False
 
     env_arch = os.environ.get("GRAVITY_ARCHITECT_HOME", "").strip()
     if env_arch:
         arch_env_path = Path(env_arch).expanduser().resolve()
         if _has_atelier_markers(arch_env_path, require_both=False):
-            return arch_env_path, "env_architect_home"
+            return arch_env_path, "env_architect_home", False
 
-    bridge_discovered = _discover_from_bridge_ro(
-        gravity_home=gravity_home,
-        bridge_home=bridge_home,
-        warnings=warnings,
-    )
-    if bridge_discovered is not None:
-        return bridge_discovered, "bridge_discovery"
+    ws_hint = ws.strip()
+    if ws_hint:
+        ws_cand = Path(ws_hint).expanduser()
+        if _has_atelier_markers(ws_cand, require_both=True):
+            return ws_cand.resolve(), "ws_hint", False
+
+    if registry_ateliers:
+        return Path(registry_ateliers[0]["workspace_path"]), "architect_registry", False
+
+    if bridge_ateliers:
+        return Path(bridge_ateliers[0]["workspace_path"]), "bridge_discovery", False
 
     if architect_home is not None:
-        return Path(architect_home).expanduser().resolve(), "module_home"
+        return Path(architect_home).expanduser().resolve(), "module_home", False
 
     fallback = resolve_module_home(
         "architect",
         env_override="GRAVITY_ARCHITECT_HOME",
         gravity_home=gravity_home,
     )
-    return fallback, "module_home"
+    return fallback, "module_home", False
 
 
 def _read_head_text_ro(path: Path, max_bytes: int = MAX_HEAD_BYTES) -> Optional[tuple[str, int, str]]:
@@ -181,19 +317,35 @@ def _extract_bullet_alerts(block: str) -> list[str]:
     return alerts
 
 
+def _empty_ecosystem(budget_bytes: Optional[int] = None) -> dict[str, Any]:
+    return {
+        "exists": False,
+        "size_bytes": 0,
+        "budget_bytes": budget_bytes,
+        "over_budget": False,
+        "updated_at": "",
+        "uri": "",
+        "alerts": [],
+    }
+
+
+def _empty_delta() -> dict[str, Any]:
+    return {
+        "exists": False,
+        "date": "",
+        "editorial_status": "",
+        "watches_status": "",
+        "editorial_targets": [],
+        "hygiene_alerts": [],
+        "uri": "",
+    }
+
+
 def _read_ecosystem_ro(eco_path: Path, budget_bytes: Optional[int]) -> dict[str, Any]:
     uri = file_uri_if_exists(eco_path)
     loaded = _read_head_text_ro(eco_path, MAX_ECOSYSTEM_BYTES)
     if loaded is None:
-        return {
-            "exists": False,
-            "size_bytes": 0,
-            "budget_bytes": budget_bytes,
-            "over_budget": False,
-            "updated_at": "",
-            "uri": "",
-            "alerts": [],
-        }
+        return _empty_ecosystem(budget_bytes)
     text, size_bytes, updated_at = loaded
     m_block = _HYGIENE_BLOCK_RE.search(text)
     if not m_block:
@@ -215,15 +367,7 @@ def _read_delta_ro(delta_path: Path) -> dict[str, Any]:
     uri = file_uri_if_exists(delta_path)
     loaded = _read_head_text_ro(delta_path, MAX_HEAD_BYTES)
     if loaded is None:
-        return {
-            "exists": False,
-            "date": "",
-            "editorial_status": "",
-            "watches_status": "",
-            "editorial_targets": [],
-            "hygiene_alerts": [],
-            "uri": "",
-        }
+        return _empty_delta()
     text, _size_bytes, _updated_at = loaded
     date_m = _DELTA_DATE_RE.search(text)
     stat_m = _DELTA_STATUS_RE.search(text)
@@ -472,9 +616,46 @@ def _dir_md_tokens(directory: Path) -> list[tuple[str, str]]:
         return []
 
 
+def _merge_ateliers(
+    registry_ateliers: list[dict[str, Any]],
+    bridge_ateliers: list[dict[str, Any]],
+    *,
+    current_root: Path,
+    current_available: bool,
+    current_name: str,
+    current_updated_at: str,
+    current_source: str,
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in (*registry_ateliers, *bridge_ateliers):
+        raw_p = str(item.get("workspace_path") or "").strip()
+        if not raw_p:
+            continue
+        key = _norm_path_key(Path(raw_p))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(dict(item))
+    if current_available:
+        cur_key = _norm_path_key(current_root)
+        if cur_key not in seen:
+            merged.append(
+                {
+                    "workspace_path": str(current_root),
+                    "workspace_name": current_name or current_root.name,
+                    "updated_at": current_updated_at,
+                    "source": current_source,
+                }
+            )
+    return merged
+
+
 def get_architect_state(
     since_signature: str = "",
     *,
+    atelier: str = "",
+    ws: str = "",
     gravity_home: Optional[Path] = None,
     bridge_home: Optional[Path] = None,
     architect_home: Optional[Path] = None,
@@ -482,13 +663,88 @@ def get_architect_state(
 ) -> dict[str, Any]:
     """Return read-only Gravity Architect atelier state, specs, handoffs, and `audits/code/`."""
     warnings: list[str] = []
-    atelier_root, discovery_source = _resolve_atelier_root(
+    registry_ateliers, ateliers_reg_path = _discover_from_registry_ro(
         gravity_home=gravity_home,
-        bridge_home=bridge_home,
         architect_home=architect_home,
-        architect_workspace=architect_workspace,
         warnings=warnings,
     )
+    bridge_ateliers = _discover_from_bridge_ro(
+        gravity_home=gravity_home,
+        bridge_home=bridge_home,
+        warnings=warnings,
+    )
+    atelier_root, discovery_source, blocked_selection = _resolve_atelier_root(
+        atelier=atelier,
+        ws=ws,
+        gravity_home=gravity_home,
+        architect_home=architect_home,
+        architect_workspace=architect_workspace,
+        registry_ateliers=registry_ateliers,
+        bridge_ateliers=bridge_ateliers,
+        warnings=warnings,
+    )
+
+    reg_sig_token = (
+        "symlink"
+        if (ateliers_reg_path.parent.is_symlink() or ateliers_reg_path.is_symlink())
+        else stat_token(ateliers_reg_path)
+    )
+    known_paths = [str(item.get("workspace_path") or "") for item in (*registry_ateliers, *bridge_ateliers)]
+
+    if blocked_selection:
+        sig = short_digest(
+            [
+                atelier.strip(),
+                ws.strip(),
+                str(atelier_root),
+                discovery_source,
+                "blocked",
+                reg_sig_token,
+                *known_paths,
+            ]
+        )
+        if since_signature and since_signature == sig:
+            return unchanged_response(sig)
+
+        ateliers_out = _merge_ateliers(
+            registry_ateliers,
+            bridge_ateliers,
+            current_root=atelier_root,
+            current_available=False,
+            current_name="",
+            current_updated_at="",
+            current_source=discovery_source,
+        )
+        blocked_payload: dict[str, Any] = {
+            "changed": True,
+            "unchanged": False,
+            "signature": sig,
+            "available": False,
+            "atelier_root": str(atelier_root),
+            "discovery_source": discovery_source,
+            "workspace_name": atelier_root.name,
+            "public_mode": False,
+            "truncated": False,
+            "ateliers": ateliers_out,
+            "ecosystem": _empty_ecosystem(),
+            "delta": _empty_delta(),
+            "hot_budgets": {},
+            "watches_count": 0,
+            "projects": [],
+            "specs": [],
+            "handoffs": [],
+            "archived_specs_count": 0,
+            "archived_handoffs_count": 0,
+            "audits": [],
+            "index_audit": None,
+            "index_audits": [],
+            "warnings": warnings,
+        }
+        return enforce_payload_budget(
+            blocked_payload,
+            ("audits", "handoffs", "specs", "projects", "ateliers"),
+            max_bytes=MAX_PAYLOAD_BYTES,
+        )
 
     eco_path = atelier_root / "ECOSYSTEM.md"
     delta_path = atelier_root / "tracking" / "snapshots" / "delta.md"
@@ -502,8 +758,12 @@ def get_architect_state(
 
     sig = short_digest(
         [
+            atelier.strip(),
+            ws.strip(),
             str(atelier_root),
             discovery_source,
+            reg_sig_token,
+            *known_paths,
             stat_token(eco_path),
             stat_token(delta_path),
             stat_token(projects_path),
@@ -537,6 +797,15 @@ def get_architect_state(
             or index_audit is not None
         )
     )
+    ateliers_out = _merge_ateliers(
+        registry_ateliers,
+        bridge_ateliers,
+        current_root=atelier_root,
+        current_available=available,
+        current_name=ws_name or atelier_root.name,
+        current_updated_at=delta.get("date") or ecosystem.get("updated_at") or "",
+        current_source=discovery_source,
+    )
 
     payload: dict[str, Any] = {
         "changed": True,
@@ -548,6 +817,7 @@ def get_architect_state(
         "workspace_name": ws_name or atelier_root.name,
         "public_mode": public_mode,
         "truncated": False,
+        "ateliers": ateliers_out,
         "ecosystem": ecosystem,
         "delta": delta,
         "hot_budgets": hot_budgets,
@@ -564,6 +834,6 @@ def get_architect_state(
     }
     return enforce_payload_budget(
         payload,
-        ("audits", "handoffs", "specs", "projects"),
+        ("audits", "handoffs", "specs", "projects", "ateliers"),
         max_bytes=MAX_PAYLOAD_BYTES,
     )
