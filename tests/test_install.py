@@ -231,6 +231,7 @@ class TestInstall(unittest.TestCase):
         self.assertIsNotNone(installer.is_unsafe_target(REPO_ROOT, installer.PLUGIN_SOURCE))
 
     def test_exec_scripts_and_windows_python_cmd_adaptation(self) -> None:
+        self.assertIn("hooks/pre_invocation_gravity.py", installer.EXEC_SCRIPTS)
         self.assertIn("mcp/server.py", installer.EXEC_SCRIPTS)
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -262,16 +263,23 @@ class TestInstall(unittest.TestCase):
                 mock.patch.dict(os.environ, env_patch),
                 mock.patch.object(Path, "home", return_value=fake_home),
             ):
+                p_dry_nt = installer.install_copy(installer.PLUGIN_SOURCE, tmp_path / "dry-nt", dry_run=True)
+                self.assertEqual(p_dry_nt, 0)
                 rc_fix = installer.install_copy(installer.PLUGIN_SOURCE, target_fix)
             self.assertEqual(rc_fix, 0)
             cfg_fix = json.loads((target_fix / "mcp_config.json").read_text(encoding="utf-8"))
             self.assertIn(cfg_fix["mcpServers"]["dashboard"]["command"], ("python", "py"))
+            hooks_fix = json.loads((target_fix / "hooks.json").read_text(encoding="utf-8"))
+            hook_cmd = hooks_fix["gravity-core-command"]["PreInvocation"][0]["command"]
+            self.assertFalse(hook_cmd.startswith("python3 "))
 
             target_nofix = tmp_path / "installed-nofix"
             p_nofix = _run_install(["--target", str(target_nofix), "--no-fix-python"], fake_home)
             self.assertEqual(p_nofix.returncode, 0, msg=p_nofix.stderr or p_nofix.stdout)
             cfg_nofix = json.loads((target_nofix / "mcp_config.json").read_text(encoding="utf-8"))
             self.assertEqual(cfg_nofix["mcpServers"]["dashboard"]["command"], "python3")
+            hooks_nofix = json.loads((target_nofix / "hooks.json").read_text(encoding="utf-8"))
+            self.assertTrue(hooks_nofix["gravity-core-command"]["PreInvocation"][0]["command"].startswith("python3 "))
 
 
 if __name__ == "__main__":

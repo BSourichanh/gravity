@@ -1,6 +1,6 @@
 # Feuille de route — Gravity Core & Écosystème
 
-## `v0.1.0` — Socle modulaire & unification des dépôts *(actuelle)*
+## `v0.1.0` — Socle modulaire & unification des dépôts
 
 - Standardisation des 5 dépôts produits sur `plugin/` + `plugin/config/module.json` v1 (`gravity`, `gravity-architect`, `gravity-workflow`, `gravity-bridge`, `gravity-metrics`).
 - Séparation complète de l'atelier de conception dans `gravity-studio`.
@@ -9,14 +9,15 @@
 
 ---
 
-## `v0.2.0` — Interface MCP App unifiée & boucle `metrics -> workflow auto`
+## `v0.2.0` → `v0.3.0` — Interface MCP App unifiée, `/gravity` 0-token & boucle `metrics -> workflow auto` *(actuelle)*
 
 ### 1. Convergence UI/UX vers `gravity` (`ui-host`)
-- **Socle & MCP App unifiée livrés sur `dev` (Phase 4 / Lots 1A, 1B & 2) :** façade lecture seule `plugin/dashboard/`, serveur stdio MCP App (`plugin/mcp/server.py`, `open_gravity_dashboard` sur `aux_pane`/`global` + 7 outils `app`), UI HTML5/SVG SEP-1865 autonome sans `innerHTML` et diagnostic `init_env.py --dashboard`.
-- **Transition des interfaces existantes :**
+- **Socle & MCP App unifiée livrés (`v0.3.0`) :** façade lecture seule `plugin/dashboard/`, serveur stdio MCP App (`plugin/mcp/server.py`, `open_gravity_dashboard` sur `aux_pane`/`global` + 7 outils `app`), UI HTML5/SVG SEP-1865 autonome sans `innerHTML`, diagnostic `init_env.py --dashboard` et sonde Antigravity App (`winreg`, `snap`, `dpkg-query`).
+- **Vue d'ensemble 0-token & santé multi-modules (`--overview`, `PreInvocation`) :** `/gravity` nu répond sans appel LLM, `init_env.py --check` audite `architect`, `bridge.db`, `metrics`, `workflow` et MCP, et `--guide` affiche le guide complet sans troncature.
+- **Statut des interfaces compagnons :**
   - `gravity-metrics` (`ui.mode: "transition-mcp"`) : vue lecture seule coûts/tokens/cache/audits agents intégrée dans `gravity` (`archive`/`remove` conservés sous `/gravity-metrics`).
-  - `gravity-workflow` (`ui.mode: "transition-sidecar"`) : vue `Workflow Live` temps réel (`~1 500 ms`) intégrée dans `gravity` en lecture seule.
-  - `gravity-bridge` et `gravity-architect` : onglets dédiés lecture seule livrés au Lot 2 (**`Bridge`** sur `bridge.db` `?mode=ro` et **`Architect`** sur l'atelier Hot/Cold + `audits/code/`).
+  - `gravity-workflow` (`ui.mode: "none"`) : vue `Workflow Live` temps réel (`~1 500 ms`) intégrée dans `gravity` en lecture seule.
+  - `gravity-bridge` et `gravity-architect` (`ui.mode: "none"`) : onglets dédiés lecture seule (**`Bridge`** sur `bridge.db` `?mode=ro` et **`Architect`** sur l'atelier Hot/Cold + `audits/code/`).
 
 ### 2. Boucle d'optimisation `metrics -> workflow auto`
 - Exploitation des signaux `session-metrics` et `cost-telemetry` produits par `gravity-metrics` comme entrées du routage adaptatif dans `gravity-workflow`.
@@ -25,7 +26,7 @@
 
 ---
 
-## `v0.3.0+` — Perspectives
+## `v0.4.0+` — Perspectives
 
 - Bus de signaux léger inter-modules sous `$GRAVITY_HOME/core/`.
-- Méta-installeur et vérificateur de santé multi-modules orchestré depuis `gravity` Core.
+- Méta-vérificateur et télémétrie d'interopérabilité inter-modules orchestrés depuis `gravity` Core.

@@ -1,7 +1,7 @@
 # Gravity — Socle Central & Écosystème Modulaire
 
-**Gravity** (`BSourichanh/gravity`, v0.2.0, licence MIT) est le **plugin cœur** de l'écosystème modulaire **Gravity** pour **Google Antigravity**.
-Il unifie l'environnement centralisé (`~/.gemini/gravity/`), la découverte et validation des modules via `config/module.json` v1 (`core/modules.json`), ainsi que la future interface utilisateur MCP App unifiée (`v0.3.0`).
+**Gravity** (`BSourichanh/gravity`, v0.3.0, licence MIT) est le **plugin cœur** de l'écosystème modulaire **Gravity** pour **Google Antigravity**.
+Il unifie l'environnement centralisé (`~/.gemini/gravity/`), la découverte et validation des modules via `config/module.json` v1 (`core/modules.json`), la vue d'ensemble 0-token (`/gravity`, hook `PreInvocation` + `--overview`) ainsi que l'interface utilisateur **MCP App unifiée**.
 
 > **Clarification importante :**
 > - **`gravity`** (`/gravity`) est le socle central et hôte du registre des modules.
@@ -14,7 +14,7 @@ Tous les plugins de la suite reposent sur une pile **100 % bibliothèque standar
 
 | Module (`id`) | Plugin & Dépôt | Commande(s) | Stockage centralisé (`$GRAVITY_HOME/...`) | Rôle |
 |---|---|---|---|---|
-| `core` | [**Gravity**](https://github.com/BSourichanh/gravity) (`gravity` v0.2.0) | `/gravity` | `core/` (`$GRAVITY_CORE_HOME`) | Initialisation environnement, registre `core/modules.json` et futur hôte UI unifié |
+| `core` | [**Gravity**](https://github.com/BSourichanh/gravity) (`gravity` v0.3.0) | `/gravity` | `core/` (`$GRAVITY_CORE_HOME`) | Initialisation environnement, registre `core/modules.json` et hôte UI MCP App unifié |
 | `architect` | [**Gravity Architect**](https://github.com/BSourichanh/gravity-architect) (`gravity-architect` v0.5.0) | `/gravity-architect` | `architect/` (`$GRAVITY_ARCHITECT_HOME`) | Conception, intégrité écosystème, stockage Hot/Cold, veille plateforme et mise à niveau |
 | `workflow` | [**Gravity Workflow**](https://github.com/BSourichanh/gravity-workflow) (`gravity-workflow` v0.3.0) | `/gravity-workflow`, `/caveman` | `workflow/` (`$GRAVITY_WORKFLOW_HOME`) | Harnais multi-agents, workflows orchestrateurs, garde-fous fail-closed, evals et routage adaptatif |
 | `bridge` | [**Gravity Bridge**](https://github.com/BSourichanh/gravity-bridge) (`gravity-bridge` v0.3.0) | `/gravity-bridge` | `bridge/` (`$GRAVITY_BRIDGE_HOME`) | Boîte aux lettres SQLite WAL inter-projets et conversations natives App via micro-sidecars `agentapi` |
@@ -29,7 +29,7 @@ python install.py --check
 # Installer globalement (~/.gemini/config/plugins/gravity)
 python install.py
 
-# Remplacer une ancienne installation du harnais 'gravity' par Gravity Core v0.2.0
+# Remplacer une ancienne installation du harnais 'gravity' par Gravity Core v0.3.0
 python install.py --force
 
 # Installer dans un workspace dédié (.agents/plugins/gravity)
@@ -86,12 +86,16 @@ python plugin/scripts/init_env.py --migration-plan --shell bash --json
 python plugin/scripts/init_env.py --dashboard
 python plugin/scripts/init_env.py --dashboard --json
 
-# Guide rapide lecture seule (boucle 3 temps, commandes des modules détectés, pointeurs docs/)
+# Guide rapide lecture seule complet (boucle 3 temps, commandes des modules détectés, pointeurs docs/)
 python plugin/scripts/init_env.py --guide
 python plugin/scripts/init_env.py --guide --json
+
+# Vue d'ensemble unifiée en lecture seule (appelée aussi à 0 token par le hook PreInvocation /gravity)
+python plugin/scripts/init_env.py --overview
+python plugin/scripts/init_env.py --overview --json
 ```
 
-Dans Antigravity, utiliser le skill **`/gravity [init|status|modules|doctor|dashboard|help]`** ou ouvrir directement le tableau de bord depuis la **barre latérale gauche (`Gravity`)** ou le **menu `+` du panneau latéral droit** (`open_gravity_dashboard`, 0 token interactif). L'onglet **Architect (RO)** découvre automatiquement les ateliers enregistrés dans `$GRAVITY_ARCHITECT_HOME/ateliers.json` (et via l'indice `ws`, le sélecteur `#g-arch-ws` ou `bridge.db`), sans écriture workspace.
+Dans Antigravity, `/gravity` (nu) répond à **0 token** via le hook `PreInvocation` (`--overview`), les sous-commandes passent par **`/gravity [init|status|modules|doctor|dashboard|help]`**, et le tableau de bord s'ouvre depuis la **barre latérale gauche (`Gravity`)** ou le **menu `+` du panneau latéral droit** (`open_gravity_dashboard`, 0 token interactif). L'onglet **Architect (RO)** découvre automatiquement les ateliers enregistrés dans `$GRAVITY_ARCHITECT_HOME/ateliers.json` (et via l'indice `ws`, le sélecteur `#g-arch-ws` ou `bridge.db`), sans écriture workspace ; `--check` sonde également la version Antigravity App (`winreg` Windows, `snap`, `dpkg-query`).
 Les anciens répertoires éventuels (`~/.gemini/gravity-bridge`, `~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow`, `~/.gravity`) sont détectés en **lecture seule uniquement** : rien n'est jamais modifié ni supprimé automatiquement.
 
 ## Parcours utilisateur & Guides UX (`docs/`)

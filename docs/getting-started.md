@@ -45,6 +45,7 @@ python scripts/ecosystem_install.py --install --tier 2
 
 # 3. Initialiser ~/.gemini/gravity/core/modules.json et vérifier la santé (lecture seule)
 python plugin/scripts/init_env.py
+python plugin/scripts/init_env.py --overview
 python plugin/scripts/init_env.py --check
 python plugin/scripts/init_env.py --guide
 ```
@@ -61,11 +62,12 @@ python3 scripts/ecosystem_install.py --install --tier 3
 
 # 3. Initialiser ~/.gemini/gravity/core/modules.json et vérifier la santé (lecture seule)
 python3 plugin/scripts/init_env.py
+python3 plugin/scripts/init_env.py --overview
 python3 plugin/scripts/init_env.py --check
 python3 plugin/scripts/init_env.py --guide
 ```
 
-> **Dans le chat Antigravity :** vous pouvez lancer directement `/gravity init`, `/gravity doctor` et `/gravity help`.
+> **Dans le chat Antigravity :** `/gravity` (nu) affiche instantanément la vue d'ensemble à **0 token** (`PreInvocation`), puis vous pouvez lancer `/gravity init`, `/gravity doctor` et `/gravity help`.
 
 ---
 

@@ -2,7 +2,7 @@
   "name": "gravity",
   "displayName": "Gravity",
   "version": "0.3.0",
-  "description": "Socle central de l'écosystème Gravity : environnement ~/.gemini/gravity/, registre de modules et future UI unifiée.",
+  "description": "Socle central de l'écosystème Gravity : environnement ~/.gemini/gravity/, registre de modules et UI MCP App unifiée.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
     "/gravity init — Initialiser ~/.gemini/gravity/ et découvrir les modules",

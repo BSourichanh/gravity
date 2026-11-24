@@ -13,7 +13,7 @@ Exemple de référence (`gravity` Core) :
   "schema_version": 1,
   "id": "core",
   "plugin_name": "gravity",
-  "role": "Initialisation environnement Gravity, registre modules et future UI/UX unifiee",
+  "role": "Initialisation environnement Gravity, registre modules et hote UI MCP App unifie",
   "storage": {
     "subdir": "core",
     "env_override": "GRAVITY_CORE_HOME"
@@ -53,7 +53,7 @@ Exemple de référence (`gravity` Core) :
 | `storage.env_override` | `str` | Nom de variable d'environnement dédiée non vide (ex. `GRAVITY_METRICS_HOME`) |
 | `commands` | `list[str]` | Liste de chaînes non vides (ex. `["/gravity-workflow", "/caveman"]`) |
 | `capabilities` | `list[str]` | Liste de capacités déclarées (chaînes non vides) |
-| `ui.mode` | `str` | Mode UI non vide (`"core"`, `"none"`, `"transition-sidecar"`, `"transition-mcp"`, ou futur mode) |
+| `ui.mode` | `str` | Mode UI non vide (`"core"`, `"none"`, `"transition-mcp"`, ou autre mode contractuel) |
 | `ui.target` | `str` | Cible UI de convergence (ex. `"gravity"`) |
 | `signals.produces` | `list[str]` | Liste de signaux émis (peut être `[]`) |
 | `signals.consumes` | `list[str]` | Liste de signaux consommés (peut être `[]` ou `["*"]`) |
@@ -77,13 +77,13 @@ Lors de l'exécution de `init_env.py` (hors `--check` et `--status`), Gravity Co
 |---|---|---|---|---|---|
 | `core` | `gravity` | `GRAVITY_CORE_HOME` | `core` | `environment-state` | `*` |
 | `architect` | `gravity-architect` | `GRAVITY_ARCHITECT_HOME` | `none` | `ecosystem-health`, `upgrade-deltas` | `—` |
-| `workflow` | `gravity-workflow` | `GRAVITY_WORKFLOW_HOME` | `transition-sidecar` | `workflow-state`, `routing-profile` | `session-metrics` |
+| `workflow` | `gravity-workflow` | `GRAVITY_WORKFLOW_HOME` | `none` | `workflow-state`, `routing-profile` | `session-metrics` |
 | `bridge` | `gravity-bridge` | `GRAVITY_BRIDGE_HOME` | `none` | `bridge-threads` | `—` |
 | `metrics` | `gravity-metrics` | `GRAVITY_METRICS_HOME` | `transition-mcp` | `session-metrics`, `cost-telemetry` | `—` |
 
 ---
 
-## 4. Ajouter un futur module sans modifier Core
+## 4. Ajouter un nouveau module sans modifier Core
 
 Gravity Core découvre dynamiquement tout plugin installé exposant `plugin.json` + `config/module.json` : aucune liste codée en dur n'existe dans `core/registry.py`.
 

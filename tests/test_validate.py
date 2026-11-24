@@ -240,22 +240,22 @@ class TestValidate(unittest.TestCase):
             manifest_path = copy_dir / "plugin.json"
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
 
-            # Valid prompts using '-', '—', and plain text <= 100 chars
+            # Valid prompts using '-' and '—' <= 100 chars
             data["suggestedPrompts"] = [
                 "/gravity init - Initialiser Gravity",
                 "/gravity doctor — Auditer les modules",
-                "Explorer l'architecture Gravity",
+                "/gravity status — Inspecter l'environnement",
             ]
             manifest_path.write_text(json.dumps(data, ensure_ascii=False) + "\n", encoding="utf-8")
             rep_ok = plugin_validator.Report()
             plugin_validator._validate_manifest(copy_dir, rep_ok)
             self.assertTrue(rep_ok.ok(strict=True), msg=rep_ok.errors)
 
-            # Invalid: >100 chars, missing separator, empty summary
+            # Invalid: >100 chars, missing separator, missing '/'
             data["suggestedPrompts"] = [
                 "/gravity init — " + ("x" * 90),
                 "/gravity status",
-                "/gravity doctor —   ",
+                "Explorer l'architecture Gravity",
             ]
             manifest_path.write_text(json.dumps(data, ensure_ascii=False) + "\n", encoding="utf-8")
             rep_bad = plugin_validator.Report()
@@ -303,6 +303,57 @@ class TestValidate(unittest.TestCase):
             self.assertIn("docs/user-journey.md", joined)
             self.assertIn("15360", joined)
             self.assertIn("docs/absent.md", joined)
+
+    def test_int_guards_semver_crlf_file_links_hooks_and_fix_python_cmd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_dir = Path(tmp) / "repo"
+            copy_dir = repo_dir / "plugin"
+            shutil.copytree(PLUGIN_ROOT, copy_dir, ignore=shutil.ignore_patterns("__pycache__"))
+            (repo_dir / "docs").mkdir(parents=True)
+            for name in plugin_validator.UX_GUIDE_FILES:
+                (repo_dir / "docs" / name).write_text("# Guide\n", encoding="utf-8")
+            (repo_dir / "README.md").write_text("# Root\n", encoding="utf-8")
+            (repo_dir / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
+
+            # 1) fix_python_cmd adapts BOTH hooks.json and mcp_config.json
+            with (
+                mock.patch("validate.has_real_python3", return_value=False),
+                mock.patch("validate._detect_portable_python_cmd", return_value="python"),
+            ):
+                rc = plugin_validator.main(["--plugin-root", str(copy_dir), "--fix-python-cmd"])
+                self.assertEqual(rc, 0)
+            fixed_hooks = json.loads((copy_dir / "hooks.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                fixed_hooks["gravity-core-command"]["PreInvocation"][0]["command"],
+                "python hooks/pre_invocation_gravity.py",
+            )
+            fixed_mcp = json.loads((copy_dir / "mcp_config.json").read_text(encoding="utf-8"))
+            self.assertEqual(fixed_mcp["mcpServers"]["dashboard"]["command"], "python")
+
+            # 2) Invalid SemVer, non-bool disabled, prompt without '/', file: link, personal path in docs, CRLF on .py/.svg/.json/.md
+            manifest_path = copy_dir / "plugin.json"
+            mdata = json.loads(manifest_path.read_text(encoding="utf-8"))
+            mdata["version"] = "v1.0"
+            mdata["disabled"] = "no"
+            mdata["suggestedPrompts"][2] = "Sans slash"
+            manifest_path.write_bytes((json.dumps(mdata) + "\n").replace("\n", "\r\n").encode("utf-8"))
+
+            (copy_dir / "assets" / "logo.svg").write_bytes(b'<svg viewBox="0 0 64 64"></svg>\r\n')
+            (copy_dir / "core" / "__init__.py").write_bytes(b'"""init."""\r\n')
+            (copy_dir / "README.md").write_bytes(b"[Local](file:///tmp/secret.md)\r\n")
+            (repo_dir / "docs" / "getting-started.md").write_text("C:\\Users\\alice\\secret\n", encoding="utf-8")
+            (copy_dir / "hooks.json").write_bytes(b'{"g": {"PreInvocation": [{"type": "command", "command": "python3 hooks/missing.py"}]}}\r\n')
+
+            rep = self._validate_copy(copy_dir)
+            self.assertFalse(rep.ok(strict=True))
+            joined = "\n".join(rep.errors)
+            self.assertIn("SemVer", joined)
+            self.assertIn("disabled", joined)
+            self.assertIn("débuter par '/'", joined)
+            self.assertIn("file:", joined)
+            self.assertIn("Chemin personnel", joined)
+            self.assertIn("CRLF", joined)
+            self.assertIn("hooks/missing.py", joined)
 
 
 if __name__ == "__main__":

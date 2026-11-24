@@ -8,11 +8,11 @@ L'écosystème **Gravity** repose sur cinq plugins **Google Antigravity** autono
 
 | `id` | Plugin | Commande(s) | Responsabilité unique |
 |---|---|---|---|
-| `core` | `gravity` (`v0.1.0`) | `/gravity` | Initialisation de `$GRAVITY_HOME`, découverte/validation `config/module.json`, registre `core/modules.json`, futur hôte UI unifié |
-| `architect` | `gravity-architect` (`v0.2.0`) | `/gravity-architect` | Atelier Hot/Cold générique, intégrité écosystème, veille plateforme et audit de mise à niveau |
-| `workflow` | `gravity-workflow` (`v0.2.0`) | `/gravity-workflow`, `/caveman` | Harnais multi-agents, workflows orchestrateurs, garde-fous `PreToolUse` fail-closed, evals et routage adaptatif |
-| `bridge` | `gravity-bridge` (`v0.1.0`) | `/gravity-bridge` | Communication inter-workspaces via SQLite WAL et relais `agentapi` (zéro hook permanent) |
-| `metrics` | `gravity-metrics` (`v0.2.0`) | `/gravity-metrics` | Collecte des métriques de sessions Antigravity, analytics tokens/coûts et émission de signaux |
+| `core` | `gravity` (`v0.3.0`) | `/gravity` | Initialisation de `$GRAVITY_HOME`, découverte/validation `config/module.json`, registre `core/modules.json`, vue `--overview` 0-token et hôte UI MCP App unifié |
+| `architect` | `gravity-architect` (`v0.5.0`) | `/gravity-architect` | Atelier Hot/Cold générique, intégrité écosystème, veille plateforme et audit de mise à niveau |
+| `workflow` | `gravity-workflow` (`v0.3.0`) | `/gravity-workflow`, `/caveman` | Harnais multi-agents, workflows orchestrateurs, garde-fous `PreToolUse` fail-closed, evals et routage adaptatif |
+| `bridge` | `gravity-bridge` (`v0.3.0`) | `/gravity-bridge` | Communication inter-workspaces via SQLite WAL et relais `agentapi` (zéro hook permanent) |
+| `metrics` | `gravity-metrics` (`v0.5.0`) | `/gravity-metrics` | Collecte des métriques de sessions Antigravity, analytics tokens/coûts et émission de signaux |
 
 ---
 
@@ -72,8 +72,8 @@ La boucle **`metrics -> workflow auto`** permettra à `gravity-workflow` d'ajust
 
 ## 5. Convergence UI/UX vers `gravity`
 
-En `v0.2.0` :
-- `gravity` (`core`) porte `ui: {"mode": "core", "target": "gravity"}` et héberge la **MCP App native unifiée** (`plugin/mcp_config.json`, `plugin/mcp/server.py`, `plugin/mcp/widget_html.py`, façade `plugin/dashboard/api.py`, outils `open_gravity_dashboard` + `gravity_get_*`) en lecture seule.
+En `v0.3.0` :
+- `gravity` (`core`) porte `ui: {"mode": "core", "target": "gravity"}`, héberge la **MCP App native unifiée** (`plugin/mcp_config.json`, `plugin/mcp/server.py`, `plugin/mcp/widget_html.py`, façade `plugin/dashboard/api.py`, outils `open_gravity_dashboard` + `gravity_get_*`) en lecture seule, ainsi que le hook `PreInvocation` 0-token sur `/gravity` (`--overview`).
 - `gravity-metrics` porte `ui: {"mode": "transition-mcp", "target": "gravity"}` (son widget MCP App reste disponible durant la transition ; les écritures `archive`/`remove` restent sous `/gravity-metrics`).
-- `gravity-workflow` porte `ui: {"mode": "transition-sidecar", "target": "gravity"}` (son sidecar HTTP `4789` reste fonctionnel durant la transition ; la vue `Workflow Live` dans `gravity` lit `live_workspaces.json`/`live_state.json`).
+- `gravity-workflow` porte `ui: {"mode": "none", "target": "gravity"}` (la vue `Workflow Live` dans `gravity` lit `live_workspaces.json`/`live_state.json` en lecture seule).
 - `gravity-bridge` et `gravity-architect` portent `ui: {"mode": "none", "target": "gravity"}` et disposent chacun de leur onglet dédié lecture seule dans `gravity` (**`Bridge`** sur `bridge.db` `?mode=ro` et **`Architect`** sur l'atelier Hot/Cold + `audits/code/` hors `audits/agents/`).

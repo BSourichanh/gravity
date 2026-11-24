@@ -865,13 +865,14 @@ class TestArchitectProvider(unittest.TestCase):
     def test_architect_discovery_precedence_and_code_audit_isolation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
             tmp_path = Path(tmp)
+            g_home = tmp_path / "gravity-home"
             atelier = tmp_path / "gravity-studio"
             self._write_mini_atelier(atelier)
             b_home = tmp_path / "bridge"
             _create_sample_bridge_db(b_home / "bridge.db", studio_path=atelier)
 
             # Bridge RO discovery when no explicit workspace/env is set
-            via_bridge = api.get_architect_state(bridge_home=b_home)
+            via_bridge = api.get_architect_state(gravity_home=g_home, bridge_home=b_home)
             self.assertTrue(via_bridge["available"])
             self.assertEqual(via_bridge["discovery_source"], "bridge_discovery")
             self.assertEqual(via_bridge["workspace_name"], "Atelier Test")
@@ -890,13 +891,17 @@ class TestArchitectProvider(unittest.TestCase):
             self.assertTrue(all("agent" not in a["rel_path"].lower() for a in via_bridge["audits"]))
 
             # Fast-path since_signature
-            unchanged = api.get_architect_state(since_signature=via_bridge["signature"], bridge_home=b_home)
+            unchanged = api.get_architect_state(
+                since_signature=via_bridge["signature"], gravity_home=g_home, bridge_home=b_home
+            )
             self.assertEqual(unchanged, {"changed": False, "unchanged": True, "signature": via_bridge["signature"]})
 
             # Explicit architect_workspace overrides bridge_discovery
             other = tmp_path / "other-atelier"
             other.mkdir()
-            explicit = api.get_architect_state(bridge_home=b_home, architect_workspace=other)
+            explicit = api.get_architect_state(
+                gravity_home=g_home, bridge_home=b_home, architect_workspace=other
+            )
             self.assertEqual(explicit["discovery_source"], "arg_workspace")
             self.assertFalse(explicit["available"])
 

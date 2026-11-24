@@ -18,7 +18,7 @@ Bienvenue dans la documentation de **Gravity Core** (`BSourichanh/gravity`) et d
 | [`architecture.md`](architecture.md) | Architecture SRP des 5 modules, flux de signaux `metrics -> workflow auto`, convergence UI/UX vers `gravity` et séparation `gravity-studio` |
 | [`module-contract.md`](module-contract.md) | Spécification complète `plugin/config/module.json` v1, stockage `$GRAVITY_HOME/<module>/` et ajout d'un nouveau module sans modifier Core |
 | [`repo-standard.md`](repo-standard.md) | Standard uniforme des dépôts Gravity (`plugin/`, manifeste 9 champs, budgets `AGENTS.md`, hygiène UX/docs, contrat CLI 11 drapeaux, vérifications) |
-| [`roadmap.md`](roadmap.md) | Feuille de route `v0.1.0` → `v0.2.0` (UI MCP App unifiée dans `gravity`, transition des UIs `metrics`/`workflow`, boucle `metrics -> workflow auto`) |
+| [`roadmap.md`](roadmap.md) | Feuille de route `v0.1.0` → `v0.3.0` (UI MCP App unifiée dans `gravity`, vue 0-token `--overview`, transition `metrics`, boucle `metrics -> workflow auto`) |
 
 ## Rappel d'architecture
 

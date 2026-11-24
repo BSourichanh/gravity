@@ -20,6 +20,7 @@ PLUGIN_SOURCE = REPO_ROOT / "plugin"
 PLUGIN_NAME = "gravity"
 
 EXEC_SCRIPTS: tuple[str, ...] = (
+    "hooks/pre_invocation_gravity.py",
     "mcp/server.py",
     "scripts/init_env.py",
     "scripts/validate.py",

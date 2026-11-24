@@ -11,11 +11,12 @@ Référence rapide orientée **intention utilisateur**, combinaisons efficaces e
 | Je veux… | Commande | Effet exact |
 |---|---|---|
 | Initialiser l'environnement et le registre | `/gravity init` | Crée `$GRAVITY_HOME/core/modules.json` et les sous-dossiers des modules valides (`init_env.py`) |
-| Connaître l'état courant | `/gravity` ou `/gravity status` | Lecture seule : modules actifs, chemins résolus et notices legacy (`--status`) |
+| Obtenir la vue d'ensemble instantanée | `/gravity` | Hook `PreInvocation` (`0` token, `--overview`) : `$GRAVITY_HOME`, santé modules, MCP, version App et 5 parcours |
+| Connaître l'état courant | `/gravity status` | Lecture seule : modules actifs, chemins résolus et notices legacy (`--status`) |
 | Exporter la liste JSON des contrats | `/gravity modules` | Liste complète des champs `module.json` découverts (`--status --json`) |
-| Auditer la santé et préparer une migration | `/gravity doctor` | Vérifie les contrats v1 (`--check`) ; `--migration-plan` génère un plan manuel en 4 étapes |
+| Auditer la santé et préparer une migration | `/gravity doctor` | Vérifie les contrats v1 et la santé RO (`--check`) ; `--migration-plan` génère un plan manuel en 4 étapes |
 | Ouvrir l'interface unifiée | `/gravity dashboard` | Ouvre la MCP App `open_gravity_dashboard` (`0` token interactif) ; CLI `--dashboard` audite la config |
-| Obtenir un guide contextuel rapide | `/gravity help` | Lecture seule (`init_env.py --guide`) : boucle 3 temps, commandes des modules présents et liens `docs/` |
+| Obtenir le guide complet | `/gravity help` | Lecture seule (`init_env.py --guide`, sans troncature) : boucle 3 temps, commandes des modules et liens `docs/` |
 
 ### Orchestration & concision (`gravity-workflow` : `/gravity-workflow`, `/caveman`)
 

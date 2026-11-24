@@ -11,15 +11,21 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
 from typing import Any, Callable, Optional, Sequence
 
+try:
+    import winreg  # type: ignore[import-not-found]
+except ImportError:
+    winreg = None  # type: ignore[assignment]
+
 MAX_SCAN_FILES = 10_000
 MAX_SCAN_DEPTH = 32
 MAX_COLLISIONS_SHOWN = 50
-MAX_GUIDE_LINES = 20
 MIN_ANTIGRAVITY_MCP_APP_VERSION: tuple[int, int, int] = (2, 34, 0)
+BRIDGE_ONLINE_TTL_SECONDS = 45.0
 
 GUIDE_QUICKSTART: tuple[str, ...] = (
     "1. Initialiser : /gravity init (cree $GRAVITY_HOME/core/modules.json)",
@@ -110,18 +116,30 @@ def _ps_quote(value: str) -> str:
     return value.replace("`", "``").replace('"', '`"')
 
 
+def _scan_result(
+    file_count: int,
+    total_bytes: int,
+    *,
+    truncated: bool = False,
+    skipped_symlink: bool = False,
+    collision_count: int = 0,
+    collisions: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    return {
+        "file_count": file_count,
+        "total_bytes": total_bytes,
+        "truncated": truncated,
+        "skipped_symlink": skipped_symlink,
+        "conflict": collision_count > 0,
+        "collision_count": collision_count,
+        "collisions": collisions if collisions is not None else [],
+    }
+
+
 def _scan_legacy_directory(source_path: Path, target_path: Path) -> dict[str, Any]:
     """Read-only scan of a legacy path counting files/bytes and collisions without following symlinks."""
     if source_path.is_symlink():
-        return {
-            "file_count": 0,
-            "total_bytes": 0,
-            "truncated": False,
-            "skipped_symlink": True,
-            "conflict": False,
-            "collision_count": 0,
-            "collisions": [],
-        }
+        return _scan_result(0, 0, skipped_symlink=True)
 
     if not source_path.is_dir():
         size = 0
@@ -130,16 +148,10 @@ def _scan_legacy_directory(source_path: Path, target_path: Path) -> dict[str, An
         except OSError:
             pass
         dest = target_path / source_path.name
-        has_collision = dest.exists() or dest.is_symlink()
-        return {
-            "file_count": 1,
-            "total_bytes": size,
-            "truncated": False,
-            "skipped_symlink": False,
-            "conflict": has_collision,
-            "collision_count": 1 if has_collision else 0,
-            "collisions": [source_path.name] if has_collision else [],
-        }
+        has_col = dest.exists() or dest.is_symlink()
+        return _scan_result(
+            1, size, collision_count=1 if has_col else 0, collisions=[source_path.name] if has_col else []
+        )
 
     file_count = 0
     total_bytes = 0
@@ -182,16 +194,10 @@ def _scan_legacy_directory(source_path: Path, target_path: Path) -> dict[str, An
                     stack.append((entry_path, depth + 1))
                 elif entry.is_file(follow_symlinks=False):
                     if file_count >= MAX_SCAN_FILES:
-                        truncated = True
-                        return {
-                            "file_count": file_count,
-                            "total_bytes": total_bytes,
-                            "truncated": truncated,
-                            "skipped_symlink": False,
-                            "conflict": collision_count > 0,
-                            "collision_count": collision_count,
-                            "collisions": collisions,
-                        }
+                        return _scan_result(
+                            file_count, total_bytes, truncated=True,
+                            collision_count=collision_count, collisions=collisions,
+                        )
                     st = entry.stat(follow_symlinks=False)
                     file_count += 1
                     total_bytes += st.st_size
@@ -204,15 +210,10 @@ def _scan_legacy_directory(source_path: Path, target_path: Path) -> dict[str, An
             except OSError:
                 continue
 
-    return {
-        "file_count": file_count,
-        "total_bytes": total_bytes,
-        "truncated": truncated,
-        "skipped_symlink": False,
-        "conflict": collision_count > 0,
-        "collision_count": collision_count,
-        "collisions": collisions,
-    }
+    return _scan_result(
+        file_count, total_bytes, truncated=truncated,
+        collision_count=collision_count, collisions=collisions,
+    )
 
 
 def _build_shell_steps(
@@ -278,30 +279,10 @@ def _build_shell_steps(
         else "No collisions detected; existing target files will never be overwritten."
     )
     return [
-        {
-            "step": 1,
-            "kind": "backup",
-            "description": "Create a timestamped backup before any migration.",
-            "command": step1_cmd,
-        },
-        {
-            "step": 2,
-            "kind": "copy",
-            "description": copy_note,
-            "command": step2_cmd,
-        },
-        {
-            "step": 3,
-            "kind": "verify",
-            "description": "Verify module contracts and environment health (read-only).",
-            "command": "python scripts/init_env.py --check",
-        },
-        {
-            "step": 4,
-            "kind": "cleanup",
-            "description": "Manual cleanup only after verifying migrated data (commented out by default).",
-            "command": step4_cmd,
-        },
+        {"step": 1, "kind": "backup", "description": "Create a timestamped backup before any migration.", "command": step1_cmd},
+        {"step": 2, "kind": "copy", "description": copy_note, "command": step2_cmd},
+        {"step": 3, "kind": "verify", "description": "Verify module contracts and environment health (read-only).", "command": "python scripts/init_env.py --check"},
+        {"step": 4, "kind": "cleanup", "description": "Manual cleanup only after verifying migrated data (commented out by default).", "command": step4_cmd},
     ]
 
 
@@ -353,20 +334,13 @@ def build_migration_plan(
         )
         plans.append(
             {
-                "name": item["name"],
-                "target_module": target_module,
-                "source_path": str(source_path),
-                "target_path": str(target_path),
-                "backup_path": str(backup_path),
-                "is_dir": bool(item.get("is_dir", True)),
-                "file_count": scan["file_count"],
-                "total_bytes": scan["total_bytes"],
-                "truncated": scan["truncated"],
-                "skipped_symlink": scan["skipped_symlink"],
-                "conflict": scan["conflict"],
-                "collision_count": scan["collision_count"],
-                "collisions": scan["collisions"],
-                "steps": steps,
+                "name": item["name"], "target_module": target_module,
+                "source_path": str(source_path), "target_path": str(target_path),
+                "backup_path": str(backup_path), "is_dir": bool(item.get("is_dir", True)),
+                "file_count": scan["file_count"], "total_bytes": scan["total_bytes"],
+                "truncated": scan["truncated"], "skipped_symlink": scan["skipped_symlink"],
+                "conflict": scan["conflict"], "collision_count": scan["collision_count"],
+                "collisions": scan["collisions"], "steps": steps,
             }
         )
 
@@ -400,34 +374,39 @@ def _is_valid_atelier_dir(candidate: Path) -> bool:
         return False
 
 
-def _inspect_architect_registry_ro(ateliers_path: Path) -> tuple[bool, bool]:
-    """Inspect <architect_home>/ateliers.json strictly read-only without following symlinks."""
+def _inspect_architect_ateliers_ro(ateliers_path: Path) -> tuple[bool, int]:
+    """Inspect <architect_home>/ateliers.json strictly RO; return (exists, valid_count)."""
     try:
         if ateliers_path.parent.is_symlink() or ateliers_path.is_symlink() or not ateliers_path.is_file():
-            return False, False
+            return False, 0
         raw = ateliers_path.read_bytes()
     except OSError:
-        return False, False
+        return False, 0
 
     if raw.startswith(b"\xef\xbb\xbf"):
         raw = raw[3:]
     try:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
-        return True, False
+        return True, 0
 
     if not isinstance(data, dict) or not isinstance(data.get("ateliers"), list):
-        return True, False
+        return True, 0
 
+    valid_count = 0
     for entry in data["ateliers"]:
         if not isinstance(entry, dict):
             continue
         raw_ws = str(entry.get("workspace_path") or "").strip()
-        if not raw_ws:
-            continue
-        if _is_valid_atelier_dir(Path(raw_ws).expanduser()):
-            return True, True
-    return True, False
+        if raw_ws and _is_valid_atelier_dir(Path(raw_ws).expanduser()):
+            valid_count += 1
+    return True, valid_count
+
+
+def _inspect_architect_registry_ro(ateliers_path: Path) -> tuple[bool, bool]:
+    """Inspect <architect_home>/ateliers.json strictly read-only without following symlinks."""
+    reg_exists, valid_count = _inspect_architect_ateliers_ro(ateliers_path)
+    return reg_exists, valid_count > 0
 
 
 def _parse_semver_str(raw: str) -> Optional[tuple[int, int, int]]:
@@ -437,21 +416,66 @@ def _parse_semver_str(raw: str) -> Optional[tuple[int, int, int]]:
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
+def _detect_windows_app_version() -> Optional[dict[str, Any]]:
+    """Read-only probe of installed Antigravity App version via Windows Registry (winreg)."""
+    if os.name != "nt" or winreg is None:
+        return None
+
+    min_required = ".".join(str(x) for x in MIN_ANTIGRAVITY_MCP_APP_VERSION)
+    hives = (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE)
+    subkeys = (
+        r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+        r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+    )
+    for hive in hives:
+        for subkey in subkeys:
+            try:
+                with winreg.OpenKey(hive, subkey) as root_key:
+                    idx = 0
+                    while True:
+                        try:
+                            app_sub = winreg.EnumKey(root_key, idx)
+                        except OSError:
+                            break
+                        idx += 1
+                        try:
+                            with winreg.OpenKey(root_key, app_sub) as app_key:
+                                disp_name, _ = winreg.QueryValueEx(app_key, "DisplayName")
+                                if not isinstance(disp_name, str) or "antigravity" not in disp_name.lower():
+                                    continue
+                                disp_ver, _ = winreg.QueryValueEx(app_key, "DisplayVersion")
+                                if not isinstance(disp_ver, str):
+                                    continue
+                                parsed = _parse_semver_str(disp_ver)
+                                if parsed is not None:
+                                    return {
+                                        "version": f"{parsed[0]}.{parsed[1]}.{parsed[2]}",
+                                        "source": "winreg",
+                                        "meets_mcp_app_min": parsed >= MIN_ANTIGRAVITY_MCP_APP_VERSION,
+                                        "min_required": min_required,
+                                        "update_hint": "mettez à jour Antigravity App (>= 2.34.0) depuis son installeur Windows",
+                                    }
+                        except OSError:
+                            continue
+            except OSError:
+                continue
+    return None
+
+
 def _detect_antigravity_app_version() -> dict[str, Any]:
-    """Best-effort read-only probe of installed Antigravity App version via snap or dpkg-query."""
+    """Best-effort read-only probe of installed Antigravity App version (winreg, snap, or dpkg-query)."""
+    win_info = _detect_windows_app_version()
+    if win_info is not None:
+        return win_info
+
     min_required = ".".join(str(x) for x in MIN_ANTIGRAVITY_MCP_APP_VERSION)
     snap_cmd = shutil.which("snap")
     if snap_cmd:
         try:
             proc = subprocess.run(
                 [snap_cmd, "list", "antigravity"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=2.0,
-                shell=False,
-                check=False,
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=2.0, shell=False, check=False,
             )
             if proc.returncode == 0:
                 for line in proc.stdout.splitlines():
@@ -460,8 +484,7 @@ def _detect_antigravity_app_version() -> dict[str, Any]:
                         parsed = _parse_semver_str(cols[1])
                         if parsed is not None:
                             return {
-                                "version": f"{parsed[0]}.{parsed[1]}.{parsed[2]}",
-                                "source": "snap",
+                                "version": f"{parsed[0]}.{parsed[1]}.{parsed[2]}", "source": "snap",
                                 "meets_mcp_app_min": parsed >= MIN_ANTIGRAVITY_MCP_APP_VERSION,
                                 "min_required": min_required,
                                 "update_hint": "fermer Antigravity App puis exécuter : sudo snap refresh antigravity",
@@ -474,20 +497,14 @@ def _detect_antigravity_app_version() -> dict[str, Any]:
         try:
             proc = subprocess.run(
                 [dpkg_cmd, "-W", "-f=${Version}", "antigravity"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=2.0,
-                shell=False,
-                check=False,
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=2.0, shell=False, check=False,
             )
             if proc.returncode == 0:
                 parsed = _parse_semver_str(proc.stdout.strip())
                 if parsed is not None:
                     return {
-                        "version": f"{parsed[0]}.{parsed[1]}.{parsed[2]}",
-                        "source": "dpkg",
+                        "version": f"{parsed[0]}.{parsed[1]}.{parsed[2]}", "source": "dpkg",
                         "meets_mcp_app_min": parsed >= MIN_ANTIGRAVITY_MCP_APP_VERSION,
                         "min_required": min_required,
                         "update_hint": "sudo apt update && sudo apt upgrade antigravity",
@@ -504,51 +521,307 @@ def _detect_antigravity_app_version() -> dict[str, Any]:
     }
 
 
+def _parse_iso_utc(raw: Any) -> Optional[datetime]:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
+def _read_json_file_ro(path: Path) -> tuple[Any, Optional[str]]:
+    if path.is_symlink():
+        return None, f"{path} est un symlink (refusé en lecture seule)."
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        return None, f"{path} illisible ({exc})."
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    try:
+        return json.loads(raw.decode("utf-8")), None
+    except (UnicodeDecodeError, ValueError) as exc:
+        return None, f"{path} JSON invalide ({exc})."
+
+
+def _inspect_bridge_health_ro(mod_home: Path) -> tuple[str, str, list[str]]:
+    bridge_db = mod_home / "bridge.db"
+    try:
+        db_ok = (
+            not mod_home.is_symlink()
+            and not bridge_db.parent.is_symlink()
+            and not bridge_db.is_symlink()
+            and bridge_db.is_file()
+        )
+    except OSError:
+        db_ok = False
+    if not db_ok:
+        return (
+            "WARN",
+            "bridge.db absente",
+            [
+                f"Module 'bridge' actif mais {bridge_db} absente : "
+                "exécutez /gravity-bridge pour initialiser la base SQLite."
+            ],
+        )
+    try:
+        st_size = bridge_db.stat().st_size
+    except OSError as exc:
+        return "WARN", "bridge.db illisible", [f"Module 'bridge' : {bridge_db} illisible ({exc})."]
+    if st_size == 0:
+        return "OK", "bridge.db initialisée (0 o)", []
+
+    conn: Optional[sqlite3.Connection] = None
+    try:
+        conn = sqlite3.connect(f"file:{bridge_db}?mode=ro", uri=True, timeout=1.0)
+        conn.execute("PRAGMA query_only = ON")
+        tbl = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='workspaces'"
+        ).fetchone()
+        if not tbl:
+            return "WARN", "table workspaces absente", [f"Module 'bridge' : table 'workspaces' absente dans {bridge_db}."]
+        rows = conn.execute("SELECT sidecar_id, sidecar_last_seen_at FROM workspaces").fetchall()
+        now_utc = datetime.now(timezone.utc)
+        online = 0
+        for sid, seen in rows:
+            if isinstance(sid, str) and sid.strip():
+                seen_dt = _parse_iso_utc(seen)
+                if seen_dt is not None and (now_utc - seen_dt).total_seconds() <= BRIDGE_ONLINE_TTL_SECONDS:
+                    online += 1
+        return "OK", f"{online}/{len(rows)} sidecar(s) online", []
+    except (sqlite3.DatabaseError, OSError) as exc:
+        return "WARN", "bridge.db corrompue", [f"Module 'bridge' : {bridge_db} SQLite illisible/corrompue ({exc})."]
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _inspect_metrics_health_ro(mod_home: Path) -> tuple[str, str, list[str]]:
+    history_path = mod_home / "data" / "history.jsonl"
+    metrics_md = mod_home / "METRICS.md"
+    try:
+        paths_ok = (
+            not mod_home.is_symlink()
+            and not history_path.parent.is_symlink()
+            and not history_path.is_symlink()
+            and not metrics_md.is_symlink()
+            and history_path.is_file()
+            and metrics_md.is_file()
+        )
+    except OSError:
+        paths_ok = False
+    if not paths_ok:
+        return (
+            "WARN",
+            "history.jsonl/METRICS.md absent(s)",
+            [
+                f"Module 'metrics' actif mais {history_path} ou {metrics_md} absent : "
+                "exécutez /gravity-metrics pour initialiser la télémétrie."
+            ],
+        )
+    try:
+        text = history_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return "WARN", "history.jsonl illisible", [f"Module 'metrics' : {history_path} illisible ({exc})."]
+
+    sessions = 0
+    for idx, raw_ln in enumerate(text.splitlines(), start=1):
+        line = raw_ln.lstrip("\ufeff").strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError as exc:
+            return "WARN", "history.jsonl corrompu", [f"Module 'metrics' : {history_path} ligne {idx} corrompue ({exc})."]
+        if not isinstance(obj, dict):
+            return "WARN", "history.jsonl invalide", [f"Module 'metrics' : {history_path} ligne {idx} n'est pas un objet JSON."]
+        sessions += 1
+    return "OK", f"{sessions} session(s)", []
+
+
+def _inspect_workflow_health_ro(mod: dict[str, Any], mod_home: Path) -> tuple[str, str, list[str]]:
+    warns: list[str] = []
+    plugin_dir_raw = str(mod.get("plugin_dir") or "").strip()
+    hooks_path = Path(plugin_dir_raw) / "hooks.json" if plugin_dir_raw else None
+    if hooks_path is None or hooks_path.is_symlink() or not hooks_path.is_file():
+        warns.append(f"Module 'workflow' : hooks.json absent ou symlink ({hooks_path}).")
+    else:
+        hooks_data, hooks_err = _read_json_file_ro(hooks_path)
+        if hooks_err or not isinstance(hooks_data, dict):
+            warns.append(f"Module 'workflow' : hooks.json invalide ({hooks_err or 'objet JSON attendu'}).")
+
+    live_count = 0
+    if not mod_home.is_symlink() and mod_home.is_dir():
+        live_ws = mod_home / "live_workspaces.json"
+        if live_ws.is_symlink():
+            warns.append(f"Module 'workflow' : {live_ws} est un symlink.")
+        elif live_ws.is_file():
+            lw_data, lw_err = _read_json_file_ro(live_ws)
+            if lw_err or not isinstance(lw_data, dict):
+                warns.append(f"Module 'workflow' : {live_ws} corrompu ({lw_err or 'objet JSON attendu'}).")
+        ws_dir = mod_home / "workspaces"
+        if ws_dir.is_symlink():
+            warns.append(f"Module 'workflow' : {ws_dir} est un symlink.")
+        elif ws_dir.is_dir():
+            try:
+                children = sorted(ws_dir.iterdir(), key=lambda p: p.name)
+            except OSError:
+                children = []
+            for sub in children:
+                if sub.is_symlink():
+                    warns.append(f"Module 'workflow' : sous-dossier symlink refusé ({sub}).")
+                    continue
+                if not sub.is_dir():
+                    continue
+                live_state = sub / "live_state.json"
+                if live_state.is_symlink():
+                    warns.append(f"Module 'workflow' : {live_state} est un symlink.")
+                elif live_state.is_file():
+                    ls_data, ls_err = _read_json_file_ro(live_state)
+                    if ls_err or not isinstance(ls_data, dict):
+                        warns.append(f"Module 'workflow' : {live_state} corrompu ({ls_err or 'objet JSON attendu'}).")
+                    else:
+                        live_count += 1
+                runs_jsonl = sub / "runs.jsonl"
+                if runs_jsonl.is_symlink():
+                    warns.append(f"Module 'workflow' : {runs_jsonl} est un symlink.")
+                elif runs_jsonl.is_file():
+                    try:
+                        for rline in runs_jsonl.read_text(encoding="utf-8").splitlines():
+                            stripped = rline.lstrip("\ufeff").strip()
+                            if stripped and not isinstance(json.loads(stripped), dict):
+                                raise ValueError("objet JSON attendu")
+                    except (OSError, UnicodeDecodeError, ValueError) as exc:
+                        warns.append(f"Module 'workflow' : {runs_jsonl} corrompu ({exc}).")
+    elif mod_home.is_symlink():
+        warns.append(f"Module 'workflow' : {mod_home} est un symlink.")
+
+    if warns:
+        return "WARN", "état ou hooks invalide(s)", warns
+    return "OK", f"hooks.json OK · {live_count} état(s) live", []
+
+
+def _inspect_module_health_ro(
+    mod: dict[str, Any],
+    *,
+    plugin_root: Path = PLUGIN_ROOT,
+) -> dict[str, Any]:
+    """Inspect a single discovered module strictly read-only without symlinks or disk writes."""
+    mod_id = str(mod.get("id") or "")
+    plugin_name = str(mod.get("plugin_name") or "")
+    version = str(mod.get("version") or "?")
+    commands = [str(c) for c in (mod.get("commands") or []) if isinstance(c, str) and c.strip()]
+
+    if not mod.get("valid"):
+        errs = [str(e) for e in (mod.get("errors") or ["Contrat module invalide."])]
+        return {
+            "id": mod_id,
+            "plugin_name": plugin_name,
+            "version": version,
+            "commands": commands,
+            "status": "ERR",
+            "summary": "contrat invalide",
+            "warnings": [],
+            "errors": errs,
+        }
+
+    raw_home = mod.get("resolved_home")
+    if not isinstance(raw_home, str) or not raw_home:
+        return {
+            "id": mod_id,
+            "plugin_name": plugin_name,
+            "version": version,
+            "commands": commands,
+            "status": "OK",
+            "summary": "actif",
+            "warnings": [],
+            "errors": [],
+        }
+
+    mod_home = Path(raw_home)
+    if mod_id == "architect" or plugin_name == "gravity-architect":
+        ateliers_path = mod_home / "ateliers.json"
+        reg_exists, valid_count = _inspect_architect_ateliers_ro(ateliers_path)
+        if not reg_exists:
+            status, summary, warns = (
+                "WARN",
+                "ateliers.json absent",
+                [
+                    f"Module 'architect' actif mais {ateliers_path} absent : "
+                    "lancez /gravity-architect init ou /gravity-architect sync dans votre atelier."
+                ],
+            )
+        elif valid_count == 0:
+            status, summary, warns = (
+                "WARN",
+                "0 atelier valide",
+                [
+                    f"Module 'architect' actif mais {ateliers_path} ne contient aucun atelier valide : "
+                    "lancez /gravity-architect init ou /gravity-architect sync."
+                ],
+            )
+        else:
+            status, summary, warns = "OK", f"{valid_count} atelier(s) valide(s)", []
+    elif mod_id == "bridge" or plugin_name == "gravity-bridge":
+        status, summary, warns = _inspect_bridge_health_ro(mod_home)
+    elif mod_id == "metrics" or plugin_name == "gravity-metrics":
+        status, summary, warns = _inspect_metrics_health_ro(mod_home)
+    elif mod_id == "workflow" or plugin_name == "gravity-workflow":
+        status, summary, warns = _inspect_workflow_health_ro(mod, mod_home)
+    elif mod_id == "core" or plugin_name == "gravity":
+        diag = _diagnose_mcp_dashboard(Path(mod.get("plugin_dir") or plugin_root))
+        if diag["errors"]:
+            status, summary, warns = "WARN", "MCP dashboard incomplet", list(diag["errors"])
+        else:
+            reg_file = mod_home / "modules.json"
+            lbl = "registre initialisé" if reg_file.is_file() else "lecture seule (non initialisé)"
+            status, summary, warns = "OK", lbl, []
+    else:
+        if mod_home.is_symlink():
+            status, summary, warns = "WARN", "home symlink refusé", [f"Module '{mod_id}' : {mod_home} est un symlink."]
+        else:
+            status, summary, warns = "OK", ("home présent" if mod_home.is_dir() else "home non initialisé"), []
+
+    return {
+        "id": mod_id,
+        "plugin_name": plugin_name,
+        "version": version,
+        "commands": commands,
+        "status": status,
+        "summary": summary,
+        "warnings": warns,
+        "errors": [],
+    }
+
+
 def _collect_doctor_warnings(
     modules: Sequence[dict[str, Any]],
     *,
     app_version: Optional[dict[str, Any]] = None,
+    plugin_root: Path = PLUGIN_ROOT,
 ) -> list[str]:
-    """Collect non-blocking read-only warnings for valid discovered modules."""
+    """Collect non-blocking read-only warnings for valid discovered modules and MCP dashboard."""
     warnings: list[str] = []
+    has_core = False
     for mod in modules:
         if not mod.get("valid"):
             continue
-        mod_id = str(mod.get("id") or "")
-        plugin_name = str(mod.get("plugin_name") or "")
-        raw_home = mod.get("resolved_home")
-        if not isinstance(raw_home, str) or not raw_home:
-            continue
-        mod_home = Path(raw_home)
+        if mod.get("id") == "core" or mod.get("plugin_name") == "gravity":
+            has_core = True
+        health = _inspect_module_health_ro(mod, plugin_root=plugin_root)
+        warnings.extend(health["warnings"])
 
-        if mod_id == "architect" or plugin_name == "gravity-architect":
-            ateliers_path = mod_home / "ateliers.json"
-            reg_exists, has_valid = _inspect_architect_registry_ro(ateliers_path)
-            if not reg_exists:
-                warnings.append(
-                    f"Module 'architect' actif mais {ateliers_path} absent : "
-                    "lancez /gravity-architect init ou /gravity-architect sync dans votre atelier."
-                )
-            elif not has_valid:
-                warnings.append(
-                    f"Module 'architect' actif mais {ateliers_path} ne contient aucun atelier valide : "
-                    "lancez /gravity-architect init ou /gravity-architect sync."
-                )
-        elif mod_id == "bridge" or plugin_name == "gravity-bridge":
-            bridge_db = mod_home / "bridge.db"
-            try:
-                db_ok = (
-                    not bridge_db.parent.is_symlink()
-                    and not bridge_db.is_symlink()
-                    and bridge_db.is_file()
-                )
-            except OSError:
-                db_ok = False
-            if not db_ok:
-                warnings.append(
-                    f"Module 'bridge' actif mais {bridge_db} absente : "
-                    "exécutez /gravity-bridge pour initialiser la base SQLite."
-                )
+    if not has_core:
+        diag = _diagnose_mcp_dashboard(plugin_root)
+        warnings.extend(diag["errors"])
 
     app_info = app_version if app_version is not None else _detect_antigravity_app_version()
     if app_info.get("meets_mcp_app_min") is False:
@@ -715,6 +988,120 @@ def _run_guide_mode(
     return payload, 0
 
 
+def _build_overview_help(modules: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build the 5 structured help journeys for --overview (read-only)."""
+    companions = [
+        {
+            "id": str(m.get("id") or ""),
+            "version": str(m.get("version") or "?"),
+            "commands": [str(c) for c in (m.get("commands") or []) if isinstance(c, str) and c.strip()],
+        }
+        for m in modules
+        if m.get("valid") and m.get("id") != "core"
+    ]
+    comp_items = [
+        f"{c['id']} (v{c['version']}) : {', '.join(c['commands']) or '-'}" for c in companions
+    ] or ["Aucun module compagnon détecté (Paliers 2/3 : metrics, architect, bridge, workflow)"]
+    return [
+        {"id": "quickstart", "title": "Démarrage / Init", "items": ["/gravity init — Créer $GRAVITY_HOME/core/modules.json et dossiers modules"]},
+        {"id": "diagnostic", "title": "Diagnostic / Santé", "items": ["/gravity status — État RO", "/gravity doctor — Audit contrats & legacy (--migration-plan)", "/gravity modules — Liste JSON"]},
+        {"id": "dashboard", "title": "Dashboard (0 token)", "items": ["/gravity dashboard — open_gravity_dashboard (aux_pane, barre latérale Gravity ou menu +)"]},
+        {"id": "companions", "title": "Modules compagnons", "items": comp_items},
+        {"id": "docs", "title": "Guides docs/", "items": list(GUIDE_DOCS)},
+    ]
+
+
+def _run_overview_mode(
+    *,
+    gravity_home: Optional[Path] = None,
+    plugins_dirs: Optional[Sequence[Path]] = None,
+    home_dir: Optional[Path] = None,
+    app_version_detector: Optional[Callable[[], dict[str, Any]]] = None,
+) -> tuple[dict[str, Any], int]:
+    """Build strictly read-only --overview payload combining environment, health, MCP, and 5-journey help."""
+    resolved_home = resolve_gravity_home(gravity_home)
+    roots = list(plugins_dirs) if plugins_dirs else default_plugin_roots()
+    modules = _enrich_module_homes(discover_modules(roots), resolved_home)
+    legacy_homes = detect_legacy_homes(home_dir)
+    core_dir = resolved_home / "core"
+    registry_path = core_dir / "modules.json"
+    initialized = core_dir.is_dir() and registry_path.is_file()
+
+    duplicates = _find_duplicate_ids(modules)
+    invalid_count = sum(1 for m in modules if not m.get("valid"))
+    valid_count = len(modules) - invalid_count
+    health_items = [_inspect_module_health_ro(m, plugin_root=PLUGIN_ROOT) for m in modules]
+    diag = _diagnose_mcp_dashboard(PLUGIN_ROOT)
+    detector = app_version_detector or _detect_antigravity_app_version
+    app_info = detector()
+    warnings = _collect_doctor_warnings(modules, app_version=app_info, plugin_root=PLUGIN_ROOT)
+    ok = invalid_count == 0 and not duplicates and not diag["errors"]
+
+    payload: dict[str, Any] = {
+        "mode": "overview",
+        "ok": ok,
+        "gravity_home": str(resolved_home),
+        "core_dir": str(core_dir),
+        "registry_path": str(registry_path),
+        "initialized": initialized,
+        "registry_exists": registry_path.is_file(),
+        "plugin_roots": [str(Path(p).expanduser().resolve()) for p in roots],
+        "module_count": len(modules),
+        "valid_count": valid_count,
+        "invalid_count": invalid_count,
+        "duplicate_ids": duplicates,
+        "modules": modules,
+        "module_health": health_items,
+        "warnings": warnings,
+        "legacy_homes": legacy_homes,
+        "dashboard": diag,
+        "antigravity_app": app_info,
+        "help": _build_overview_help(modules),
+    }
+    return payload, (0 if ok else 1)
+
+
+def format_overview_markdown(payload: dict[str, Any]) -> str:
+    """Format a compact read-only Markdown overview shared by CLI --overview and PreInvocation hook."""
+    init_lbl = "initialisé" if payload.get("initialized") else "non initialisé (RO)"
+    legacy = payload.get("legacy_homes") or []
+    diag = payload.get("dashboard") or {}
+    app_info = payload.get("antigravity_app") or {}
+    app_ver = app_info.get("version")
+    if app_ver:
+        app_lbl = f"v{app_ver} ({app_info.get('source', '?')}, {'OK' if app_info.get('meets_mcp_app_min') else '< 2.34.0'})"
+    else:
+        app_lbl = "non détectée"
+    mcp_lbl = "[OK]" if not diag.get("errors") else "[ERR]"
+
+    lines = [
+        "### Gravity Core — Vue d'ensemble (lecture seule)",
+        f"- **`$GRAVITY_HOME` :** `{payload.get('gravity_home')}` ({init_lbl} · registre `{payload.get('registry_path')}`)",
+        f"- **MCP Dashboard :** {mcp_lbl} `open_gravity_dashboard` · **Antigravity App :** {app_lbl} · **Legacy :** {len(legacy)} dossier(s)",
+        "",
+        "**Santé des modules :**",
+    ]
+    health_items = payload.get("module_health") or []
+    if health_items:
+        for h in health_items:
+            cmds = ", ".join(h.get("commands") or []) or "-"
+            lines.append(f"- `[{h.get('status', 'OK')}]` **{h.get('id')}** (v{h.get('version') or '?'}) — {h.get('summary') or '-'} · `{cmds}`")
+    else:
+        lines.append("- Aucun module découvert dans `--plugins-dir`.")
+
+    if payload.get("duplicate_ids"):
+        lines.append(f"- `[ERR]` IDs dupliqués : {', '.join(payload['duplicate_ids'])}")
+    warnings = payload.get("warnings") or []
+    if warnings:
+        lines.extend(["", "**Avertissements (non bloquants) :**"])
+        lines.extend(f"- `[WARN]` {w}" for w in warnings)
+
+    lines.extend(["", "**Parcours & Commandes (`/gravity`) :**"])
+    for idx, sec in enumerate(payload.get("help") or [], start=1):
+        lines.append(f"{idx}. **{sec.get('title')} :** {' · '.join(sec.get('items') or [])}")
+    return "\n".join(lines)
+
+
 def run_environment(
     *,
     gravity_home: Optional[Path] = None,
@@ -725,10 +1112,18 @@ def run_environment(
     migration_plan: bool = False,
     dashboard: bool = False,
     guide: bool = False,
+    overview: bool = False,
     shell: str = "auto",
     app_version_detector: Optional[Callable[[], dict[str, Any]]] = None,
 ) -> tuple[dict[str, Any], int]:
-    """Execute init, status, check, migration-plan, dashboard, or guide workflow and return (payload, exit_code)."""
+    """Execute init, status, check, migration-plan, dashboard, guide, or overview workflow."""
+    if overview:
+        return _run_overview_mode(
+            gravity_home=gravity_home,
+            plugins_dirs=plugins_dirs,
+            home_dir=home_dir,
+            app_version_detector=app_version_detector,
+        )
     if guide:
         return _run_guide_mode(
             gravity_home=gravity_home,
@@ -910,14 +1305,11 @@ def _print_guide_report(payload: dict[str, Any]) -> None:
     other_mods = [m for m in installed if m.get("id") != "core" and m.get("valid")]
     if other_mods:
         lines.append(f"Modules detectes ({len(installed)}) :")
-        max_listed = 5
-        for mod in other_mods[:max_listed]:
+        for mod in other_mods:
             mod_id = str(mod.get("id") or "")
             ver = mod.get("version") or "?"
             cmds = ", ".join(commands.get(mod_id) or mod.get("commands") or []) or "-"
             lines.append(f"  - {mod_id} (v{ver}) : {cmds}")
-        if len(other_mods) > max_listed:
-            lines.append(f"  - ... (+{len(other_mods) - max_listed} autres via /gravity modules)")
     elif installed:
         lines.append("Modules detectes : core uniquement (Paliers 2/3 : metrics, architect, bridge)")
     else:
@@ -927,18 +1319,22 @@ def _print_guide_report(payload: dict[str, Any]) -> None:
     for doc_path in docs:
         lines.append(f"  - {doc_path}")
 
-    for line in lines[:MAX_GUIDE_LINES]:
+    for line in lines:
         print(line)
 
 
 def _print_human_report(payload: dict[str, Any]) -> None:
-    if payload.get("mode") == "guide":
+    mode = payload.get("mode")
+    if mode == "overview":
+        print(format_overview_markdown(payload))
+        return
+    if mode == "guide":
         _print_guide_report(payload)
         return
-    if payload.get("mode") == "migration-plan":
+    if mode == "migration-plan":
         _print_migration_plan_report(payload)
         return
-    if payload.get("mode") == "dashboard":
+    if mode == "dashboard":
         _print_dashboard_report(payload)
         return
 
@@ -1029,6 +1425,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Read-only quick guide, discovered module commands, and docs/ pointers.",
     )
+    mode_group.add_argument(
+        "--overview",
+        action="store_true",
+        help="Read-only consolidated overview (home, modules health, MCP, app version, 5-journey help).",
+    )
     parser.add_argument(
         "--shell",
         choices=("auto", "powershell", "bash"),
@@ -1057,6 +1458,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             migration_plan=args.migration_plan,
             dashboard=args.dashboard,
             guide=args.guide,
+            overview=args.overview,
             shell=args.shell,
         )
     except OSError as exc:

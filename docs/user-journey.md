@@ -39,7 +39,7 @@ flowchart LR
 | Phase | Commande(s) clé(s) | Stockage `$GRAVITY_HOME` | Coût tokens | Résultat observable |
 |---|---|---|---|---|
 | **1. Installation** | `python scripts/ecosystem_install.py --install --tier <1\|2\|3>` | Aucun (copie dans `~/.gemini/config/plugins/`) | `0` (CLI locale) | Plugins validés (`--strict`) et installés dans l'ordre topologique |
-| **2. Initialisation** | `/gravity init`, `/gravity help`, `/gravity doctor` | `core/modules.json` + dossiers `<module>/` | Très faible (script local) | Registre atomique créé, modules découverts, legacy détecté RO |
+| **2. Initialisation** | `/gravity` (0 token), `/gravity init`, `/gravity help`, `/gravity doctor` | `core/modules.json` + dossiers `<module>/` | `0` sur `/gravity` (`PreInvocation`) | Registre atomique créé, santé modules contrôlée, legacy détecté RO |
 | **3. Cadrage** *(Palier 3)* | `/gravity-architect [init\|sync\|spec\|handoff]` | `architect/` + atelier Hot/Cold séparé | Faible (micro-delta `--print-delta`) | `ECOSYSTEM.md`, `specs/`, `handoffs/`, `audits/code/` à jour |
 | **4. Exécution** *(Palier 1+)* | `/gravity-workflow [quick\|standard\|deep\|evo]`, `/caveman` | `workflow/workspaces/<slug>-<hash>/` | Optimisé (`/caveman` + profils) | Plan/Code/Revue isolée, hooks `PreToolUse` actifs, 0 pollution repo |
 | **5. Capture & Coûts** *(Palier 2+)* | `/gravity-metrics [start\|stop\|pending\|archive]` | `metrics/{data/history.jsonl,METRICS.md,reports/}` | `0` sur `start` (`PreInvocation`) | Fenêtre capturée, jalons calculés, rapport archivé |

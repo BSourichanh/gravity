@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from contextlib import redirect_stdout
+from datetime import datetime, timezone
 import io
 import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -33,6 +35,7 @@ def _isolated_env(fake_home: Path, extra: dict[str, str] | None = None) -> dict[
     env.pop("GRAVITY_METRICS_HOME", None)
     env.pop("GRAVITY_BRIDGE_HOME", None)
     env.pop("GRAVITY_ARCHITECT_HOME", None)
+    env.pop("GRAVITY_WORKFLOW_HOME", None)
     if extra:
         env.update(extra)
     return env
@@ -543,6 +546,8 @@ class TestInitEnvCLI(unittest.TestCase):
     def test_detect_antigravity_app_version_probes_and_integration(self) -> None:
         # 1) Snap 2.33.0 -> below 2.34.0
         with mock.patch.object(
+            init_env, "_detect_windows_app_version", return_value=None
+        ), mock.patch.object(
             init_env.shutil,
             "which",
             side_effect=lambda cmd: "/usr/bin/snap" if cmd == "snap" else None,
@@ -568,6 +573,8 @@ class TestInitEnvCLI(unittest.TestCase):
 
         # 2) Snap 2.35.0 -> meets 2.34.0
         with mock.patch.object(
+            init_env, "_detect_windows_app_version", return_value=None
+        ), mock.patch.object(
             init_env.shutil,
             "which",
             side_effect=lambda cmd: "/usr/bin/snap" if cmd == "snap" else None,
@@ -590,7 +597,9 @@ class TestInitEnvCLI(unittest.TestCase):
         def _which_dpkg(cmd: str) -> str | None:
             return "/usr/bin/dpkg-query" if cmd == "dpkg-query" else None
 
-        with mock.patch.object(init_env.shutil, "which", side_effect=_which_dpkg), mock.patch.object(
+        with mock.patch.object(
+            init_env, "_detect_windows_app_version", return_value=None
+        ), mock.patch.object(init_env.shutil, "which", side_effect=_which_dpkg), mock.patch.object(
             init_env.subprocess,
             "run",
             return_value=subprocess.CompletedProcess(
@@ -608,7 +617,9 @@ class TestInitEnvCLI(unittest.TestCase):
             self.assertEqual(Path(run_dpkg.call_args.args[0][0]).name, "dpkg-query")
 
         # 4) Neither snap nor dpkg-query -> unknown (silent)
-        with mock.patch.object(init_env.shutil, "which", return_value=None):
+        with mock.patch.object(
+            init_env, "_detect_windows_app_version", return_value=None
+        ), mock.patch.object(init_env.shutil, "which", return_value=None):
             info_none = init_env._detect_antigravity_app_version()
             self.assertIsNone(info_none["version"])
             self.assertEqual(info_none["source"], "none")
@@ -705,6 +716,175 @@ class TestInitEnvCLI(unittest.TestCase):
             with redirect_stdout(buf_none):
                 init_env._print_dashboard_report(p_dash_none)
             self.assertIn("Antigravity   : unknown", buf_none.getvalue())
+
+    def test_detect_windows_app_version_winreg_mocked(self) -> None:
+        class _FakeKey:
+            def __init__(self, path: str, data: dict[str, dict[str, dict[str, str]]]) -> None:
+                self.path = path
+                self.data = data
+
+            def __enter__(self) -> "_FakeKey":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+        class _FakeWinreg:
+            HKEY_CURRENT_USER = "HKCU"
+            HKEY_LOCAL_MACHINE = "HKLM"
+
+            def __init__(self, tree: dict[tuple[str, str], dict[str, dict[str, str]]]) -> None:
+                self.tree = tree
+
+            def OpenKey(self, hive: object, subkey: str) -> _FakeKey:
+                if isinstance(hive, _FakeKey):
+                    parent = self.tree[hive.path]  # type: ignore[index]
+                    if subkey not in parent:
+                        raise OSError("missing subkey")
+                    return _FakeKey((hive.path[0], hive.path[1], subkey), self.tree)  # type: ignore[arg-type]
+                key = (str(hive), subkey)
+                if key not in self.tree:
+                    raise OSError("missing root")
+                return _FakeKey(key, self.tree)  # type: ignore[arg-type]
+
+            def EnumKey(self, key: _FakeKey, idx: int) -> str:
+                names = list(self.tree[key.path].keys())  # type: ignore[index]
+                if idx >= len(names):
+                    raise OSError("no more")
+                return names[idx]
+
+            def QueryValueEx(self, key: _FakeKey, value_name: str) -> tuple[str, int]:
+                hive, root_sub, app_sub = key.path  # type: ignore[misc]
+                entry = self.tree[(hive, root_sub)][app_sub]
+                if value_name not in entry:
+                    raise OSError("missing value")
+                return entry[value_name], 1
+
+        class _NtOs:
+            name = "nt"
+
+        uninstall = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
+        tree_ok = {("HKCU", uninstall): {"ag": {"DisplayName": "Google Antigravity", "DisplayVersion": "2.35.1"}}}
+        with mock.patch.object(init_env, "os", _NtOs()), mock.patch.object(init_env, "winreg", _FakeWinreg(tree_ok)):
+            res_ok = init_env._detect_windows_app_version()
+            self.assertIsNotNone(res_ok)
+            assert res_ok is not None
+            self.assertEqual(res_ok["version"], "2.35.1")
+            self.assertEqual(res_ok["source"], "winreg")
+            self.assertTrue(res_ok["meets_mcp_app_min"])
+
+        wow = r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+        tree_old = {("HKLM", wow): {"ag": {"DisplayName": "Antigravity IDE", "DisplayVersion": "2.33.0"}}}
+        with mock.patch.object(init_env, "os", _NtOs()), mock.patch.object(init_env, "winreg", _FakeWinreg(tree_old)):
+            res_old = init_env._detect_windows_app_version()
+            self.assertIsNotNone(res_old)
+            assert res_old is not None
+            self.assertEqual(res_old["version"], "2.33.0")
+            self.assertFalse(res_old["meets_mcp_app_min"])
+
+        with mock.patch.object(init_env, "os", _NtOs()), mock.patch.object(init_env, "winreg", _FakeWinreg({})):
+            self.assertIsNone(init_env._detect_windows_app_version())
+
+    def test_check_metrics_workflow_and_bridge_sqlite_health(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_home = tmp_path / "user-home"
+            fake_home.mkdir()
+            plugins_dir = tmp_path / "plugins"
+            shutil.copytree(REPO_ROOT / "plugin", plugins_dir / "gravity", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            _create_fake_module(plugins_dir, "bridge", "gravity-bridge", "GRAVITY_BRIDGE_HOME")
+            _create_fake_module(plugins_dir, "metrics", "gravity-metrics", "GRAVITY_METRICS_HOME")
+            _create_fake_module(plugins_dir, "workflow", "gravity-workflow", "GRAVITY_WORKFLOW_HOME")
+            (plugins_dir / "gravity-workflow" / "hooks.json").write_text('{"g": {"enabled": true}}\n', encoding="utf-8")
+
+            gravity_home = tmp_path / "g-home"
+            # Populate valid bridge.db (0 online sidecars -> [OK]), valid metrics, valid workflow
+            (gravity_home / "bridge").mkdir(parents=True)
+            conn = sqlite3.connect(gravity_home / "bridge" / "bridge.db")
+            conn.execute("CREATE TABLE workspaces (slug TEXT, sidecar_id TEXT, sidecar_last_seen_at TEXT)")
+            stale = "2020-01-01T00:00:00Z"
+            conn.execute("INSERT INTO workspaces VALUES ('ws1', 'sc1', ?)", (stale,))
+            conn.commit()
+            conn.close()
+
+            (gravity_home / "metrics" / "data").mkdir(parents=True)
+            (gravity_home / "metrics" / "data" / "history.jsonl").write_text('{"id":"s1"}\n', encoding="utf-8")
+            (gravity_home / "metrics" / "METRICS.md").write_text("# Metrics\n", encoding="utf-8")
+
+            wf_ws = gravity_home / "workflow" / "workspaces" / "ws-a"
+            wf_ws.mkdir(parents=True)
+            (wf_ws / "live_state.json").write_text('{"stage":"idle"}\n', encoding="utf-8")
+            (wf_ws / "runs.jsonl").write_text('{"run":1}\n', encoding="utf-8")
+
+            p_ok, rc_ok = init_env.run_environment(
+                gravity_home=gravity_home,
+                plugins_dirs=[plugins_dir],
+                home_dir=fake_home,
+                check_only=True,
+                app_version_detector=lambda: {"version": "2.35.0", "source": "winreg", "meets_mcp_app_min": True, "min_required": "2.34.0", "update_hint": ""},
+            )
+            self.assertEqual(rc_ok, 0)
+            self.assertEqual(p_ok["warnings"], [])
+
+            # Corrupt metrics JSONL, corrupt workflow runs.jsonl, corrupt bridge.db -> non-blocking warnings
+            (gravity_home / "metrics" / "data" / "history.jsonl").write_text("{corrupt\n", encoding="utf-8")
+            (wf_ws / "runs.jsonl").write_text("{corrupt\n", encoding="utf-8")
+            (gravity_home / "bridge" / "bridge.db").write_bytes(b"not sqlite")
+            p_warn, rc_warn = init_env.run_environment(
+                gravity_home=gravity_home,
+                plugins_dirs=[plugins_dir],
+                home_dir=fake_home,
+                check_only=True,
+                app_version_detector=lambda: {"version": None, "source": "none", "meets_mcp_app_min": None, "min_required": "2.34.0", "update_hint": ""},
+            )
+            self.assertEqual(rc_warn, 0)
+            joined = "\n".join(p_warn["warnings"])
+            self.assertIn("bridge", joined)
+            self.assertIn("metrics", joined)
+            self.assertIn("workflow", joined)
+
+    def test_overview_mode_read_only_and_guide_no_truncation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_home = tmp_path / "user-home"
+            fake_home.mkdir()
+            plugins_dir = tmp_path / "plugins"
+            shutil.copytree(REPO_ROOT / "plugin", plugins_dir / "gravity", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            for i in range(1, 11):
+                _create_fake_module(plugins_dir, f"mod{i}", f"gravity-mod{i}", f"GRAVITY_MOD{i}_HOME")
+
+            gravity_home = tmp_path / "uninit-overview"
+            env = _isolated_env(fake_home)
+
+            p_ov = subprocess.run(
+                [sys.executable, "-B", str(INIT_SCRIPT), "--gravity-home", str(gravity_home), "--plugins-dir", str(plugins_dir), "--overview", "--json"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=15, check=False,
+            )
+            self.assertEqual(p_ov.returncode, 0, msg=p_ov.stderr or p_ov.stdout)
+            self.assertFalse(gravity_home.exists())
+            ov = json.loads(p_ov.stdout)
+            self.assertEqual(ov["mode"], "overview")
+            self.assertTrue(ov["ok"])
+            self.assertEqual(len(ov["help"]), 5)
+            self.assertTrue(all("status" in h for h in ov["module_health"]))
+
+            p_ov_txt = subprocess.run(
+                [sys.executable, "-B", str(INIT_SCRIPT), "--gravity-home", str(gravity_home), "--plugins-dir", str(plugins_dir), "--overview"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=15, check=False,
+            )
+            self.assertEqual(p_ov_txt.returncode, 0)
+            self.assertIn("[OK]", p_ov_txt.stdout)
+            self.assertIn("Démarrage / Init", p_ov_txt.stdout)
+            self.assertFalse(gravity_home.exists())
+
+            p_guide = subprocess.run(
+                [sys.executable, "-B", str(INIT_SCRIPT), "--gravity-home", str(gravity_home), "--plugins-dir", str(plugins_dir), "--guide"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=15, check=False,
+            )
+            self.assertEqual(p_guide.returncode, 0)
+            self.assertGreater(len(p_guide.stdout.splitlines()), 20)
+            for i in range(1, 11):
+                self.assertIn(f"mod{i}", p_guide.stdout)
 
 
 if __name__ == "__main__":

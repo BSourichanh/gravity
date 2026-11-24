@@ -5,6 +5,13 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Added
+- **Lot W1 — Vue d'ensemble `/gravity` 0-token, santé multi-modules, sonde Windows `winreg` & durcissement `validate.py` :**
+  - `plugin/scripts/init_env.py` : sonde lecture seule du registre Windows (`_detect_windows_app_version()` via `winreg`, prioritaire sur `snap`/`dpkg-query`), helper santé RO `_inspect_module_health_ro()` (`architect`, `bridge.db` `?mode=ro` TTL `45.0s`, `metrics`, `workflow`, MCP `dashboard`), levée de troncature sur `--guide`, mode `--overview` (RO, aide structurée en 5 parcours) et helper partagé `format_overview_markdown()`.
+  - `plugin/hooks.json` & `plugin/hooks/pre_invocation_gravity.py` : hook `PreInvocation` 0-token sur `/gravity` nu (`terminationBehavior: "terminate"`, `metadata.user_markdown`, 0 écriture disque, repli `{}`).
+  - `plugin/scripts/validate.py` & `install.py` : validation `_validate_hooks()`, adaptation `fix_python_cmd()` étendue à `hooks.json` + `mcp_config.json`, `"hooks/pre_invocation_gravity.py"` dans `EXEC_SCRIPTS`, garde-fous `INT-01..06` (SemVer stricte, `disabled` bool, 3 `suggestedPrompts` au format `/cmd — résumé`, contrôle CRLF global, rejet liens `file:`, `PERSONAL_PATH_RE` sur `../README.md`, `../docs/*.md`, `../AGENTS.md`).
+  - Tests unitaires isolés (`tests/test_hooks.py`, `tests/test_init_env.py`, `tests/test_validate.py`, `tests/test_install.py`, `tests/test_dashboard_providers.py`) et alignement documentaire (`plugin.json`, `module.json`, `AGENTS.md`, `rules/AGENTS.md`, `SKILL.md`, `README.md`, `plugin/README.md`, `docs/`).
+
 ### Fixed
 - **Filtrage strict de `pending_sessions` (`plugin/dashboard/providers/metrics_provider.py`) :**
   - Ajout de `_resolve_bridge_db_path()` (`$GRAVITY_BRIDGE_HOME` > `$GRAVITY_HOME/bridge` > `~/.gemini/gravity/bridge`) et `_load_bridge_roles_ro()` (`?mode=ro` tolérant schéma `v0.1.0` et absence/corruption, excluant les jobs callback `direction = 'callback'` / `action = 'send_message'`).
