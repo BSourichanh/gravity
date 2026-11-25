@@ -252,7 +252,7 @@ class TestInitEnvCLI(unittest.TestCase):
             self.assertTrue(out["dashboard"]["mcp_config_ok"])
             self.assertTrue(out["dashboard"]["server_exists"])
             self.assertTrue(out["dashboard"]["api_exists"])
-            self.assertEqual([t["id"] for t in out["tabs"]], ["overview", "metrics"])
+            self.assertEqual([t["id"] for t in out["tabs"]], ["live", "metrics", "overview"])
 
             p_txt = subprocess.run(
                 [

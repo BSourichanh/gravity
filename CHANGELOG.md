@@ -5,6 +5,12 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Changed
+- **Serveur MCP unifié & validation 10 outils (Vague 2 — `plugin/mcp/tools_schema.py`, `plugin/mcp/server.py`, `plugin/dashboard/providers/__init__.py`, `plugin/scripts/validate.py`, `tests/test_mcp_server.py`) :**
+  - Extraction des schémas JSON dans `plugin/mcp/tools_schema.py` (`build_tool_definitions()`, `< 800 L`) et maintien de `plugin/mcp/server.py` sous `800 L`.
+  - Unification des vues (`VALID_VIEWS = ("live", "metrics", "architect", "overview", "workflow")`, défaut `"live"`, redirection `"workflow" -> "live"`), ajout des paramètres `target`/`metrics_sub`, et exposition des `3` nouveaux outils `visibility: ["app"]` (`gravity_get_live_session`, `gravity_metrics_action`, `gravity_read_audit`) sous budget `<= 450_000` o.
+  - Alignement de `build_dashboard_tabs()` sur les `4` onglets (`live`, `metrics`, `architect`, `overview`) et mise à jour de `validate.py` (`EXPECTED_MCP_TOOLS` à `10` outils, contrôle `visibility == ["app"]` sur tous les `gravity_*`).
+
 ### Added
 - **Providers backend Live & Actions CLI DIP (Vague 1 — `plugin/dashboard/providers/live_provider.py`, `plugin/dashboard/providers/metrics_actions.py`, `plugin/dashboard/providers/metrics_audits.py`, `plugin/dashboard/providers/metrics_provider.py`, `plugin/dashboard/api.py`) :**
   - Ajout de `get_live_session_state()` : scan RO incrémental par `(path, inode, size)` + `seek(last_offset)` sur `brain/<cid>/.system_generated/` (`logs/transcript.jsonl`, `subagents/*.json`, `swarm/{members,plan,board}.{json,jsonl}`, `tasks/task-*.log`), fusion `workflow_provider.get_workflow_state()`, filtrage des conversations enfants, normalisation des worktrees et fast-path `since_signature`.

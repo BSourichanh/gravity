@@ -54,10 +54,13 @@ MCP_HTML_MAX_BYTES = 200 * 1024
 MCP_TRAJECTORY_MAX_BYTES = 450_000
 EXPECTED_MCP_TOOLS = {
     "open_gravity_dashboard",
+    "gravity_get_live_session",
     "gravity_get_overview",
     "gravity_get_workflow_state",
     "gravity_get_metrics_state",
     "gravity_get_session_detail",
+    "gravity_metrics_action",
+    "gravity_read_audit",
     "gravity_get_architect_state",
     "gravity_get_module_info",
 }
@@ -840,7 +843,7 @@ def _run_mcp_dry_run(root: Path, report: Report) -> None:
 
         for tool in tools:
             tname = str(tool.get("name") or "")
-            if tname.startswith("gravity_get_"):
+            if tname.startswith("gravity_"):
                 vis = ((tool.get("_meta") or {}).get("ui") or {}).get("visibility")
                 if vis != ["app"]:
                     report.error(f"MCP outil {tname!r} : visibility doit être ['app'], obtenu {vis!r}")
@@ -869,7 +872,13 @@ def _run_mcp_dry_run(root: Path, report: Report) -> None:
         call_res = resps[5].get("result") or {}
         call_bytes = len(json.dumps(call_res, ensure_ascii=False).encode("utf-8"))
         sc = call_res.get("structuredContent") or {}
-        if call_res.get("isError") or not isinstance(sc.get("overview"), dict) or call_bytes > MCP_TRAJECTORY_MAX_BYTES:
+        if (
+            call_res.get("isError")
+            or sc.get("initial_view") != "live"
+            or not isinstance(sc.get("overview"), dict)
+            or not isinstance(sc.get("live"), dict)
+            or call_bytes > MCP_TRAJECTORY_MAX_BYTES
+        ):
             report.error(
                 f"MCP open_gravity_dashboard résultat invalide (isError={call_res.get('isError')}, bytes={call_bytes})."
             )

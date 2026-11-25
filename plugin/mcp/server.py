@@ -15,6 +15,7 @@ if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
 from dashboard import api  # noqa: E402
+from mcp.tools_schema import build_tool_definitions  # noqa: E402
 from mcp.widget_html import render_dashboard_html  # noqa: E402
 
 SERVER_NAME = "gravity"
@@ -22,7 +23,8 @@ APP_URI = "ui://gravity/dashboard.html"
 APP_MIME = "text/html;profile=mcp-app"
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 MAX_TRAJECTORY_BYTES = 450_000
-VALID_VIEWS = ("overview", "workflow", "metrics", "architect", "module")
+VALID_VIEWS = ("live", "metrics", "architect", "overview", "workflow")
+VALID_METRICS_SUBS = ("overview", "sessions", "pending", "audits", "compare")
 MIN_ANTIGRAVITY_MCP_APP_VERSION = (2, 34, 0)
 
 _HOST_CLIENT_STATE: dict[str, Any] = {
@@ -116,6 +118,7 @@ def _normalize_ctx(ctx: Optional[Mapping[str, Any]]) -> dict[str, Any]:
     for key in (
         "gravity_home",
         "home_dir",
+        "brain_dir",
         "workflow_home",
         "metrics_home",
         "architect_home",
@@ -165,6 +168,15 @@ def _enforce_trajectory_budget(result: dict[str, Any], initial_view: str) -> dic
     if not isinstance(sc, dict):
         return result
 
+    live = sc.get("live")
+    if isinstance(live, dict):
+        for list_key in ("recent_events", "agents", "sessions"):
+            items = live.get(list_key)
+            while _encoded_bytes(result) > MAX_TRAJECTORY_BYTES and isinstance(items, list) and items:
+                live["truncated"] = True
+                items = items[: max(0, len(items) // 2)]
+                live[list_key] = items
+
     met = sc.get("metrics")
     if isinstance(met, dict):
         for list_key in ("records", "audits", "pending_sessions", "ignored_sessions"):
@@ -190,7 +202,7 @@ def _enforce_trajectory_budget(result: dict[str, Any], initial_view: str) -> dic
                 items = items[: max(0, len(items) // 2)]
                 arch[list_key] = items
 
-    for section in ("metrics", "workflow", "architect"):
+    for section in ("workflow", "metrics", "architect", "live"):
         if _encoded_bytes(result) > MAX_TRAJECTORY_BYTES and initial_view != section:
             sc.pop(section, None)
 
@@ -198,178 +210,23 @@ def _enforce_trajectory_budget(result: dict[str, Any], initial_view: str) -> dic
 
 
 def _tool_definitions() -> list[dict[str, Any]]:
-    return [
-        {
-            "name": "open_gravity_dashboard",
-            "title": "Ouvrir Gravity Dashboard",
-            "description": (
-                "Ouvre le tableau de bord unifié Gravity (Overview/Doctor, Workflow Live, "
-                "Metrics, Architect RO et modules OCP) dans Antigravity."
-            ),
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "view": {
-                        "type": "string",
-                        "enum": list(VALID_VIEWS),
-                        "description": "Vue initiale : overview, workflow, metrics, architect ou module.",
-                    },
-                    "project": {
-                        "type": "string",
-                        "description": "Filtre projet initial pour la vue Metrics.",
-                    },
-                    "ws": {
-                        "type": "string",
-                        "description": "Workspace initial pour la vue Workflow Live et repli Architect (ws_hint).",
-                    },
-                    "atelier": {
-                        "type": "string",
-                        "description": "Chemin d'atelier Architect cible (optionnel).",
-                    },
-                    "module_id": {
-                        "type": "string",
-                        "description": "Identifiant module cible si view=module.",
-                    },
-                },
-            },
-            "_meta": {
-                "ui": {
-                    "resourceUri": APP_URI,
-                    "visibility": ["model", "app"],
-                },
-                "com.google.antigravity/ui": {
-                    "entrypoints": [
-                        {"type": "aux_pane", "title": "Gravity"},
-                        {"type": "global", "title": "Gravity"},
-                    ]
-                },
-            },
-        },
-        {
-            "name": "gravity_get_overview",
-            "title": "État Overview Gravity",
-            "description": "Retourne l'état Core/Doctor, les onglets et les dossiers legacy en lecture seule.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "since_signature": {
-                        "type": "string",
-                        "description": "Signature précédente pour fast-path inchangé.",
-                    }
-                },
-            },
-            "_meta": {"ui": {"visibility": ["app"]}},
-        },
-        {
-            "name": "gravity_get_workflow_state",
-            "title": "État Workflow Live",
-            "description": "Retourne l'état temps réel lecture seule de Gravity Workflow pour un workspace.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "ws": {
-                        "type": "string",
-                        "description": "Chemin ou nom du workspace cible.",
-                    },
-                    "since_signature": {
-                        "type": "string",
-                        "description": "Signature précédente pour polling incrémental.",
-                    },
-                },
-            },
-            "_meta": {"ui": {"visibility": ["app"]}},
-        },
-        {
-            "name": "gravity_get_metrics_state",
-            "title": "État Metrics & Audits Agents",
-            "description": "Retourne KPIs, sessions filtrées, file pending et audits agents en lecture seule.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "project": {
-                        "type": "string",
-                        "description": "Filtre projet optionnel.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Nombre maximal de sessions récentes retournées.",
-                    },
-                    "q": {
-                        "type": "string",
-                        "description": "Recherche texte sur label, modèle, projet ou ID.",
-                    },
-                    "since_signature": {
-                        "type": "string",
-                        "description": "Signature précédente pour fast-path inchangé.",
-                    },
-                },
-            },
-            "_meta": {"ui": {"visibility": ["app"]}},
-        },
-        {
-            "name": "gravity_get_session_detail",
-            "title": "Détail d'une session Metrics",
-            "description": "Charge en lecture seule le rapport JSON confiné d'une session sans trajectoire brute.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": "Slug, label ou conversation_id de la session.",
-                    }
-                },
-                "required": ["target"],
-            },
-            "_meta": {"ui": {"visibility": ["app"]}},
-        },
-        {
-            "name": "gravity_get_architect_state",
-            "title": "État Gravity Architect (RO)",
-            "description": "Retourne ECOSYSTEM.md, delta.md, projets, specs, tasks et audits/code/ en lecture seule.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "atelier": {
-                        "type": "string",
-                        "description": "Chemin d'atelier Architect cible (optionnel).",
-                    },
-                    "ws": {
-                        "type": "string",
-                        "description": "Indice workspace courant pour repli Architect (ws_hint).",
-                    },
-                    "since_signature": {
-                        "type": "string",
-                        "description": "Signature précédente pour fast-path inchangé.",
-                    },
-                },
-            },
-            "_meta": {"ui": {"visibility": ["app"]}},
-        },
-        {
-            "name": "gravity_get_module_info",
-            "title": "Inspection d'un module OCP",
-            "description": "Retourne le contrat et le listing superficiel du stockage d'un module Gravity.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "module_id": {
-                        "type": "string",
-                        "description": "Identifiant du module Gravity (ex. workflow, architect).",
-                    }
-                },
-                "required": ["module_id"],
-            },
-            "_meta": {"ui": {"visibility": ["app"]}},
-        },
-    ]
+    return build_tool_definitions(VALID_VIEWS, APP_URI)
 
 
 def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    raw_view = str(args.get("view") or "overview").strip().lower()
-    initial_view = raw_view if raw_view in VALID_VIEWS else "overview"
+    raw_view = str(args.get("view") or "live").strip().lower()
+    if raw_view == "workflow":
+        initial_view = "live"
+    elif raw_view in VALID_VIEWS:
+        initial_view = raw_view
+    else:
+        initial_view = "live"
     initial_project = str(args.get("project") or "").strip()
     initial_ws = str(args.get("ws") or "").strip()
     initial_atelier = str(args.get("atelier") or "").strip()
+    initial_target = str(args.get("target") or "").strip()
+    raw_metrics_sub = str(args.get("metrics_sub") or "").strip().lower()
+    initial_metrics_sub = raw_metrics_sub if raw_metrics_sub in VALID_METRICS_SUBS else ""
     initial_module_id = str(args.get("module_id") or "").strip()
 
     overview = api.get_overview(
@@ -378,9 +235,22 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
         home_dir=ctx.get("home_dir"),
     )
     tab_ids = {str(t.get("id") or "") for t in (overview.get("tabs") or []) if isinstance(t, dict)}
+    mod_ids = {str(m.get("id") or "") for m in (overview.get("modules") or []) if isinstance(m, dict)}
+
+    live: Optional[dict[str, Any]] = None
+    if initial_view == "live" or "live" in tab_ids:
+        live = api.get_live_session_state(
+            session_id=initial_target if initial_view == "live" else "",
+            ws=initial_ws,
+            gravity_home=ctx.get("gravity_home"),
+            brain_dir=ctx.get("brain_dir"),
+            metrics_home=ctx.get("metrics_home"),
+            workflow_home=ctx.get("workflow_home"),
+            home_dir=ctx.get("home_dir"),
+        )
 
     workflow: Optional[dict[str, Any]] = None
-    if initial_view == "workflow" or initial_ws or "workflow" in tab_ids:
+    if raw_view == "workflow" or initial_ws or "workflow" in mod_ids:
         workflow = api.get_workflow_state(
             ws=initial_ws,
             gravity_home=ctx.get("gravity_home"),
@@ -388,7 +258,7 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
         )
 
     metrics: Optional[dict[str, Any]] = None
-    if initial_view == "metrics" or initial_project or "metrics" in tab_ids:
+    if initial_view == "metrics" or initial_project or initial_metrics_sub or "metrics" in tab_ids:
         metrics = api.get_metrics_state(
             project=initial_project,
             gravity_home=ctx.get("gravity_home"),
@@ -407,7 +277,7 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
         )
 
     module_info: Optional[dict[str, Any]] = None
-    if initial_view == "module" and initial_module_id:
+    if initial_module_id:
         module_info = api.get_module_info(
             initial_module_id,
             gravity_home=ctx.get("gravity_home"),
@@ -420,7 +290,9 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
         ws=initial_ws,
         atelier=initial_atelier,
         module_id=initial_module_id,
+        session_id=initial_target if initial_view == "live" else "",
         overview=overview,
+        live=live,
         workflow=workflow,
         metrics=metrics,
         architect=architect,
@@ -428,6 +300,7 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
         gravity_home=ctx.get("gravity_home"),
         plugin_roots=ctx.get("plugin_roots"),
         home_dir=ctx.get("home_dir"),
+        brain_dir=ctx.get("brain_dir"),
         workflow_home=ctx.get("workflow_home"),
         metrics_home=ctx.get("metrics_home"),
         audits_dirs=ctx.get("audits_dirs"),
@@ -448,9 +321,13 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
         "initial_project": initial_project,
         "initial_ws": initial_ws,
         "initial_atelier": initial_atelier,
+        "initial_target": initial_target,
+        "initial_metrics_sub": initial_metrics_sub,
         "initial_module_id": initial_module_id,
         "overview": overview,
     }
+    if live is not None:
+        structured["live"] = live
     if workflow is not None:
         structured["workflow"] = workflow
     if metrics is not None:
@@ -587,12 +464,82 @@ def _handle_get_module_info(args: dict[str, Any], ctx: dict[str, Any]) -> dict[s
     )
 
 
+def _handle_get_live_session(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    session_id = str(args.get("session_id") or "").strip()
+    ws = str(args.get("ws") or "").strip()
+    since_sig = str(args.get("since_signature") or "").strip()
+    include_events = bool(args.get("include_events", True))
+    data = api.get_live_session_state(
+        session_id=session_id,
+        since_signature=since_sig,
+        include_events=include_events,
+        ws=ws,
+        gravity_home=ctx.get("gravity_home"),
+        brain_dir=ctx.get("brain_dir"),
+        metrics_home=ctx.get("metrics_home"),
+        workflow_home=ctx.get("workflow_home"),
+        home_dir=ctx.get("home_dir"),
+    )
+    if data.get("unchanged"):
+        return _tool_ok("Inchangé.", data)
+    lv_sum = data.get("summary") or {}
+    txt = (
+        f"Live: {len(data.get('sessions') or [])} session(s), "
+        f"{lv_sum.get('active_agents', 0)}/{lv_sum.get('total_agents', 0)} agent(s) actif(s)."
+        if data.get("available")
+        else "Live: aucune session active."
+    )
+    return _tool_ok(txt, data)
+
+
+def _handle_metrics_action(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    action = str(args.get("action") or "").strip().lower()
+    data = api.run_metrics_cli_action(
+        action,
+        conversation_id=str(args.get("conversation_id") or ""),
+        slug=str(args.get("slug") or ""),
+        target=str(args.get("target") or ""),
+        label=str(args.get("label") or ""),
+        project=str(args.get("project") or ""),
+        note=str(args.get("note") or ""),
+        reason=str(args.get("reason") or ""),
+        workspace=str(args.get("workspace") or ""),
+        full=bool(args.get("full", False)),
+        purge_reports=bool(args.get("purge_reports", True)),
+        gravity_home=ctx.get("gravity_home"),
+        plugin_roots=ctx.get("plugin_roots"),
+        metrics_home=ctx.get("metrics_home"),
+        brain_dir=ctx.get("brain_dir"),
+    )
+    if not data.get("ok"):
+        return _tool_err(str(data.get("message") or "Action Metrics échouée."), structured=data)
+    return _tool_ok(str(data.get("message") or f"Action {action} exécutée."), data)
+
+
+def _handle_read_audit(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    target = str(args.get("path") or args.get("audit_id") or args.get("target") or "").strip()
+    if not target:
+        return _tool_err("Le paramètre 'path' est requis.")
+    data = api.read_metrics_audit(
+        target,
+        gravity_home=ctx.get("gravity_home"),
+        metrics_home=ctx.get("metrics_home"),
+        audits_dirs=ctx.get("audits_dirs"),
+    )
+    if not data.get("found"):
+        return _tool_err(str(data.get("error") or f"Audit introuvable : {target!r}."), structured=data)
+    return _tool_ok(f"Audit '{data.get('title') or target}' chargé.", data)
+
+
 _TOOL_DISPATCH = {
     "open_gravity_dashboard": _handle_open_gravity_dashboard,
+    "gravity_get_live_session": _handle_get_live_session,
     "gravity_get_overview": _handle_get_overview,
     "gravity_get_workflow_state": _handle_get_workflow_state,
     "gravity_get_metrics_state": _handle_get_metrics_state,
     "gravity_get_session_detail": _handle_get_session_detail,
+    "gravity_metrics_action": _handle_metrics_action,
+    "gravity_read_audit": _handle_read_audit,
     "gravity_get_architect_state": _handle_get_architect_state,
     "gravity_get_module_info": _handle_get_module_info,
 }

@@ -12,10 +12,12 @@ from typing import Any, Optional, Sequence
 DEDICATED_PROVIDERS: tuple[str, ...] = ("core", "workflow", "metrics", "architect")
 
 _DEFAULT_LABELS: dict[str, str] = {
-    "core": "Overview",
-    "workflow": "Workflow Live",
-    "metrics": "Metrics",
-    "architect": "Architect",
+    "live": "En direct",
+    "metrics": "Métriques",
+    "architect": "Atelier",
+    "core": "Système",
+    "overview": "Système",
+    "workflow": "En direct",
 }
 
 _TITLE_RE = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)
@@ -65,7 +67,7 @@ def resolve_provider_kind(module_id: str) -> str:
 
 
 def build_dashboard_tabs(modules: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Build ordered dashboard tabs: `overview`, detected dedicated tabs, then generic OCP modules."""
+    """Build ordered dashboard tabs: `live`, `metrics`, `architect`, `overview`, then generic OCP modules."""
     by_id: dict[str, dict[str, Any]] = {}
     ordered_others: list[dict[str, Any]] = []
 
@@ -84,23 +86,24 @@ def build_dashboard_tabs(modules: Sequence[dict[str, Any]]) -> list[dict[str, An
             ordered_others.append(raw)
 
     core_mod = by_id.get("core") or {}
+    wf_mod = by_id.get("workflow") or {}
     tabs: list[dict[str, Any]] = [
         {
-            "id": "overview",
-            "kind": "core",
-            "module_id": "core",
-            "label": _DEFAULT_LABELS["core"],
-            "display_name": core_mod.get("display_name") or "Gravity Core",
-            "plugin_name": core_mod.get("plugin_name") or "gravity",
-            "version": core_mod.get("version"),
-            "valid": bool(core_mod.get("valid", True)) if core_mod else True,
+            "id": "live",
+            "kind": "live",
+            "module_id": "workflow" if wf_mod else "core",
+            "label": _DEFAULT_LABELS["live"],
+            "display_name": wf_mod.get("display_name") or "En direct (Session & Workflow)",
+            "plugin_name": wf_mod.get("plugin_name") or core_mod.get("plugin_name") or "gravity",
+            "version": wf_mod.get("version") or core_mod.get("version"),
+            "valid": bool(wf_mod.get("valid", True)) if wf_mod else (bool(core_mod.get("valid", True)) if core_mod else True),
             "dedicated": True,
-            "commands": list(core_mod.get("commands") or ["/gravity"]),
-            "ui": dict(core_mod.get("ui") or {"mode": "core", "target": "gravity"}),
+            "commands": list(wf_mod.get("commands") or ["/gravity dashboard"]),
+            "ui": dict(wf_mod.get("ui") or core_mod.get("ui") or {"mode": "core", "target": "gravity"}),
         }
     ]
 
-    for mod_id in ("workflow", "metrics", "architect"):
+    for mod_id in ("metrics", "architect"):
         mod = by_id.get(mod_id)
         if mod is None:
             continue
@@ -119,6 +122,22 @@ def build_dashboard_tabs(modules: Sequence[dict[str, Any]]) -> list[dict[str, An
                 "ui": dict(mod.get("ui") or {}),
             }
         )
+
+    tabs.append(
+        {
+            "id": "overview",
+            "kind": "core",
+            "module_id": "core",
+            "label": _DEFAULT_LABELS["overview"],
+            "display_name": core_mod.get("display_name") or "Gravity Core",
+            "plugin_name": core_mod.get("plugin_name") or "gravity",
+            "version": core_mod.get("version"),
+            "valid": bool(core_mod.get("valid", True)) if core_mod else True,
+            "dedicated": True,
+            "commands": list(core_mod.get("commands") or ["/gravity"]),
+            "ui": dict(core_mod.get("ui") or {"mode": "core", "target": "gravity"}),
+        }
+    )
 
     for mod in ordered_others:
         mod_id = str(mod["id"])

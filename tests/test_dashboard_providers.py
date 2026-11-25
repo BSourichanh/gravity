@@ -113,7 +113,7 @@ class TestDashboardHelpers(unittest.TestCase):
             {"id": "core", "plugin_name": "gravity", "valid": True},
         ]
         tabs_4 = build_dashboard_tabs(modules_4)
-        self.assertEqual([t["id"] for t in tabs_4], ["overview", "workflow", "metrics", "architect"])
+        self.assertEqual([t["id"] for t in tabs_4], ["live", "metrics", "architect", "overview"])
         self.assertTrue(all(t["dedicated"] for t in tabs_4))
 
         modules = [
@@ -122,7 +122,7 @@ class TestDashboardHelpers(unittest.TestCase):
             *modules_4,
         ]
         tabs = build_dashboard_tabs(modules)
-        self.assertEqual([t["id"] for t in tabs], ["overview", "workflow", "metrics", "architect", "custom", "bridge"])
+        self.assertEqual([t["id"] for t in tabs], ["live", "metrics", "architect", "overview", "custom", "bridge"])
         self.assertTrue(all(t["dedicated"] for t in tabs[:4]))
         self.assertFalse(tabs[4]["dedicated"])
         self.assertEqual(tabs[4]["kind"], "generic")
@@ -191,7 +191,7 @@ class TestCoreAndGenericProviders(unittest.TestCase):
             self.assertEqual(ov["registry_source"], "modules.json")
             self.assertEqual(ov["doctor"]["status"], "ok")
             self.assertTrue(ov["doctor"]["initialized"])
-            self.assertEqual([t["id"] for t in ov["tabs"]], ["overview", "metrics", "architect"])
+            self.assertEqual([t["id"] for t in ov["tabs"]], ["live", "metrics", "architect", "overview"])
 
             by_id = {m["id"]: m for m in ov["modules"]}
             self.assertTrue(by_id["core"]["home_exists"])
@@ -1156,7 +1156,7 @@ class TestDashboardFacade(unittest.TestCase):
                 home_dir=fake_user,
             )
             self.assertIn("Gravity Dashboard", summary)
-            self.assertIn("Workflow:", summary)
+            self.assertIn("Live:", summary)
             self.assertIn("Metrics", summary)
             self.assertNotIn("Bridge:", summary)
             self.assertIn("Architect:", summary)

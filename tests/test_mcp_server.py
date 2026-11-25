@@ -96,19 +96,24 @@ class TestMcpServer(unittest.TestCase):
             names,
             [
                 "open_gravity_dashboard",
+                "gravity_get_live_session",
                 "gravity_get_overview",
                 "gravity_get_workflow_state",
                 "gravity_get_metrics_state",
                 "gravity_get_session_detail",
+                "gravity_metrics_action",
+                "gravity_read_audit",
                 "gravity_get_architect_state",
                 "gravity_get_module_info",
             ],
         )
         self.assertNotIn("gravity_get_bridge_state", names)
-        self.assertEqual(mcp_server.VALID_VIEWS, ("overview", "workflow", "metrics", "architect", "module"))
+        self.assertEqual(mcp_server.VALID_VIEWS, ("live", "metrics", "architect", "overview", "workflow"))
 
         open_tool = tools[0]
         self.assertIn("atelier", open_tool["inputSchema"]["properties"])
+        self.assertIn("target", open_tool["inputSchema"]["properties"])
+        self.assertIn("metrics_sub", open_tool["inputSchema"]["properties"])
         self.assertEqual(open_tool["_meta"]["ui"]["resourceUri"], mcp_server.APP_URI)
         self.assertEqual(open_tool["_meta"]["ui"]["visibility"], ["model", "app"])
         eps = open_tool["_meta"]["com.google.antigravity/ui"]["entrypoints"]
@@ -218,20 +223,26 @@ class TestMcpServer(unittest.TestCase):
 
             _write_fake_plugin(plugins_root, mod_id="core", plugin_name="gravity", ui_mode="core")
             _write_fake_plugin(plugins_root, mod_id="workflow", plugin_name="gravity-workflow", ui_mode="none")
-            _write_fake_plugin(plugins_root, mod_id="metrics", plugin_name="gravity-metrics", ui_mode="transition-mcp")
+            met_plugin = _write_fake_plugin(plugins_root, mod_id="metrics", plugin_name="gravity-metrics", ui_mode="none")
+            (met_plugin / "scripts").mkdir(parents=True)
+            (met_plugin / "scripts" / "cli.py").write_text(
+                "import json, sys\nprint(json.dumps({'ok': True, 'argv': sys.argv[1:]}))\n",
+                encoding="utf-8",
+            )
             _write_fake_plugin(plugins_root, mod_id="architect", plugin_name="gravity-architect", ui_mode="none")
 
             mods = []
             for mod_id, pname, ui_mode in (
                 ("core", "gravity", "core"),
                 ("workflow", "gravity-workflow", "none"),
-                ("metrics", "gravity-metrics", "transition-mcp"),
+                ("metrics", "gravity-metrics", "none"),
                 ("architect", "gravity-architect", "none"),
             ):
                 mods.append(
                     {
                         "id": mod_id,
                         "plugin_name": pname,
+                        "plugin_dir": str(plugins_root / pname),
                         "display_name": pname.title(),
                         "version": "0.2.0",
                         "valid": True,
@@ -244,6 +255,27 @@ class TestMcpServer(unittest.TestCase):
                     }
                 )
             write_modules_registry(g_home, mods)
+
+            brain_dir = tmp_path / "brain"
+            live_cid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+            live_tpath = brain_dir / live_cid / ".system_generated" / "logs" / "transcript.jsonl"
+            live_tpath.parent.mkdir(parents=True)
+            live_tpath.write_text(
+                json.dumps(
+                    {
+                        "step_index": 0,
+                        "type": "PLANNER_RESPONSE",
+                        "status": "DONE",
+                        "created_at": "2026-11-25T12:00:00Z",
+                        "model": "gemini-4-neon-high",
+                        "input_tokens": 500,
+                        "cache_read_tokens": 1000,
+                        "output_tokens": 120,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
             ws_dir = tmp_path / "demo-ws"
             ws_dir.mkdir()
@@ -290,9 +322,10 @@ class TestMcpServer(unittest.TestCase):
                 "gravity_home": g_home,
                 "plugin_roots": [plugins_root],
                 "home_dir": fake_user,
+                "brain_dir": brain_dir,
                 "workflow_home": wf_home,
                 "metrics_home": met_home,
-                "audits_dirs": [],
+                "audits_dirs": [atelier_dir / "audits" / "agents"],
             }
 
             open_res = mcp_server.handle_jsonrpc_message(
@@ -302,12 +335,81 @@ class TestMcpServer(unittest.TestCase):
             self.assertFalse(open_res["isError"])
             self.assertLessEqual(len(json.dumps(open_res, ensure_ascii=False).encode("utf-8")), mcp_server.MAX_TRAJECTORY_BYTES)
             sc = open_res["structuredContent"]
-            self.assertEqual(sc["initial_view"], "overview")
-            self.assertEqual([t["id"] for t in sc["overview"]["tabs"]], ["overview", "workflow", "metrics", "architect"])
+            self.assertEqual(sc["initial_view"], "live")
+            self.assertEqual([t["id"] for t in sc["overview"]["tabs"]], ["live", "metrics", "architect", "overview"])
+            self.assertTrue(sc["live"]["available"])
             self.assertEqual(sc["workflow"]["stage"], "build")
             self.assertEqual(sc["metrics"]["kpis"]["sessions_count"], 1)
             self.assertNotIn("bridge", sc)
             self.assertTrue(sc["architect"]["available"])
+
+            open_wf = mcp_server.handle_jsonrpc_message(
+                {"jsonrpc": "2.0", "id": 110, "method": "tools/call", "params": {"name": "open_gravity_dashboard", "arguments": {"view": "workflow"}}},
+                ctx=ctx,
+            )["result"]["structuredContent"]  # type: ignore[index]
+            self.assertEqual(open_wf["initial_view"], "live")
+
+            open_met = mcp_server.handle_jsonrpc_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 111,
+                    "method": "tools/call",
+                    "params": {"name": "open_gravity_dashboard", "arguments": {"view": "metrics", "metrics_sub": "audits", "target": "demo-session"}},
+                },
+                ctx=ctx,
+            )["result"]["structuredContent"]  # type: ignore[index]
+            self.assertEqual(open_met["initial_view"], "metrics")
+            self.assertEqual(open_met["initial_metrics_sub"], "audits")
+            self.assertEqual(open_met["initial_target"], "demo-session")
+
+            lv1 = mcp_server.handle_jsonrpc_message(
+                {"jsonrpc": "2.0", "id": 112, "method": "tools/call", "params": {"name": "gravity_get_live_session", "arguments": {}}},
+                ctx=ctx,
+            )["result"]["structuredContent"]  # type: ignore[index]
+            self.assertTrue(lv1["available"])
+            self.assertEqual(lv1["selected_session"]["conversation_id"], live_cid)
+            lv2 = mcp_server.handle_jsonrpc_message(
+                {"jsonrpc": "2.0", "id": 113, "method": "tools/call", "params": {"name": "gravity_get_live_session", "arguments": {"since_signature": lv1["signature"]}}},
+                ctx=ctx,
+            )["result"]["structuredContent"]  # type: ignore[index]
+            self.assertTrue(lv2["unchanged"])
+
+            act_ok = mcp_server.handle_jsonrpc_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 114,
+                    "method": "tools/call",
+                    "params": {"name": "gravity_metrics_action", "arguments": {"action": "update-meta", "slug": "demo-session", "label": "Demo V2", "project": "gravity"}},
+                },
+                ctx=ctx,
+            )["result"]  # type: ignore[index]
+            self.assertFalse(act_ok["isError"])
+            self.assertEqual(act_ok["structuredContent"]["result"]["argv"][0], "update-meta")
+
+            act_bad = mcp_server.handle_jsonrpc_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 115,
+                    "method": "tools/call",
+                    "params": {"name": "gravity_metrics_action", "arguments": {"action": "ignore", "target": "../etc/passwd"}},
+                },
+                ctx=ctx,
+            )["result"]  # type: ignore[index]
+            self.assertTrue(act_bad["isError"])
+
+            audit_id = sc["metrics"]["audits"][0]["audit_id"]
+            aud_ok = mcp_server.handle_jsonrpc_message(
+                {"jsonrpc": "2.0", "id": 116, "method": "tools/call", "params": {"name": "gravity_read_audit", "arguments": {"path": audit_id}}},
+                ctx=ctx,
+            )["result"]  # type: ignore[index]
+            self.assertFalse(aud_ok["isError"])
+            self.assertIn("Secret Agent Audit", aud_ok["structuredContent"]["content"])
+
+            aud_bad = mcp_server.handle_jsonrpc_message(
+                {"jsonrpc": "2.0", "id": 117, "method": "tools/call", "params": {"name": "gravity_read_audit", "arguments": {"path": "../audits/code/2026-11-23-audit-code-gravity.md"}}},
+                ctx=ctx,
+            )["result"]  # type: ignore[index]
+            self.assertTrue(aud_bad["isError"])
 
             ov1 = mcp_server.handle_jsonrpc_message(
                 {"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "gravity_get_overview", "arguments": {}}},
@@ -372,7 +474,7 @@ class TestMcpServer(unittest.TestCase):
                 {"jsonrpc": "2.0", "id": 21, "method": "tools/call", "params": {"name": "open_gravity_dashboard", "arguments": {"view": "bridge"}}},
                 ctx=ctx,
             )["result"]["structuredContent"]  # type: ignore[index]
-            self.assertEqual(open_fallback["initial_view"], "overview")
+            self.assertEqual(open_fallback["initial_view"], "live")
             self.assertNotIn("bridge", open_fallback)
 
             arch1 = mcp_server.handle_jsonrpc_message(
