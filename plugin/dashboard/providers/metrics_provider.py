@@ -28,6 +28,13 @@ DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 MAX_PAYLOAD_BYTES = 450_000
 MAX_AGENTS_IN_DETAIL = 200
+_DETAIL_HEAVY_AGENT_FIELDS: tuple[str, ...] = (
+    "step_latencies_ms",
+    "error_reasons",
+    "tool_calls_by_name",
+    "cost_usd_projection",
+    "transcript_path",
+)
 
 _HEX_PREFIX_RE = re.compile(r"^[0-9a-fA-F]{8,}(?:-[0-9a-fA-F]{0,4}){0,4}$")
 _SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -695,7 +702,23 @@ def get_session_detail(
         "record": rec,
         "warnings": warnings,
     }
-    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) >= MAX_PAYLOAD_BYTES:
-        if isinstance(detail_data.get("agents"), list):
-            detail_data["agents"] = detail_data["agents"][:20]
+    def _payload_bytes() -> int:
+        return len(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+
+    if _payload_bytes() >= MAX_PAYLOAD_BYTES and isinstance(detail_data.get("agents"), list):
+        agents_list = detail_data["agents"]
+        for field in _DETAIL_HEAVY_AGENT_FIELDS:
+            if _payload_bytes() < MAX_PAYLOAD_BYTES:
+                break
+            for ag in agents_list:
+                if isinstance(ag, dict):
+                    ag.pop(field, None)
+        while len(agents_list) > 1 and _payload_bytes() >= MAX_PAYLOAD_BYTES:
+            keep = max(1, len(agents_list) // 2)
+            agents_list = agents_list[:keep]
+            detail_data["agents"] = agents_list
+            result["truncated"] = True
+        if _payload_bytes() >= MAX_PAYLOAD_BYTES and agents_list:
+            detail_data["agents"] = []
+            result["truncated"] = True
     return result

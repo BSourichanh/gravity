@@ -19,24 +19,34 @@ from dashboard.providers import (
     truncate_preview,
     unchanged_response,
 )
+from dashboard.providers.live_tree import (
+    collect_descendant_sig_tokens,
+    collect_wf_refs_from_obj,
+    derive_agent_status,
+    discover_live_tree,
+    extract_shell_nonzero_code,
+    find_cycle_root_overrides,
+    parse_iso_ts,
+    parse_wf_agent_refs,
+    update_termination_acc,
+)
 from dashboard.providers.workflow_provider import get_workflow_state
 
 MAX_ROOT_SESSIONS, MAX_AGENT_EVENTS, MAX_BOARD_EVENTS, MAX_RECENT_EVENTS = 25, 25, 30, 40
 MAX_PAYLOAD_BYTES, MAX_CACHE_ENTRIES = 450_000, 256
-LIVE_RECENT_WINDOW_S, MAX_FALLBACK_ROOTS = 6 * 3600, 3
+LIVE_RECENT_WINDOW_S = 6 * 3600
 
 _WORKTREE_RE = re.compile(r"/(?:gravity-worktrees|\.gemini/antigravity/worktrees|\.worktrees)/([^/]+)(?:/|$)", re.IGNORECASE)
 _WORKTREE_SUFFIX_RE = re.compile(r"-w\d+$", re.IGNORECASE)
 _REPO_MARKER_RE = re.compile(r"/([^/]+)/(?:plugin|src|tests|specs|tasks|docs|scripts|config|audits|assets|README\.md|AGENTS\.md|CHANGELOG\.md)(?:/|$)")
 _CMD_CD_RE = re.compile(r"(?:^|[;&|]\s*)(?:cd|git\s+-C)\s+[\"']?([^\s\"';&|]+)", re.IGNORECASE)
 _UUID_LIKE_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F-]{12,}$|^[A-Za-z0-9._-]{4,80}$")
-_WF_AGENT_CID_RE = re.compile(r"\[agent:[^\]]+\][^\n]*?\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)")
 
 _TRANSCRIPT_CACHE: dict[str, dict[str, Any]] = {}
 _BOARD_CACHE: dict[str, dict[str, Any]] = {}
 _JSON_CACHE: dict[str, dict[str, Any]] = {}
 _BRIDGE_SNIFF_CACHE: dict[tuple[str, int], bool] = {}
-_WF_CHILD_CACHE: dict[str, tuple[int, int, int, frozenset[str]]] = {}
+_WF_CHILD_CACHE: dict[str, tuple[Any, ...]] = {}
 _HISTORY_ARCHIVE_CACHE: dict[str, tuple[int, int, int, dict[str, tuple[str, Optional[float]]]]] = {}
 _CACHE_STATS: dict[str, int] = {"bytes_read": 0, "incremental_reads": 0, "full_reads": 0, "cache_hits": 0}
 
@@ -54,15 +64,7 @@ def get_live_cache_stats() -> dict[str, int]:
     return dict(_CACHE_STATS)
 
 
-def _parse_iso_ts(raw: Any) -> Optional[datetime]:
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    s = raw.strip()[:-1] + "+00:00" if raw.strip().endswith("Z") else raw.strip()
-    try:
-        dt = datetime.fromisoformat(s)
-        return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
+_parse_iso_ts = parse_iso_ts
 
 
 def _strip_file_uri(raw: str) -> str:
@@ -185,6 +187,10 @@ def _new_transcript_acc() -> dict[str, Any]:
         "context_tokens": 0, "max_context_tokens": 0, "thinking_chars": 0,
         "llm_calls": 0, "tool_calls": 0, "error_count": 0,
         "last_tool": "", "last_status": "", "write_paths": Counter(), "read_paths": Counter(), "recent_events": [],
+        "last_non_sys_type": "", "last_non_sys_status": "", "last_non_sys_shell_nonzero": False,
+        "last_planner_status": "", "last_planner_has_tools": False, "last_planner_terminal_tool": "",
+        "trailing_after_planner_count": 0, "trailing_after_planner_all_clean_generic": False,
+        "wf_child_refs": {},
     }
 
 
@@ -210,20 +216,31 @@ def _extract_tool_paths(name: str, args: Any, acc: dict[str, Any]) -> None:
                 return
 
 
-def _apply_transcript_obj(acc: dict[str, Any], obj: dict[str, Any], agent_id: str) -> None:
+def _apply_transcript_obj(acc: dict[str, Any], obj: dict[str, Any], agent_id: str, *, parent_cid: str = "") -> None:
     ts = str(obj.get("created_at") or "").strip()
     if ts:
         acc["first_ts"] = acc["first_ts"] or ts
         acc["last_ts"] = ts
     step_idx = obj.get("step_index")
-    if isinstance(step_idx, int) and not isinstance(step_idx, bool):
-        acc["last_step_index"] = max(acc["last_step_index"], step_idx)
+    clean_step_idx = step_idx if (isinstance(step_idx, int) and not isinstance(step_idx, bool)) else None
+    if clean_step_idx is not None:
+        acc["last_step_index"] = max(acc["last_step_index"], clean_step_idx)
     step_type, status = str(obj.get("type") or "").strip(), str(obj.get("status") or "").strip()
+    status_up = status.upper()
     if status:
         acc["last_status"] = status
-    if status.upper() in ("ERROR", "INVALID", "FAILED"):
+    if status_up in ("ERROR", "INVALID", "FAILED"):
         acc["error_count"] += 1
         acc["recent_events"].append({"ts": ts, "agent_id": agent_id, "kind": "error", "name": step_type or "STEP", "detail": status})
+    shell_nonzero = False
+    if step_type == "GENERIC" and status_up not in ("ERROR", "INVALID", "FAILED"):
+        shell_code = extract_shell_nonzero_code(obj.get("content"))
+        if shell_code is not None:
+            shell_nonzero = True
+            acc["error_count"] += 1
+            acc["recent_events"].append({"ts": ts, "agent_id": agent_id, "kind": "error", "name": "GENERIC", "detail": f"shell exit={shell_code}"})
+    update_termination_acc(acc, obj, step_type, status, shell_nonzero)
+    collect_wf_refs_from_obj(obj, parent_cid, clean_step_idx, acc["wf_child_refs"])
     if step_type == "PLANNER_RESPONSE":
         acc["llm_calls"] += 1
         if str(obj.get("model") or "").strip():
@@ -287,38 +304,41 @@ def _resolve_agent_workspace(
     return root_ws or "workspace", _classify_workspace_kind(root_ws, root_ws=root_ws)
 
 
-def _derive_agent_status(*, acc: dict[str, Any], member_info: Optional[dict[str, Any]], subagent_state: str, has_active_children: bool = False) -> str:
-    if member_info:
-        if member_info.get("killed"):
-            return "error" if acc["error_count"] > 0 and acc["last_status"].upper() in ("ERROR", "FAILED") else "done"
-        wake, phase, desired = str(member_info.get("wake_mode") or "").lower(), str(member_info.get("phase") or "").upper(), str(member_info.get("desired_state") or "").upper()
-        if desired == "STOPPED" or phase in ("STOPPED", "DONE", "COMPLETED"):
-            return "done"
-        if wake == "working" or phase == "WORKING" or (phase == "RUNNING" and wake != "mentions"):
-            return "active"
-        if wake == "mentions" or phase == "WAITING":
-            return "waiting"
-    st_up = subagent_state.upper()
-    if any(tok in st_up for tok in ("ERROR", "FAIL")) or acc["last_status"].upper() in ("ERROR", "INVALID", "FAILED"):
-        return "error"
-    if any(tok in st_up for tok in ("COMPLETE", "DONE", "KILL", "STOP")):
-        return "done"
-    if "ALIVE" in st_up or "RUN" in st_up or has_active_children:
-        return "active"
-    dt = _parse_iso_ts(acc["last_ts"])
-    if dt is not None and (datetime.now(timezone.utc) - dt).total_seconds() <= 300:
-        return "active"
-    return "waiting" if acc["llm_calls"] > 0 else "done"
+def _derive_agent_status(
+    *,
+    acc: dict[str, Any],
+    member_info: Optional[dict[str, Any]],
+    subagent_state: str,
+    has_active_children: bool = False,
+    is_coordinator: bool = False,
+    all_workers_done: bool = False,
+    is_archived: bool = False,
+) -> str:
+    status, _ = derive_agent_status(
+        acc=acc,
+        member_info=member_info,
+        subagent_state=subagent_state,
+        has_active_children=has_active_children,
+        is_coordinator=is_coordinator,
+        all_workers_done=all_workers_done,
+        is_archived=is_archived,
+    )
+    return status
 
 
 def _build_agent_entry(
     *, agent_id: str, cid: str, role: str, type_name: str, status: str,
     acc: dict[str, Any], model_hint: str, workspace: str, workspace_kind: str, task_title: str,
+    parent_id: Optional[str] = None, parent_name: Optional[str] = None, depth: int = 0,
+    source: str = "root", spawn_step: Optional[int] = None, clean_termination: bool = False,
+    children_count: int = 0,
 ) -> dict[str, Any]:
     in_t, cache_t, out_t = acc["input_tokens"], acc["cache_read_tokens"], acc["output_tokens"]
     prompt_t, t0, t1 = in_t + cache_t, _parse_iso_ts(acc["first_ts"]), _parse_iso_ts(acc["last_ts"])
     return {
         "id": agent_id, "conversation_id": cid, "role": role, "type_name": type_name, "status": status,
+        "parent_id": parent_id, "parent_name": parent_name, "depth": depth, "source": source,
+        "spawn_step": spawn_step, "clean_termination": clean_termination, "children_count": children_count,
         "model": acc["model"] or model_hint or "unknown", "workspace": workspace, "workspace_kind": workspace_kind,
         "task_title": task_title, "last_tool": acc["last_tool"], "context_tokens": acc["context_tokens"],
         "max_context_tokens": acc["max_context_tokens"], "useful_tokens": in_t + out_t, "cache_read_tokens": cache_t,
@@ -326,7 +346,7 @@ def _build_agent_entry(
         "cache_hit_pct": round((cache_t / prompt_t) * 100.0, 2) if prompt_t > 0 else 0.0,
         "llm_calls": acc["llm_calls"], "tool_calls": acc["tool_calls"],
         "duration_s": round(max(0.0, (t1 - t0).total_seconds()), 1) if t0 and t1 else 0.0,
-        "error_count": acc["error_count"], "last_ts": acc["last_ts"],
+        "error_count": acc["error_count"], "error_steps": acc["error_count"], "last_ts": acc["last_ts"],
     }
 
 
@@ -371,14 +391,14 @@ def _is_bridge_child_transcript(tpath: Path) -> bool:
     return is_bridge
 
 
-def _collect_wf_children_from_file(path: Path, parent_cid: str, *, is_msg_json: bool) -> frozenset[str]:
-    """Extract run_workflow child UUIDs from task-*.log or messages/*.json (no bytes_read)."""
+def _collect_wf_children_from_file(path: Path, parent_cid: str, *, is_msg_json: bool) -> dict[str, dict[str, Any]]:
+    """Extract run_workflow child refs from task-*.log or messages/*.json (no bytes_read)."""
     try:
         if path.is_symlink() or not path.is_file():
-            return frozenset()
+            return {}
         st = path.stat()
     except OSError:
-        return frozenset()
+        return {}
     key = str(path)
     cached = _WF_CHILD_CACHE.get(key)
     fp = (int(st.st_ino), int(st.st_size), int(st.st_mtime_ns))
@@ -387,14 +407,59 @@ def _collect_wf_children_from_file(path: Path, parent_cid: str, *, is_msg_json: 
     try:
         raw = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return frozenset()
-    if is_msg_json and "run_workflow" not in raw and "[agent:" not in raw:
-        found: frozenset[str] = frozenset()
-    else:
-        p_low = parent_cid.lower()
-        found = frozenset(m.strip() for m in _WF_AGENT_CID_RE.findall(raw) if m.strip() and m.strip().lower() != p_low)
+        return {}
+    found: dict[str, dict[str, Any]] = {}
+    if not (is_msg_json and "run_workflow" not in raw and "[agent:" not in raw):
+        for ref in parse_wf_agent_refs(raw, parent_cid=parent_cid):
+            found[ref["cid"]] = ref
     _cache_put(_WF_CHILD_CACHE, key, (*fp, found))
     return found
+
+
+def _collect_wf_children_from_transcript(path: Path, parent_cid: str) -> frozenset[str]:
+    """Incrementally extract `[agent:...]` child CIDs from transcript.jsonl without incrementing bytes_read."""
+    try:
+        if path.is_symlink() or not path.is_file():
+            return frozenset()
+        st = path.stat()
+    except OSError:
+        return frozenset()
+    key = f"tr::{path}"
+    cached = _WF_CHILD_CACHE.get(key)
+    fp = (int(st.st_ino), int(st.st_size), int(st.st_mtime_ns))
+    if cached and cached[:3] == fp:
+        return cached[3]
+    if cached and cached[0] == int(st.st_ino) and int(st.st_size) >= int(cached[4]):
+        offset, partial, found_set = int(cached[4]), bytes(cached[5]), set(cached[3])
+    else:
+        offset, partial, found_set = 0, b"", set()
+    try:
+        with path.open("rb") as fh:
+            if offset > 0:
+                fh.seek(offset)
+            chunk = fh.read()
+    except OSError:
+        return frozenset(found_set)
+    lines = (partial + chunk).splitlines(keepends=True)
+    new_partial = lines.pop() if lines and not lines[-1].endswith((b"\n", b"\r")) else b""
+    if b"[agent:" in (partial + chunk):
+        refs: dict[str, dict[str, Any]] = {}
+        for raw_line in lines:
+            if b"[agent:" not in raw_line:
+                continue
+            txt = raw_line.decode("utf-8", errors="replace").lstrip("\ufeff").strip()
+            if not txt:
+                continue
+            try:
+                obj = json.loads(txt)
+            except ValueError:
+                obj = None
+            if isinstance(obj, dict):
+                collect_wf_refs_from_obj(obj, parent_cid, None, refs)
+        found_set.update(refs.keys())
+    frozen = frozenset(found_set)
+    _cache_put(_WF_CHILD_CACHE, key, (*fp, frozen, offset + len(chunk), new_partial))
+    return frozen
 
 
 def _load_history_status_ro(metrics_home: Optional[Path]) -> dict[str, tuple[str, Optional[float]]]:
@@ -438,6 +503,43 @@ def _load_history_status_ro(metrics_home: Optional[Path]) -> dict[str, tuple[str
     return out
 
 
+def _is_candidate_archived(
+    rcid: str,
+    mtime_ns: int,
+    active_captures: dict[str, Any],
+    history_map: dict[str, tuple[str, Optional[float]]],
+) -> bool:
+    if rcid in active_captures:
+        return False
+    hist = history_map.get(rcid)
+    if hist is None or hist[0] != "archived":
+        return False
+    ended_ts = hist[1]
+    return True if ended_ts is None else ((mtime_ns / 1e9) <= (ended_ts + 60.0))
+
+
+def _read_first_transcript_ts(brain_root: Path, cid: str) -> str:
+    tpath = brain_root / cid / ".system_generated" / "logs" / "transcript.jsonl"
+    try:
+        if tpath.is_symlink() or not tpath.is_file():
+            return ""
+        with tpath.open("r", encoding="utf-8", errors="replace") as fh:
+            for raw_line in fh:
+                line = raw_line.lstrip("\ufeff").strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict):
+                        return str(obj.get("created_at") or "").strip()
+                except ValueError:
+                    pass
+                break
+    except OSError:
+        pass
+    return ""
+
+
 def _discover_brain_sessions(
     brain_root: Path,
     active_captures: dict[str, Any],
@@ -449,6 +551,8 @@ def _discover_brain_sessions(
     if not brain_root.is_dir():
         return []
     child_cids: set[str] = set()
+    strong_child_cids: set[str] = set()
+    edges: dict[str, set[str]] = {}
     candidates: list[dict[str, Any]] = []
     try:
         entries = list(brain_root.iterdir())
@@ -460,6 +564,7 @@ def _discover_brain_sessions(
         cid, sg = entry.name, entry / ".system_generated"
         if not sg.is_dir():
             continue
+        node_edges = edges.setdefault(cid, set())
         if (sg / "subagents").is_dir():
             for sf in (sg / "subagents").iterdir():
                 if sf.suffix == ".json" and not sf.is_symlink():
@@ -467,35 +572,66 @@ def _discover_brain_sessions(
                     scid = str((sdata or {}).get("conversationId") or sf.stem).strip() if isinstance(sdata, dict) else ""
                     if scid and scid != cid:
                         child_cids.add(scid)
+                        strong_child_cids.add(scid)
+                        node_edges.add(scid)
         members_file = sg / "swarm" / "members.json"
         if members_file.is_file():
             mdata = _read_json_cached(members_file)
             for m_info in (mdata.get("members") if isinstance(mdata, dict) and isinstance(mdata.get("members"), dict) else {}).values():
                 if isinstance(m_info, dict) and str(m_info.get("conversation_id") or "").strip() not in ("", cid):
-                    child_cids.add(str(m_info["conversation_id"]).strip())
+                    mcid = str(m_info["conversation_id"]).strip()
+                    child_cids.add(mcid)
+                    strong_child_cids.add(mcid)
+                    node_edges.add(mcid)
         if (sg / "tasks").is_dir():
             try:
                 for tf in (sg / "tasks").iterdir():
                     if tf.name.lower().startswith("task-") and tf.suffix.lower() == ".log" and not tf.is_symlink():
-                        child_cids.update(_collect_wf_children_from_file(tf, cid, is_msg_json=False))
+                        wf_ids = _collect_wf_children_from_file(tf, cid, is_msg_json=False).keys()
+                        child_cids.update(wf_ids)
+                        node_edges.update(wf_ids)
             except OSError:
                 pass
         if (sg / "messages").is_dir():
             try:
                 for mf in (sg / "messages").iterdir():
                     if mf.suffix.lower() == ".json" and mf.name.lower() != "read.json" and not mf.is_symlink():
-                        child_cids.update(_collect_wf_children_from_file(mf, cid, is_msg_json=True))
+                        wf_ids = _collect_wf_children_from_file(mf, cid, is_msg_json=True).keys()
+                        child_cids.update(wf_ids)
+                        node_edges.update(wf_ids)
             except OSError:
                 pass
         tpath = sg / "logs" / "transcript.jsonl"
         has_transcript = tpath.is_file() and not tpath.is_symlink()
+        if has_transcript:
+            tr_ids = _collect_wf_children_from_transcript(tpath, cid)
+            child_cids.update(tr_ids)
+            node_edges.update(tr_ids)
         if not has_transcript and cid not in active_captures:
             continue
         if has_transcript and _is_bridge_child_transcript(tpath):
             child_cids.add(cid)
+            strong_child_cids.add(cid)
             continue
         mtime_ns = max((p.stat().st_mtime_ns for p in (tpath, members_file, sg / "swarm" / "board.jsonl", entry) if p.exists()), default=0)
         candidates.append({"cid": cid, "dir": entry, "sg": sg, "mtime_ns": mtime_ns})
+
+    history_map = _load_history_status_ro(metrics_home)
+    q_cid = explicit_cid.strip().lower()
+    if q_cid:
+        match = next((r for r in candidates if r["cid"].lower() == q_cid), None) or next(
+            (r for r in sorted(candidates, key=lambda c: (-int(c["mtime_ns"]), c["cid"])) if r["cid"].lower().startswith(q_cid)),
+            None,
+        )
+        if match is None:
+            return []
+        match["archived"] = _is_candidate_archived(match["cid"], int(match["mtime_ns"]), active_captures, history_map)
+        return [match]
+
+    if any(c in edges for cs in edges.values() for c in cs):
+        child_cids -= find_cycle_root_overrides(
+            edges, strong_child_cids, lambda c: _read_first_transcript_ts(brain_root, c)
+        )
 
     roots = [
         it for it in candidates
@@ -505,39 +641,20 @@ def _discover_brain_sessions(
         )
     ]
     roots.sort(key=lambda r: (-int(r["mtime_ns"]), r["cid"]))
-
-    history_map = _load_history_status_ro(metrics_home)
     now_s = datetime.now(timezone.utc).timestamp()
-    q_cid = explicit_cid.strip().lower()
-    has_priority = False
-    for r in roots:
-        rcid = r["cid"]
-        in_cap = rcid in active_captures
-        hist = history_map.get(rcid)
-        is_archived = False
-        if hist is not None and not in_cap and hist[0] == "archived":
-            ended_ts = hist[1]
-            is_archived = True if ended_ts is None else ((r["mtime_ns"] / 1e9) <= (ended_ts + 60.0))
-        is_stale = (r["mtime_ns"] <= 0) or ((now_s - (r["mtime_ns"] / 1e9)) > LIVE_RECENT_WINDOW_S)
-        is_explicit = bool(q_cid and (rcid.lower() == q_cid or rcid.lower().startswith(q_cid)))
-        r["archived"] = is_archived
-        r["_priority"] = not is_archived and not is_stale
-        r["_keep"] = r["_priority"] or in_cap or is_explicit
-        has_priority = has_priority or r["_priority"]
 
-    if has_priority:
-        filtered = [r for r in roots if r["_keep"]]
-    else:
-        filtered = list(roots[:MAX_FALLBACK_ROOTS])
-        seen = {r["cid"] for r in filtered}
-        for r in roots[MAX_FALLBACK_ROOTS:]:
-            if r["cid"] not in seen and (r["cid"] in active_captures or (q_cid and (r["cid"].lower() == q_cid or r["cid"].lower().startswith(q_cid)))):
-                filtered.append(r)
-                seen.add(r["cid"])
-    for r in filtered:
-        r.pop("_priority", None)
-        r.pop("_keep", None)
-    return filtered[:MAX_ROOT_SESSIONS]
+    for r in roots:
+        r["archived"] = _is_candidate_archived(r["cid"], int(r["mtime_ns"]), active_captures, history_map)
+
+    captured_roots = [r for r in roots if not r["archived"] and r["cid"] in active_captures]
+    if captured_roots:
+        return [captured_roots[0]]
+
+    fresh_roots = [
+        r for r in roots
+        if not r["archived"] and r["mtime_ns"] > 0 and (now_s - (r["mtime_ns"] / 1e9)) <= LIVE_RECENT_WINDOW_S
+    ]
+    return [fresh_roots[0]] if fresh_roots else []
 
 
 def get_live_session_state(
@@ -562,20 +679,21 @@ def get_live_session_state(
     session_meta = meta_raw.get("sessions") if isinstance(meta_raw, dict) and isinstance(meta_raw.get("sessions"), dict) else {}
     q_cid = session_id.strip().lower()
     roots = _discover_brain_sessions(b_dir, active_captures, session_meta, metrics_home=m_home, explicit_cid=q_cid)
-    selected = (next((r for r in roots if r["cid"].lower() == q_cid), None) or next((r for r in roots if r["cid"].lower().startswith(q_cid)), None) or roots[0]) if (roots and q_cid) else (roots[0] if roots else None)
+    selected = roots[0] if roots else None
     wf_state = get_workflow_state(ws=ws, gravity_home=gravity_home, workflow_home=workflow_home, registry_path=registry_path)
     wf_slim = {k: wf_state.get(k) for k in ("available", "stage", "progress", "mode", "level", "preset_profile", "suggested_profile", "guard_status", "nodes", "selected_workspace")}
-    sig_parts: list[Any] = [str(b_dir), q_cid, bool(include_events), stat_token(cap_path), stat_token(meta_path), stat_token(m_home / "data" / "history.jsonl"), wf_state.get("signature", ""), [(r["cid"], r["mtime_ns"], bool(r.get("archived"))) for r in roots[:10]]]
-    subagent_files, task_logs = [], []
+    sig_parts: list[Any] = [str(b_dir), q_cid, bool(include_events), stat_token(cap_path), stat_token(meta_path), stat_token(m_home / "data" / "history.jsonl"), wf_state.get("signature", ""), [(r["cid"], r["mtime_ns"], bool(r.get("archived"))) for r in roots]]
+    root_task_logs_count = 0
     if selected is not None:
-        sg = selected["sg"]
-        subagent_files = sorted((p for p in (sg / "subagents").iterdir() if p.suffix == ".json" and not p.is_symlink()), key=lambda p: p.name) if (sg / "subagents").is_dir() else []
-        task_logs = sorted((p for p in (sg / "tasks").iterdir() if p.name.startswith("task-") and p.suffix == ".log" and not p.is_symlink()), key=lambda p: p.name) if (sg / "tasks").is_dir() else []
-        sig_parts.extend([selected["cid"], stat_token(sg / "logs" / "transcript.jsonl"), stat_token(sg / "swarm" / "members.json"), stat_token(sg / "swarm" / "plan.json"), stat_token(sg / "swarm" / "board.jsonl"), stat_token(sg / "swarm" / "board.json"), [(p.name, stat_token(p)) for p in subagent_files], [(p.name, stat_token(p)) for p in task_logs]])
-        for sf in subagent_files:
-            sdata = _read_json_cached(sf)
-            scid = str((sdata or {}).get("conversationId") or sf.stem).strip() if isinstance(sdata, dict) else sf.stem
-            sig_parts.append((scid, stat_token(b_dir / scid / ".system_generated" / "logs" / "transcript.jsonl")))
+        desc_tokens, root_task_logs_count = collect_descendant_sig_tokens(
+            b_dir,
+            selected["cid"],
+            read_json_fn=_read_json_cached,
+            collect_wf_file_fn=lambda p, pcid, is_msg: _collect_wf_children_from_file(p, pcid, is_msg_json=is_msg),
+            collect_transcript_wf_fn=_collect_wf_children_from_transcript,
+            stat_token_fn=stat_token,
+        )
+        sig_parts.extend(desc_tokens)
 
     sig = short_digest(sig_parts)
     if since_signature and since_signature == sig:
@@ -596,53 +714,48 @@ def get_live_session_state(
     plan_tasks = plan_raw.get("tasks") if isinstance(plan_raw, dict) and isinstance(plan_raw.get("tasks"), dict) else {}
     goal_title = str((plan_raw.get("goal") or {}).get("title") or "").strip() if isinstance(plan_raw, dict) and isinstance(plan_raw.get("goal"), dict) else ""
 
-    subagents_by_cid = {
-        str(sd.get("conversationId") or sf.stem).strip(): sd
-        for sf in subagent_files for sd in [_read_json_cached(sf)]
-        if isinstance(sd, dict) and str(sd.get("conversationId") or sf.stem).strip()
-    }
-    root_aid = "coordinator" if "coordinator" in members_map else f"root-{sel_cid[:8]}"
-    root_acc = _read_jsonl_incremental(sg / "logs" / "transcript.jsonl", _TRANSCRIPT_CACHE, _new_transcript_acc, lambda a, o: _apply_transcript_obj(a, o, root_aid))
-    all_events: list[dict[str, Any]] = list(root_acc["recent_events"]) if include_events else []
-    seen_cids = {sel_cid}
-    child_entries: list[tuple[str, str, Optional[dict[str, Any]], Optional[dict[str, Any]]]] = []
-    for m_name, m_info in members_map.items():
-        mcid = str(m_info.get("conversation_id") or "").strip()
-        if mcid and mcid != sel_cid and m_name != "coordinator":
-            seen_cids.add(mcid)
-            child_entries.append((m_name, mcid, m_info, subagents_by_cid.get(mcid)))
-    for scid, sdata in subagents_by_cid.items():
-        if scid not in seen_cids:
-            seen_cids.add(scid)
-            child_entries.append((f"sub-{scid[:8]}", scid, None, sdata))
-
-    any_child_active, child_agents = False, []
-    for aid, c_cid, m_info, sdata in child_entries:
-        c_acc = _read_jsonl_incremental(b_dir / c_cid / ".system_generated" / "logs" / "transcript.jsonl", _TRANSCRIPT_CACHE, _new_transcript_acc, lambda a, o, _id=aid: _apply_transcript_obj(a, o, _id))
-        desc = (sdata or {}).get("subagentDescriptor") if isinstance((sdata or {}).get("subagentDescriptor"), dict) else {}
-        uris = [str(u) for u in (sdata or {}).get("workspaceUris", [])] if isinstance((sdata or {}).get("workspaceUris"), list) else []
-        ws_name, ws_kind = _resolve_agent_workspace(c_acc, uris=uris, meta_cwd=str((session_meta.get(c_cid) or {}).get("cwd") or ""), root_ws=root_ws, root_parent=root_parent)
-        c_status = _derive_agent_status(acc=c_acc, member_info=m_info, subagent_state=str((sdata or {}).get("state") or ""))
-        any_child_active = any_child_active or c_status == "active"
-        child_agents.append(_build_agent_entry(
-            agent_id=aid, cid=c_cid, role=str(desc.get("role") or (m_info or {}).get("role") or aid),
-            type_name=str(desc.get("typeName") or (m_info or {}).get("role") or "worker"), status=c_status, acc=c_acc,
-            model_hint=str((m_info or {}).get("applied_model") or (m_info or {}).get("model") or ""),
-            workspace=ws_name, workspace_kind=ws_kind, task_title=str(plan_tasks.get(aid) or ""),
-        ))
-        if include_events:
-            all_events.extend(c_acc["recent_events"])
-
     coord_member = members_map.get("coordinator")
-    r_ws, r_kind = _resolve_agent_workspace(root_acc, uris=[], meta_cwd=root_cwd, root_ws=root_ws, root_parent=root_parent)
-    root_agent = _build_agent_entry(
-        agent_id=root_aid, cid=sel_cid, role="Coordinator" if coord_member else "Session racine",
-        type_name="coordinator" if coord_member else "root",
-        status=_derive_agent_status(acc=root_acc, member_info=coord_member, subagent_state="", has_active_children=any_child_active),
-        acc=root_acc, model_hint=str((coord_member or {}).get("applied_model") or (coord_member or {}).get("model") or ""),
-        workspace=r_ws, workspace_kind=r_kind, task_title=goal_title or swarm_title,
+    root_aid = "coordinator" if coord_member is not None else f"root-{sel_cid[:8]}"
+    root_acc = _read_jsonl_incremental(
+        sg / "logs" / "transcript.jsonl",
+        _TRANSCRIPT_CACHE,
+        _new_transcript_acc,
+        lambda a, o: _apply_transcript_obj(a, o, root_aid, parent_cid=sel_cid),
     )
-    agents = [root_agent, *child_agents]
+    r_ws, r_kind = _resolve_agent_workspace(root_acc, uris=[], meta_cwd=root_cwd, root_ws=root_ws, root_parent=root_parent)
+
+    def _read_child_transcript(c_cid: str, c_aid: str) -> dict[str, Any]:
+        return _read_jsonl_incremental(
+            b_dir / c_cid / ".system_generated" / "logs" / "transcript.jsonl",
+            _TRANSCRIPT_CACHE,
+            _new_transcript_acc,
+            lambda a, o, _id=c_aid, _cid=c_cid: _apply_transcript_obj(a, o, _id, parent_cid=_cid),
+        )
+
+    agents, all_events = discover_live_tree(
+        b_dir,
+        sel_cid,
+        root_aid=root_aid,
+        root_role="Coordinator" if coord_member else "Session racine",
+        root_type="coordinator" if coord_member else "root",
+        root_acc=root_acc,
+        coord_member=coord_member,
+        root_model_hint=str((coord_member or {}).get("applied_model") or (coord_member or {}).get("model") or ""),
+        root_ws=r_ws,
+        root_ws_kind=r_kind,
+        root_task_title=goal_title or swarm_title,
+        root_parent=root_parent,
+        plan_tasks=plan_tasks,
+        session_meta=session_meta,
+        is_archived=bool(selected.get("archived")),
+        read_json_fn=_read_json_cached,
+        collect_wf_file_fn=lambda p, pcid, is_msg: _collect_wf_children_from_file(p, pcid, is_msg_json=is_msg),
+        read_transcript_fn=_read_child_transcript,
+        resolve_ws_fn=_resolve_agent_workspace,
+        build_entry_fn=_build_agent_entry,
+        include_events=include_events,
+    )
+    root_agent = agents[0]
     if include_events:
         all_events = sorted([*all_events, *_read_board_events(sg / "swarm" / "board.jsonl", sg / "swarm" / "board.json")], key=lambda ev: str(ev.get("ts") or ""), reverse=True)[:MAX_RECENT_EVENTS]
 
@@ -652,7 +765,7 @@ def get_live_session_state(
         "changed": True, "unchanged": False, "signature": sig, "available": True, "brain_dir": str(b_dir), "sessions": sessions_list,
         "selected_session": {"conversation_id": sel_cid, "label": str((sel_cap or {}).get("label") or swarm_title or goal_title or f"session-{sel_cid[:8]}"), "project": root_ws, "workspace_kind": r_kind, "captured": sel_cap is not None, "start_step": (sel_cap or {}).get("start_step"), "swarm_title": swarm_title, "goal_title": goal_title, "last_step_index": root_acc["last_step_index"], "last_ts": root_acc["last_ts"]},
         "agents": agents, "recent_events": all_events if include_events else [],
-        "summary": {"total_agents": len(agents), "active_agents": sc["active"], "waiting_agents": sc["waiting"], "done_agents": sc["done"], "error_agents": sc["error"], "useful_tokens": tot_in, "cache_read_tokens": tot_cache, "cache_hit_pct": round((tot_cache / (tot_in + tot_cache)) * 100.0, 2) if (tot_in + tot_cache) > 0 else 0.0, "max_context_tokens": max((a["max_context_tokens"] for a in agents), default=0), "context_tokens": root_agent["context_tokens"], "thinking_est_tokens": sum(a["thinking_est_tokens"] for a in agents), "llm_calls": sum(a["llm_calls"] for a in agents), "tool_calls": sum(a["tool_calls"] for a in agents), "error_count": sum(a["error_count"] for a in agents), "duration_s": max((a["duration_s"] for a in agents), default=0.0), "background_tasks": len(task_logs)},
+        "summary": {"total_agents": len(agents), "active_agents": sc["active"], "waiting_agents": sc["waiting"], "done_agents": sc["done"], "error_agents": sc["error"], "useful_tokens": tot_in, "cache_read_tokens": tot_cache, "cache_hit_pct": round((tot_cache / (tot_in + tot_cache)) * 100.0, 2) if (tot_in + tot_cache) > 0 else 0.0, "max_context_tokens": max((a["max_context_tokens"] for a in agents), default=0), "context_tokens": root_agent["context_tokens"], "thinking_est_tokens": sum(a["thinking_est_tokens"] for a in agents), "llm_calls": sum(a["llm_calls"] for a in agents), "tool_calls": sum(a["tool_calls"] for a in agents), "error_count": sum(a["error_count"] for a in agents), "duration_s": max((a["duration_s"] for a in agents), default=0.0), "background_tasks": root_task_logs_count},
         "workflow": wf_slim,
     }
     return enforce_payload_budget(payload, ("recent_events", "agents", "sessions"), max_bytes=MAX_PAYLOAD_BYTES)

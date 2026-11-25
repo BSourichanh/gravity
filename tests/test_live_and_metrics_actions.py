@@ -398,10 +398,19 @@ class TestLiveProvider(unittest.TestCase):
                 session_id=root_cid,
                 gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
             )
-            cids = {s["conversation_id"] for s in st["sessions"]}
-            self.assertEqual(cids, {root_cid, read_json_cid})
+            cids = [s["conversation_id"] for s in st["sessions"]]
+            self.assertEqual(cids, [root_cid])
+            agent_cids = {a["conversation_id"] for a in st["agents"]}
+            self.assertEqual(agent_cids, {root_cid, wf_task_cid, wf_msg_cid})
+            self.assertNotIn(read_json_cid, agent_cids)
             self.assertGreater(len(live_provider._BRIDGE_SNIFF_CACHE), 0)
             self.assertGreater(len(live_provider._WF_CHILD_CACHE), 0)
+
+            # Without explicit session_id: bridge, wf_task and wf_msg are excluded as roots, leaving read_json_cid (newest root)
+            st_auto = api.get_live_session_state(
+                gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
+            )
+            self.assertEqual([s["conversation_id"] for s in st_auto["sessions"]], [read_json_cid])
 
             # Appending to root transcript must only add extra_line bytes to bytes_read
             bytes_before = live_provider.get_live_cache_stats()["bytes_read"]
@@ -464,30 +473,255 @@ class TestLiveProvider(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            # When fresh_cid exists, archived & stale (uncaptured) are filtered out; active_capture is kept
+            # Without explicit session_id: selects only 1 root (non-archived active capture has priority)
             st1 = api.get_live_session_state(
                 gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
             )
-            self.assertEqual({s["conversation_id"] for s in st1["sessions"]}, {fresh_cid, cap_stale_cid})
+            self.assertEqual([s["conversation_id"] for s in st1["sessions"]], [cap_stale_cid])
             self.assertFalse(st1["sessions"][0]["archived"])
 
-            # Explicitly requesting archived session keeps it and marks archived=True
+            # Clear active_captures -> selects the single most recent non-archived fresh root
+            (m_home / "active_captures.json").write_text(json.dumps({"schema_version": 1, "captures": {}}), encoding="utf-8")
+            st_fresh = api.get_live_session_state(
+                gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
+            )
+            self.assertEqual([s["conversation_id"] for s in st_fresh["sessions"]], [fresh_cid])
+            self.assertFalse(st_fresh["sessions"][0]["archived"])
+
+            # Explicitly requesting archived session returns only that session and marks archived=True
             st_exp = api.get_live_session_state(
                 session_id=arch_cid, gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
             )
-            by_cid = {s["conversation_id"]: s for s in st_exp["sessions"]}
-            self.assertIn(arch_cid, by_cid)
-            self.assertTrue(by_cid[arch_cid]["archived"])
+            self.assertEqual([s["conversation_id"] for s in st_exp["sessions"]], [arch_cid])
+            self.assertTrue(st_exp["sessions"][0]["archived"])
 
-            # Make fresh_cid stale too -> fallback keeps up to 3 most recent roots (+ active_captures)
+            # Make fresh_cid stale too -> no current session available (no multi-session archived fallback)
             os.utime(brain / fresh_cid / ".system_generated" / "logs" / "transcript.jsonl", ns=(old_ns, old_ns))
             os.utime(brain / fresh_cid, ns=(old_ns, old_ns))
-            st_fb = api.get_live_session_state(
+            st_none = api.get_live_session_state(
                 gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
             )
-            self.assertGreaterEqual(len(st_fb["sessions"]), 3)
-            self.assertLessEqual(len(st_fb["sessions"]), 4)
-            self.assertTrue(any(s["archived"] for s in st_fb["sessions"]))
+            self.assertFalse(st_none["available"])
+            self.assertEqual(st_none["sessions"], [])
+
+    def test_subagent_alive_clean_termination_and_coordinator_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            brain = tmp_path / "brain"
+            g_home = tmp_path / "gravity"
+            m_home = g_home / "metrics"
+            wf_home = g_home / "workflow"
+            (m_home / "data").mkdir(parents=True)
+            wf_home.mkdir(parents=True)
+
+            root_cid = "aaaaaaaa-aaaa-1111-1111-111111111111"
+            sub_done_cid = "bbbbbbbb-bbbb-1111-1111-111111111111"
+            sub_run_cid = "cccccccc-cccc-1111-1111-111111111111"
+            w1_cid = "dddddddd-dddd-1111-1111-111111111111"
+
+            _write_jsonl(
+                brain / root_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [
+                    {"step_index": 0, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-25T10:00:00Z", "tool_calls": [{"name": "swarm_wait", "args": {}}]},
+                    {"step_index": 1, "type": "GENERIC", "status": "DONE", "created_at": "2026-11-25T10:00:01Z", "content": "Swarm wake"},
+                ],
+            )
+            _write_jsonl(
+                brain / sub_done_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [{"step_index": 0, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-25T10:00:02Z"}],
+            )
+            _write_jsonl(
+                brain / sub_run_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [{"step_index": 0, "type": "PLANNER_RESPONSE", "status": "RUNNING", "created_at": "2026-11-25T10:00:03Z"}],
+            )
+            _write_jsonl(
+                brain / w1_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [
+                    {"step_index": 0, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-25T10:00:04Z", "tool_calls": [{"name": "finish", "args": {}}]},
+                    {"step_index": 1, "type": "GENERIC", "status": "DONE", "created_at": "2026-11-25T10:00:05Z", "content": "done"},
+                ],
+            )
+
+            sg_root = brain / root_cid / ".system_generated"
+            (sg_root / "subagents").mkdir(parents=True)
+            (sg_root / "swarm").mkdir(parents=True)
+            (sg_root / "subagents" / f"{sub_done_cid}.json").write_text(
+                json.dumps({"conversationId": sub_done_cid, "state": "SUBAGENT_STATE_ALIVE", "subagentDescriptor": {"typeName": "explore", "role": "Done Subagent"}}),
+                encoding="utf-8",
+            )
+            (sg_root / "subagents" / f"{sub_run_cid}.json").write_text(
+                json.dumps({"conversationId": sub_run_cid, "state": "SUBAGENT_STATE_ALIVE", "subagentDescriptor": {"typeName": "builder", "role": "Running Subagent"}}),
+                encoding="utf-8",
+            )
+            (sg_root / "swarm" / "members.json").write_text(
+                json.dumps({
+                    "title": "Swarm",
+                    "members": {
+                        "coordinator": {"conversation_id": root_cid, "role": "coordinator", "phase": "RUNNING", "wake_mode": "mentions"},
+                        "w1": {"conversation_id": w1_cid, "role": "worker", "phase": "STOPPED", "desired_state": "STOPPED", "killed": True},
+                    },
+                }),
+                encoding="utf-8",
+            )
+
+            # While sub_run_cid is still RUNNING, coordinator has an active child -> waiting (not done)
+            st1 = api.get_live_session_state(
+                session_id=root_cid, gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
+            )
+            by_id1 = {a["id"]: a for a in st1["agents"]}
+            self.assertEqual(by_id1[f"sub-{sub_done_cid[:8]}"]["status"], "done")
+            self.assertTrue(by_id1[f"sub-{sub_done_cid[:8]}"]["clean_termination"])
+            self.assertEqual(by_id1[f"sub-{sub_run_cid[:8]}"]["status"], "active")
+            self.assertEqual(by_id1["w1"]["status"], "done")
+            self.assertEqual(by_id1["coordinator"]["status"], "waiting")
+
+            # Finish sub_run_cid cleanly (PLANNER_RESPONSE/DONE without tools) -> all children done -> coordinator becomes done
+            with (brain / sub_run_cid / ".system_generated" / "logs" / "transcript.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"step_index": 1, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-25T10:00:10Z"}) + "\n")
+            st2 = api.get_live_session_state(
+                session_id=root_cid, since_signature=st1["signature"], gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
+            )
+            self.assertTrue(st2["changed"])
+            by_id2 = {a["id"]: a for a in st2["agents"]}
+            self.assertEqual(by_id2[f"sub-{sub_run_cid[:8]}"]["status"], "done")
+            self.assertEqual(by_id2["coordinator"]["status"], "done")
+
+    def test_recursive_run_workflow_depth2_anti_cycle_and_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            brain = tmp_path / "brain"
+            g_home = tmp_path / "gravity"
+            m_home = g_home / "metrics"
+            wf_home = g_home / "workflow"
+            (m_home / "data").mkdir(parents=True)
+            wf_home.mkdir(parents=True)
+
+            root_cid = "10000000-1111-2222-3333-444444444444"
+            wf1_cid = "20000000-1111-2222-3333-444444444444"
+            wf2_cid = "30000000-1111-2222-3333-444444444444"
+
+            _write_jsonl(
+                brain / root_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [
+                    {
+                        "step_index": 3,
+                        "type": "GENERIC",
+                        "status": "DONE",
+                        "created_at": "2026-11-25T10:00:00Z",
+                        "content": f"[agent:builder] Builder W1: running ({wf1_cid})",
+                    }
+                ],
+            )
+            _write_jsonl(
+                brain / wf1_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [{"step_index": 0, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-25T10:00:05Z"}],
+            )
+            _write_jsonl(
+                brain / wf2_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [{"step_index": 0, "type": "PLANNER_RESPONSE", "status": "RUNNING", "created_at": "2026-11-25T10:00:08Z"}],
+            )
+            (brain / wf1_cid / ".system_generated" / "messages").mkdir(parents=True)
+            (brain / wf1_cid / ".system_generated" / "messages" / "m1.json").write_text(
+                json.dumps({"content": f"[agent:reviewer] Code Reviewer: running ({wf2_cid})"}),
+                encoding="utf-8",
+            )
+            # Cycle back to root_cid must be ignored cleanly
+            (brain / wf2_cid / ".system_generated" / "messages").mkdir(parents=True)
+            (brain / wf2_cid / ".system_generated" / "messages" / "loop.json").write_text(
+                json.dumps({"content": f"[agent:root] Loop ({root_cid})"}),
+                encoding="utf-8",
+            )
+
+            st1 = api.get_live_session_state(
+                gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
+            )
+            self.assertEqual([s["conversation_id"] for s in st1["sessions"]], [root_cid])
+            self.assertEqual(len(st1["agents"]), 3)
+            by_cid = {a["conversation_id"]: a for a in st1["agents"]}
+            self.assertEqual(by_cid[root_cid]["depth"], 0)
+            self.assertEqual(by_cid[root_cid]["source"], "root")
+            self.assertEqual(by_cid[root_cid]["children_count"], 1)
+            self.assertEqual(by_cid[wf1_cid]["depth"], 1)
+            self.assertEqual(by_cid[wf1_cid]["source"], "workflow")
+            self.assertEqual(by_cid[wf1_cid]["spawn_step"], 3)
+            self.assertEqual(by_cid[wf1_cid]["parent_id"], by_cid[root_cid]["id"])
+            self.assertEqual(by_cid[wf1_cid]["children_count"], 1)
+            self.assertEqual(by_cid[wf1_cid]["status"], "active")
+            self.assertEqual(by_cid[wf2_cid]["depth"], 2)
+            self.assertEqual(by_cid[wf2_cid]["parent_id"], by_cid[wf1_cid]["id"])
+            self.assertEqual(by_cid[wf2_cid]["parent_name"], "Builder W1")
+            self.assertEqual(by_cid[wf2_cid]["status"], "active")
+
+            # Updating depth-2 transcript must invalidate signature and update statuses without re-reading root
+            bytes_before = live_provider.get_live_cache_stats()["bytes_read"]
+            extra_wf2 = json.dumps({"step_index": 1, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-25T10:00:12Z"}) + "\n"
+            with (brain / wf2_cid / ".system_generated" / "logs" / "transcript.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(extra_wf2)
+            st2 = api.get_live_session_state(
+                since_signature=st1["signature"], gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
+            )
+            self.assertTrue(st2["changed"])
+            self.assertEqual(live_provider.get_live_cache_stats()["bytes_read"] - bytes_before, len(extra_wf2.encode("utf-8")))
+            by_cid2 = {a["conversation_id"]: a for a in st2["agents"]}
+            self.assertEqual(by_cid2[wf2_cid]["status"], "done")
+            self.assertEqual(by_cid2[wf1_cid]["status"], "done")
+
+            # Adding a new message file at depth-1 must also change signature
+            (brain / wf1_cid / ".system_generated" / "messages" / "m2.json").write_text(
+                json.dumps({"content": "update"}), encoding="utf-8"
+            )
+            st3 = api.get_live_session_state(
+                since_signature=st2["signature"], gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
+            )
+            self.assertTrue(st3["changed"])
+
+    def test_terminal_errors_shell_nonzero_and_showing_lines_exclusion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            brain = tmp_path / "brain"
+            g_home = tmp_path / "gravity"
+            m_home = g_home / "metrics"
+            wf_home = g_home / "workflow"
+            (m_home / "data").mkdir(parents=True)
+            wf_home.mkdir(parents=True)
+
+            root_cid = "40000000-1111-2222-3333-444444444444"
+            err_cid = "50000000-1111-2222-3333-444444444444"
+            ok_cid = "60000000-1111-2222-3333-444444444444"
+
+            _write_jsonl(
+                brain / root_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [{"step_index": 0, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-25T10:00:00Z"}],
+            )
+            _write_jsonl(
+                brain / err_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [{"step_index": 0, "type": "GENERIC", "status": "DONE", "created_at": "2026-11-25T10:00:01Z", "content": "Command exited with code 2\nCommand output:\nboom"}],
+            )
+            _write_jsonl(
+                brain / ok_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [
+                    {"step_index": 0, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-25T10:00:01Z", "tool_calls": [{"name": "finish", "args": {}}]},
+                    {"step_index": 1, "type": "GENERIC", "status": "DONE", "created_at": "2026-11-25T10:00:02Z", "content": "Showing lines 1-5 of 10\nCommand exited with code 2"},
+                ],
+            )
+            sg_root = brain / root_cid / ".system_generated"
+            (sg_root / "subagents").mkdir(parents=True)
+            (sg_root / "subagents" / f"{err_cid}.json").write_text(
+                json.dumps({"conversationId": err_cid, "state": "SUBAGENT_STATE_ALIVE"}), encoding="utf-8"
+            )
+            (sg_root / "subagents" / f"{ok_cid}.json").write_text(
+                json.dumps({"conversationId": ok_cid, "state": "SUBAGENT_STATE_ALIVE"}), encoding="utf-8"
+            )
+
+            st = api.get_live_session_state(
+                session_id=root_cid, gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
+            )
+            by_cid = {a["conversation_id"]: a for a in st["agents"]}
+            self.assertEqual(by_cid[err_cid]["status"], "error")
+            self.assertEqual(by_cid[err_cid]["error_steps"], 1)
+            self.assertFalse(by_cid[err_cid]["clean_termination"])
+            self.assertEqual(by_cid[ok_cid]["status"], "done")
+            self.assertTrue(by_cid[ok_cid]["clean_termination"])
 
 
 class TestMetricsActionsAndAudits(unittest.TestCase):
@@ -629,6 +863,162 @@ class TestMetricsActionsAndAudits(unittest.TestCase):
             )
             self.assertIn("Live:", summary)
             self.assertIn("tok. utiles", summary)
+
+    def test_get_session_detail_preserves_over_30_agents_under_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            g_home = tmp_path / "gravity-home"
+            m_home = g_home / "metrics"
+            (m_home / "data").mkdir(parents=True)
+            (m_home / "reports").mkdir(parents=True)
+
+            cid = "77777777-1111-2222-3333-444444444444"
+            slug = "heavy-session"
+            _write_jsonl(
+                m_home / "data" / "history.jsonl",
+                [{"conversation_id": cid, "label": "heavy-session", "detail_slug": slug, "project": "gravity"}],
+            )
+            heavy_agents = [
+                {
+                    "id": f"agent-{idx:03d}",
+                    "role": "builder",
+                    "by_model": {"gemini-4-hydrogen-high": {"calls": 3}},
+                    "tool_calls_total": 12,
+                    "step_latencies_ms": [float(i) for i in range(400)],
+                    "error_reasons": {"minor_warn": 1, "detail": "x" * 1500},
+                    "tool_calls_by_name": {f"tool_{j}": j for j in range(60)},
+                    "cost_usd_projection": {"2027": {"total": 0.123, "notes": "p" * 800}},
+                    "transcript_path": f"/brain/{cid}/agent-{idx}/transcript.jsonl",
+                }
+                for idx in range(85)
+            ]
+            report_payload = {"conversation_id": cid, "agents": heavy_agents}
+            self.assertGreater(len(json.dumps(report_payload).encode("utf-8")), 450_000)
+            (m_home / "reports" / f"{slug}.json").write_text(json.dumps(report_payload), encoding="utf-8")
+
+            det = api.get_session_detail(slug, gravity_home=g_home, metrics_home=m_home)
+            self.assertTrue(det["found"])
+            agents_out = det["detail"]["agents"]
+            self.assertEqual(len(agents_out), 85)
+            self.assertLess(len(json.dumps(det, ensure_ascii=False).encode("utf-8")), 450_000)
+            self.assertNotIn("step_latencies_ms", agents_out[0])
+            self.assertEqual(agents_out[0]["tool_calls_total"], 12)
+            self.assertIn("by_model", agents_out[0])
+
+    def test_workflow_transcript_ignores_tool_outputs_and_non_system_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            g_home = tmp_path / "gravity-home"
+            m_home = g_home / "metrics"
+            wf_home = g_home / "workflow"
+            brain = tmp_path / "brain"
+            (m_home / "data").mkdir(parents=True)
+            wf_home.mkdir(parents=True)
+
+            root_cid = "aaaaaaaa-1111-2222-3333-444444444444"
+            fake_read_cid = "bbbbbbbb-1111-2222-3333-444444444444"
+            fake_cmd_cid = "cccccccc-1111-2222-3333-444444444444"
+            fake_planner_cid = "dddddddd-1111-2222-3333-444444444444"
+            fake_user_cid = "eeeeeeee-1111-2222-3333-444444444444"
+            real_generic_cid = "f1111111-1111-2222-3333-444444444444"
+            real_sys_cid = "f2222222-1111-2222-3333-444444444444"
+
+            _write_jsonl(
+                brain / root_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [
+                    {
+                        "step_index": 0,
+                        "type": "USER_INPUT",
+                        "status": "DONE",
+                        "created_at": "2026-11-25T10:00:00Z",
+                        "content": f"- [agent:builder] User paste: done ({fake_user_cid})",
+                    },
+                    {
+                        "step_index": 1,
+                        "type": "PLANNER_RESPONSE",
+                        "status": "DONE",
+                        "created_at": "2026-11-25T10:00:01Z",
+                        "thinking": f"- [agent:reviewer] Thought: done ({fake_planner_cid})",
+                    },
+                    {
+                        "step_index": 2,
+                        "type": "GENERIC",
+                        "status": "DONE",
+                        "created_at": "2026-11-25T10:00:02Z",
+                        "content": (
+                            "Created At: 2026-11-25T10:00:02Z\n"
+                            "Showing lines 1-3 of 3\n"
+                            f"1: - [agent:builder] Read file leak: done ({fake_read_cid})"
+                        ),
+                    },
+                    {
+                        "step_index": 3,
+                        "type": "GENERIC",
+                        "status": "DONE",
+                        "created_at": "2026-11-25T10:00:03Z",
+                        "content": (
+                            "Created At: 2026-11-25T10:00:03Z\n"
+                            "Command exited with code 0.\n\n"
+                            "Command output:\n"
+                            f"- [agent:reviewer] Shell grep leak: error ({fake_cmd_cid})"
+                        ),
+                    },
+                    {
+                        "step_index": 4,
+                        "type": "GENERIC",
+                        "status": "DONE",
+                        "created_at": "2026-11-25T10:00:04Z",
+                        "content": (
+                            "Created At: 2026-11-25T10:00:04Z\n"
+                            f"Task: {root_cid}/task-4\n"
+                            "Logs:\n"
+                            f"- [agent:builder] Real Generic WF: done ({real_generic_cid})\n"
+                            "Output:\nok"
+                        ),
+                    },
+                    {
+                        "step_index": 5,
+                        "type": "SYSTEM_MESSAGE",
+                        "status": "DONE",
+                        "created_at": "2026-11-25T10:00:05Z",
+                        "content": (
+                            "<SYSTEM_MESSAGE>\n"
+                            f"Task id {root_cid}/task-5 finished.\n"
+                            f"- [agent:reviewer] Real System WF: done ({real_sys_cid})\n"
+                            "</SYSTEM_MESSAGE>"
+                        ),
+                    },
+                    {
+                        "step_index": 6,
+                        "type": "PLANNER_RESPONSE",
+                        "status": "DONE",
+                        "created_at": "2026-11-25T10:00:06Z",
+                    },
+                ],
+            )
+            # Corrupt non-dict subagents/*.json must be ignored identically across discovery & tree signature
+            (brain / root_cid / ".system_generated" / "subagents").mkdir(parents=True)
+            (brain / root_cid / ".system_generated" / "subagents" / f"{fake_read_cid}.json").write_text(
+                "[]", encoding="utf-8"
+            )
+            for child_cid in (fake_read_cid, fake_cmd_cid, fake_planner_cid, fake_user_cid, real_generic_cid, real_sys_cid):
+                _write_jsonl(
+                    brain / child_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                    [{"step_index": 0, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-25T10:00:06Z"}],
+                )
+
+            st = api.get_live_session_state(
+                session_id=root_cid,
+                gravity_home=g_home,
+                brain_dir=brain,
+                metrics_home=m_home,
+                workflow_home=wf_home,
+            )
+            cids = {a["conversation_id"] for a in st["agents"]}
+            self.assertEqual(cids, {root_cid, real_generic_cid, real_sys_cid})
+            self.assertEqual(st["summary"]["total_agents"], 3)
+            self.assertEqual(st["summary"]["done_agents"], 3)
+            self.assertEqual(st["summary"]["error_agents"], 0)
 
 
 if __name__ == "__main__":
