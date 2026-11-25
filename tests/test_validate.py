@@ -28,6 +28,8 @@ class TestValidate(unittest.TestCase):
     def test_repo_plugin_passes_strict(self) -> None:
         self.assertEqual(len(plugin_validator.EXPECTED_MCP_TOOLS), 10)
         self.assertNotIn("gravity_get_bridge_state", plugin_validator.EXPECTED_MCP_TOOLS)
+        rules_bytes = (PLUGIN_ROOT / "rules" / "AGENTS.md").read_bytes()
+        self.assertLessEqual(len(rules_bytes), plugin_validator.RULES_EDITORIAL_TARGET_BYTES)
         rc = plugin_validator.main(["--plugin-root", str(PLUGIN_ROOT), "--strict"])
         self.assertEqual(rc, 0)
 
@@ -128,7 +130,7 @@ class TestValidate(unittest.TestCase):
             skill_path = copy_dir / "skills" / "gravity" / "SKILL.md"
             base = (
                 "---\nname: gravity\ndescription: \"Skill test\"\n---\n"
-                "init status modules doctor dashboard help\n"
+                "init status modules doctor dashboard update help\n"
             )
 
             skill_path.write_bytes((base + ("x" * 6000) + "\n").encode("utf-8"))
@@ -147,9 +149,10 @@ class TestValidate(unittest.TestCase):
                 "---\nname: gravity\ndescription: \"Skill test\"\n---\ninit status modules doctor dashboard\n",
                 encoding="utf-8",
             )
-            report_no_help = self._validate_copy(copy_dir)
-            self.assertFalse(report_no_help.ok(strict=True))
-            self.assertTrue(any("help" in err for err in report_no_help.errors))
+            report_missing = self._validate_copy(copy_dir)
+            self.assertFalse(report_missing.ok(strict=True))
+            self.assertTrue(any("update" in err for err in report_missing.errors))
+            self.assertTrue(any("help" in err for err in report_missing.errors))
 
     def test_repo_root_agents_md_budget_and_encoding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

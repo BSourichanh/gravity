@@ -421,7 +421,7 @@ def _validate_skills(root: Path, report: Report) -> None:
             f"skills/gravity/SKILL.md : 'description' manquante, vide ou > 160 caractères ({desc_len})."
         )
 
-    for subcmd in ("init", "status", "modules", "doctor", "dashboard", "help"):
+    for subcmd in ("init", "status", "modules", "doctor", "dashboard", "update", "help"):
         if subcmd not in txt:
             report.error(f"skills/gravity/SKILL.md : sous-commande '/gravity {subcmd}' non documentée.")
 

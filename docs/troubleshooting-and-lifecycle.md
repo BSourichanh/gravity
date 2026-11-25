@@ -4,19 +4,37 @@ Ce guide couvre la mise à jour, la migration des anciens dossiers, la résoluti
 
 ---
 
-## 1. Mises à jour hors-ligne (`ecosystem_install.py --update`)
+## 1. Mises à jour (`/gravity update`, `sources.json` & `ecosystem_install.py --pull`)
 
-L'orchestrateur met à jour les plugins dans l'ordre topologique (`gravity` → `gravity-workflow` → `gravity-metrics` → `gravity-architect`) en propageant `--force` et en rafraîchissant `core/modules.json` :
+### Via `/gravity update` (`init_env.py --update` / `--check-updates`)
+`/gravity update` lit la provenance des dépôts dans `$GRAVITY_HOME/core/sources.json` (rempli automatiquement par `install.py` en portée globale ou via `--link <chemin>` / `--repos-root <dossier>`), inspecte chaque dépôt en lecture seule puis exécute un `git pull --ff-only` *fail-isolated* avant de réinstaller les modules modifiés (compagnons d'abord, `gravity` en dernier) et de rafraîchir `core/modules.json` :
 
 ```powershell
-# Windows PowerShell : simuler puis mettre à jour la suite (ou un sous-ensemble)
+# Contrôle lecture seule des mises à jour ou dérives locales
+python plugin/scripts/init_env.py --check-updates
+
+# Lier un dossier parent de clones puis simuler / appliquer la mise à jour
+python plugin/scripts/init_env.py --update --repos-root .. --dry-run
+python plugin/scripts/init_env.py --update --modules gravity,gravity-metrics --force
+python plugin/scripts/init_env.py --update --offline --link ../gravity
+```
+
+- **Isolation des échecs Git :** les dépôts `dirty`, `detached`, `no_upstream`, `diverged` ou `unlinked` sont ignorés avec avertissement sans bloquer les autres modules.
+- **Serveur MCP :** si `gravity` (`core`) est mis à jour, redémarrez le serveur MCP `gravity_dashboard` (ou Antigravity) pour recharger les modules Python en mémoire.
+
+### Via l'orchestrateur local (`ecosystem_install.py --update [--pull]`)
+L'orchestrateur met à jour les plugins dans l'ordre topologique (`gravity` → `gravity-workflow` → `gravity-metrics` → `gravity-architect`) en propageant `--force` et en rafraîchissant `core/modules.json`. Ajoutez `--pull` (opt-in, refusé avec `--check` ou `--uninstall`) pour exécuter `git fetch` + `git pull --ff-only` *fail-isolated* avant réinstallation :
+
+```powershell
+# Windows PowerShell : simuler puis mettre à jour la suite (avec ou sans --pull)
 python scripts/ecosystem_install.py --update --tier 3 --dry-run
+python scripts/ecosystem_install.py --update --pull --strict
 python scripts/ecosystem_install.py --update --modules gravity,gravity-metrics --strict
 ```
 
 ```bash
 # POSIX bash
-python3 scripts/ecosystem_install.py --update --tier 3 --strict
+python3 scripts/ecosystem_install.py --update --pull --tier 3 --strict
 ```
 
 > Les données centralisées sous `$GRAVITY_HOME` (`~/.gemini/gravity/`) sont toujours préservées lors des mises à jour.

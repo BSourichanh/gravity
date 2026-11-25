@@ -16,6 +16,7 @@ Référence rapide orientée **intention utilisateur**, combinaisons efficaces e
 | Exporter la liste JSON des contrats | `/gravity modules` | Liste complète des champs `module.json` découverts (`--status --json`) |
 | Auditer la santé et préparer une migration | `/gravity doctor` | Vérifie les contrats v1 et la santé RO (`--check`) ; `--migration-plan` génère un plan manuel en 4 étapes |
 | Ouvrir l'interface unifiée | `/gravity dashboard` | Ouvre la MCP App `open_gravity_dashboard` (`0` token interactif) ; CLI `--dashboard` audite la config |
+| Vérifier ou mettre à jour les modules | `/gravity update` | Inspecte (`--check-updates`, RO) ou tire via `git pull --ff-only` les dépôts liés dans `core/sources.json` (`--update [--force] [--modules <ids>] [--link <path>] [--repos-root <dir>] [--offline] [--dry-run]`) et réinstalle |
 | Obtenir le guide complet | `/gravity help` | Lecture seule (`init_env.py --guide`, sans troncature) : boucle 3 temps, commandes des modules et liens `docs/` |
 | Sauvegarder `$GRAVITY_HOME` (ZIP) | `/gravity export` | Exporte l'état portable (`metrics/`, `workflow/*/profile.json`, `ateliers.json`, `--include-atelier`) vers `--out` ou Drive local `sync.json` (`--set-drive-dir`, détection locale `gdrive`) |
 | Restaurer un bundle vérifié | `/gravity import` | Vérifie SHA-256/intégrité et remappe les chemins vers `$GRAVITY_HOME` (`init_env.py --import <zip> [--dry-run]`) |
@@ -51,6 +52,7 @@ Référence rapide orientée **intention utilisateur**, combinaisons efficaces e
 | Exécuter des vagues multi-dépôts isolées | `run_workflow` (`wave_runner.py`) | Crée des `git worktree` détachés sous `$GRAVITY_HOME/workflow/worktrees/`, saute `Planner` sur `plan_file`, applique les watchdogs (`900s`/`360s`) et applique sur `dev` si `PASS` |
 | Coordonner un chantier couplé en temps réel | `/swarm` *(natif Antigravity)* | Orchestration native entre agents sur tableau partagé sans sidecar externe |
 | Valider les `4` dépôts en parallèle | `python scripts/audit_ecosystem.py --verify-parallel --strict` | Exécute `validate.py --strict`, `agy plugin validate --strict` et `unittest` (`max_workers=4`, fail-closed) |
+| Tirer et réinstaller les `4` dépôts locaux | `python scripts/ecosystem_install.py --update --pull --strict` | Exécute `git fetch` + `git pull --ff-only` *fail-isolated* avant réinstallation topologique (refusé avec `--check` / `--uninstall`) |
 | Initialiser ou étendre un atelier Hot/Cold | `/gravity-architect init` · `add <chemin...>` | Découverte `--discover --json` puis suivi multi-dépôts lecture seule dans `projects.json` |
 | Synchroniser et résumer l'atelier | `/gravity-architect [sync\|status]` | Micro-delta `sync_tracking.py --print-delta` ou lecture directe de `delta.md` |
 | Produire specs, tasks, archives, audits | `/gravity-architect spec\|task\|archive\|audit` | Crée `specs/`, `tasks/`, archive les livrés ou audite `audits/code/` |
