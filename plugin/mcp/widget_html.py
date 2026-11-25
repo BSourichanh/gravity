@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from mcp.ui import APP_JS, VIEWS_JS, WIDGET_CSS
+from mcp.ui.charts_js import CHARTS_JS
+from mcp.ui.live_views_js import LIVE_VIEWS_JS
 
 
 def render_dashboard_html() -> str:
@@ -12,6 +14,8 @@ def render_dashboard_html() -> str:
             "(function () {",
             '  "use strict";',
             VIEWS_JS.strip(),
+            CHARTS_JS.strip(),
+            LIVE_VIEWS_JS.strip(),
             APP_JS.strip(),
             "})();",
         ]

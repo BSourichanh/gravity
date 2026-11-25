@@ -5,6 +5,13 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Added
+- **Design system adaptatif & Cockpit `En direct` (Vague 3 — `plugin/mcp/ui/styles.py`, `plugin/mcp/ui/charts_js.py`, `plugin/mcp/ui/live_views_js.py`, `plugin/mcp/widget_html.py`, `tests/test_ui_live_and_charts.py`) :**
+  - Extension de `WIDGET_CSS` (`styles.py`) : thème adaptatif dark/light `--color-*`, responsive `@container` (`aux_pane` 1 colonne sans débordement horizontal vs `global` 2 colonnes Maître/Détail), cartes agents, jauges contexte (`>128k` alerte, `>200k` critique), badges `Atelier` / `Code`, panneaux dépliables et confirmations inline.
+  - Création de `charts_js.py` (`CHARTS_JS`) : formatters français (`fmtTokens`, `fmtDuration`, `fmtPct`, `fmtLatency`, `fmtRelativeTime`) et composants DOM/SVG purs (`renderContextGauge`, `renderStackedBars`, `renderWorkspaceBreakdown`, `renderMetricKpiCard`, `renderSparkline`, `renderInlineConfirm`).
+  - Création de `live_views_js.py` (`LIVE_VIEWS_JS`) : `renderLiveView` complet (sélecteur session, Pause/Reprendre + fraîcheur, bandeau santé technique + bouton `Enregistrer`/`Mettre à jour`, progression workflow fusionnée, cartes agents groupées `Actifs` / `En attente` / `Terminés`, répartition `Atelier` vs `Code` et panneau dépliable `Activité récente` + `swarm/board.jsonl`).
+  - Injection de `CHARTS_JS` et `LIVE_VIEWS_JS` dans l'IIFE de `widget_html.py` sous budget HTML strict (`< 130 KiB`, zéro `innerHTML`/`http(s)://`/`window.confirm|alert|prompt`).
+
 ### Changed
 - **Serveur MCP unifié & validation 10 outils (Vague 2 — `plugin/mcp/tools_schema.py`, `plugin/mcp/server.py`, `plugin/dashboard/providers/__init__.py`, `plugin/scripts/validate.py`, `tests/test_mcp_server.py`) :**
   - Extraction des schémas JSON dans `plugin/mcp/tools_schema.py` (`build_tool_definitions()`, `< 800 L`) et maintien de `plugin/mcp/server.py` sous `800 L`.
