@@ -765,7 +765,7 @@ class TestArchitectProvider(unittest.TestCase):
         (root / "tracking" / "snapshots").mkdir(parents=True)
         (root / "tracking" / "projects").mkdir(parents=True)
         (root / "specs" / "archive").mkdir(parents=True)
-        (root / "handoffs" / "archive").mkdir(parents=True)
+        (root / "tasks" / "archive").mkdir(parents=True)
         (root / "audits" / "code").mkdir(parents=True)
         (root / "audits" / "agents").mkdir(parents=True)
 
@@ -802,11 +802,12 @@ class TestArchitectProvider(unittest.TestCase):
             encoding="utf-8",
         )
         (root / "specs" / "archive" / "2026-11-01-old.md").write_text("# Old Spec\n", encoding="utf-8")
-        (root / "handoffs" / "_TEMPLATE.md").write_text("# Template Handoff\n", encoding="utf-8")
-        (root / "handoffs" / "2026-11-23-lot2.md").write_text(
+        (root / "tasks" / "_TEMPLATE.md").write_text("# Template Task\n", encoding="utf-8")
+        (root / "tasks" / "2026-11-23-lot2.md").write_text(
             "# Lot 2\n\n- **Date / Statut :** `ready`\n- **Dépôt cible :** `gravity`\n",
             encoding="utf-8",
         )
+        (root / "tasks" / "archive" / "2026-11-01-old-task.md").write_text("# Old Task\n", encoding="utf-8")
         (root / "audits" / "code" / "README.md").write_text("# Index Audits Code\n", encoding="utf-8")
         (root / "audits" / "code" / "_TEMPLATE.md").write_text("# Template Audit\n", encoding="utf-8")
         (root / "audits" / "code" / "2026-11-23-audit-code-gravity.md").write_text(
@@ -860,7 +861,10 @@ class TestArchitectProvider(unittest.TestCase):
             self.assertEqual(len(via_registry["projects"]), 1)
             self.assertEqual([s["filename"] for s in via_registry["specs"]], ["2026-11-23-dashboard.md"])
             self.assertEqual(via_registry["archived_specs_count"], 1)
-            self.assertEqual([h["filename"] for h in via_registry["handoffs"]], ["2026-11-23-lot2.md"])
+            self.assertEqual([t["filename"] for t in via_registry["tasks"]], ["2026-11-23-lot2.md"])
+            self.assertEqual(via_registry["archived_tasks_count"], 1)
+            self.assertNotIn("handoffs", via_registry)
+            self.assertNotIn("archived_handoffs_count", via_registry)
             self.assertEqual(len(via_registry["audits"]), 1)
             self.assertEqual(via_registry["audits"][0]["verdict"], "PASS")
             self.assertEqual(via_registry["audits"][0]["verdict_tone"], "ok")
@@ -1087,6 +1091,50 @@ class TestArchitectProvider(unittest.TestCase):
             self.assertTrue(res_sym["available"])
             self.assertEqual(res_sym["discovery_source"], "ws_hint")
             self.assertTrue(any("symlink" in w.lower() for w in res_sym["warnings"]))
+
+    def test_architect_legacy_handoffs_ro_fallback_and_tasks_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            g_home = tmp_path / "gravity-home"
+            legacy_atelier = tmp_path / "legacy-atelier"
+            (legacy_atelier / "handoffs" / "archive").mkdir(parents=True)
+            (legacy_atelier / "ECOSYSTEM.md").write_text("# Legacy Atelier\n", encoding="utf-8")
+            (legacy_atelier / "projects.json").write_text(
+                json.dumps({"schema_version": 5, "workspace_name": "Legacy Atelier", "projects": []}),
+                encoding="utf-8",
+            )
+            (legacy_atelier / "handoffs" / "_TEMPLATE.md").write_text("# Template Handoff\n", encoding="utf-8")
+            legacy_file = legacy_atelier / "handoffs" / "2026-11-20-legacy.md"
+            legacy_file.write_text(
+                "# Legacy Handoff\n\n- **Date / Statut :** `ready`\n- **Dépôt cible :** `gravity`\n",
+                encoding="utf-8",
+            )
+            (legacy_atelier / "handoffs" / "archive" / "2026-11-01-old.md").write_text("# Old\n", encoding="utf-8")
+
+            legacy_state = api.get_architect_state(ws=str(legacy_atelier), gravity_home=g_home)
+            self.assertTrue(legacy_state["available"])
+            self.assertEqual(legacy_state["discovery_source"], "ws_hint")
+            self.assertEqual([t["filename"] for t in legacy_state["tasks"]], ["2026-11-20-legacy.md"])
+            self.assertEqual(legacy_state["archived_tasks_count"], 1)
+            self.assertNotIn("handoffs", legacy_state)
+            self.assertNotIn("archived_handoffs_count", legacy_state)
+            self.assertFalse((legacy_atelier / "tasks").exists())
+
+            # Creating tasks/ (even empty) disables legacy handoffs/ fallback
+            (legacy_atelier / "tasks").mkdir()
+            empty_tasks_state = api.get_architect_state(ws=str(legacy_atelier), gravity_home=g_home)
+            self.assertEqual(empty_tasks_state["tasks"], [])
+            self.assertEqual(empty_tasks_state["archived_tasks_count"], 0)
+            self.assertNotEqual(empty_tasks_state["signature"], legacy_state["signature"])
+
+            # Populating tasks/ shows tasks/ only and ignores handoffs/
+            (legacy_atelier / "tasks" / "2026-11-25-current.md").write_text(
+                "# Current Task\n\n- **Date / Statut :** `ready`\n- **Dépôt cible :** `gravity`\n",
+                encoding="utf-8",
+            )
+            current_state = api.get_architect_state(ws=str(legacy_atelier), gravity_home=g_home)
+            self.assertEqual([t["filename"] for t in current_state["tasks"]], ["2026-11-25-current.md"])
+            self.assertTrue(legacy_file.exists())
 
 
 class TestDashboardFacade(unittest.TestCase):

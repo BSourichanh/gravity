@@ -106,7 +106,7 @@ def build_initial_summary(
             parts.append(
                 f"Architect: {len(arch.get('projects') or [])} projet(s), "
                 f"{len(arch.get('specs') or [])} spec(s), "
-                f"{len(arch.get('handoffs') or [])} handoff(s), "
+                f"{len(arch.get('tasks') or [])} task(s), "
                 f"{len(arch.get('audits') or [])} audit(s) code"
             )
         else:

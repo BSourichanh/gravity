@@ -183,7 +183,7 @@ def _enforce_trajectory_budget(result: dict[str, Any], initial_view: str) -> dic
 
     arch = sc.get("architect")
     if isinstance(arch, dict):
-        for list_key in ("audits", "handoffs", "specs", "projects"):
+        for list_key in ("audits", "tasks", "specs", "projects"):
             items = arch.get(list_key)
             while _encoded_bytes(result) > MAX_TRAJECTORY_BYTES and isinstance(items, list) and items:
                 arch["truncated"] = True
@@ -325,7 +325,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "gravity_get_architect_state",
             "title": "État Gravity Architect (RO)",
-            "description": "Retourne ECOSYSTEM.md, delta.md, projets, specs, handoffs et audits/code/ en lecture seule.",
+            "description": "Retourne ECOSYSTEM.md, delta.md, projets, specs, tasks et audits/code/ en lecture seule.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -562,7 +562,7 @@ def _handle_get_architect_state(args: dict[str, Any], ctx: dict[str, Any]) -> di
     txt = (
         f"Architect: {len(data.get('projects') or [])} projet(s), "
         f"{len(data.get('specs') or [])} spec(s), "
-        f"{len(data.get('handoffs') or [])} handoff(s), "
+        f"{len(data.get('tasks') or [])} task(s), "
         f"{len(data.get('audits') or [])} audit(s) code."
         if data.get("available")
         else "Architect: atelier non détecté."

@@ -682,7 +682,7 @@ VIEWS_JS = r"""
     const rows = [
       { label: "Projets", count: (arch.projects || []).length, color: "var(--g-c1)" },
       { label: "Specs actives", count: (arch.specs || []).length, color: "var(--g-c2)" },
-      { label: "Handoffs", count: (arch.handoffs || []).length, color: "var(--g-c4)" },
+      { label: "Tasks", count: (arch.tasks || []).length, color: "var(--g-c4)" },
       { label: "Audits Code", count: (arch.audits || []).length, color: "var(--g-c3)" }
     ];
     const maxV = Math.max.apply(null, rows.map((r) => r.count).concat([1]));
@@ -787,7 +787,7 @@ VIEWS_JS = r"""
     const delta = arch.delta || {};
     const projects = arch.projects || [];
     const specs = arch.specs || [];
-    const handoffs = arch.handoffs || [];
+    const tasks = arch.tasks || [];
     const audits = arch.audits || [];
     const allAlerts = (eco.alerts || []).concat(delta.hygiene_alerts || []);
 
@@ -809,9 +809,9 @@ VIEWS_JS = r"""
       fmtInt(arch.watches_count || 0) + " veille(s)"
     ));
     kpiGrid.appendChild(makeKpiCard(
-      "Specs & Handoffs",
-      fmtInt(specs.length) + " / " + fmtInt(handoffs.length),
-      fmtInt(arch.archived_specs_count || 0) + " + " + fmtInt(arch.archived_handoffs_count || 0) + " archivé(s)"
+      "Specs & Tasks",
+      fmtInt(specs.length) + " / " + fmtInt(tasks.length),
+      fmtInt(arch.archived_specs_count || 0) + " + " + fmtInt(arch.archived_tasks_count || 0) + " archivé(s)"
     ));
     kpiGrid.appendChild(makeKpiCard(
       "Audits Code",
@@ -839,7 +839,7 @@ VIEWS_JS = r"""
     const subTabs = el("div", "subtabs");
     [
       { id: "projects", label: "Projets (" + projects.length + ")" },
-      { id: "artifacts", label: "Specs & Handoffs (" + (specs.length + handoffs.length) + ")" },
+      { id: "artifacts", label: "Specs & Tasks (" + (specs.length + tasks.length) + ")" },
       { id: "audits", label: "Audits Code (" + audits.length + ")" }
     ].forEach((st) => {
       subTabs.appendChild(el("button", "btn" + (state.architectSub === st.id ? " active" : ""), st.label, {
@@ -851,10 +851,10 @@ VIEWS_JS = r"""
 
     if (state.architectSub === "artifacts") {
       const combined = specs.map((s) => Object.assign({ kind: "spec" }, s)).concat(
-        handoffs.map((h) => Object.assign({ kind: "handoff" }, h))
+        tasks.map((t) => Object.assign({ kind: "task" }, t))
       );
       if (!combined.length) {
-        subPanel.appendChild(el("div", "empty", "Aucune spécification ni handoff actif."));
+        subPanel.appendChild(el("div", "empty", "Aucune spécification ni task active."));
       } else {
         const wrap = el("div", "table-wrap");
         const tbl = el("table");

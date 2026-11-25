@@ -601,7 +601,7 @@ def get_architect_state(
     architect_home: Optional[Path] = None,
     architect_workspace: Optional[Path] = None,
 ) -> dict[str, Any]:
-    """Return read-only Gravity Architect atelier state, specs, handoffs, and `audits/code/`."""
+    """Return read-only Gravity Architect atelier state, specs, tasks, and `audits/code/`."""
     warnings: list[str] = []
     registry_ateliers, ateliers_reg_path = _discover_from_registry_ro(
         gravity_home=gravity_home,
@@ -665,9 +665,9 @@ def get_architect_state(
             "watches_count": 0,
             "projects": [],
             "specs": [],
-            "handoffs": [],
+            "tasks": [],
             "archived_specs_count": 0,
-            "archived_handoffs_count": 0,
+            "archived_tasks_count": 0,
             "audits": [],
             "index_audit": None,
             "index_audits": [],
@@ -675,7 +675,7 @@ def get_architect_state(
         }
         return enforce_payload_budget(
             blocked_payload,
-            ("audits", "handoffs", "specs", "projects", "ateliers"),
+            ("audits", "tasks", "specs", "projects", "ateliers"),
             max_bytes=MAX_PAYLOAD_BYTES,
         )
 
@@ -683,11 +683,17 @@ def get_architect_state(
     delta_path = atelier_root / "tracking" / "snapshots" / "delta.md"
     projects_path = atelier_root / "projects.json"
     specs_dir = atelier_root / "specs"
-    handoffs_dir = atelier_root / "handoffs"
+    tasks_dir = atelier_root / "tasks"
+    # Priority to tasks/; read-only fallback to legacy handoffs/ only when tasks/ is absent.
+    active_tasks_dir = (
+        atelier_root / "handoffs"
+        if not tasks_dir.exists() and not tasks_dir.is_symlink()
+        else tasks_dir
+    )
 
     audits, index_audit, index_audits, audit_sig_tokens = _scan_code_audits_ro(atelier_root)
     arch_specs_cnt, arch_specs_tokens = _count_archived_md_ro(specs_dir / "archive")
-    arch_handoffs_cnt, arch_handoffs_tokens = _count_archived_md_ro(handoffs_dir / "archive")
+    arch_tasks_cnt, arch_tasks_tokens = _count_archived_md_ro(active_tasks_dir / "archive")
 
     sig = short_digest(
         [
@@ -701,9 +707,9 @@ def get_architect_state(
             stat_token(delta_path),
             stat_token(projects_path),
             *_dir_md_tokens(specs_dir),
-            *_dir_md_tokens(handoffs_dir),
+            *_dir_md_tokens(active_tasks_dir),
             *arch_specs_tokens,
-            *arch_handoffs_tokens,
+            *arch_tasks_tokens,
             *audit_sig_tokens,
         ]
     )
@@ -716,7 +722,7 @@ def get_architect_state(
     ecosystem = _read_ecosystem_ro(eco_path, hot_budgets.get("ECOSYSTEM.md"))
     delta = _read_delta_ro(delta_path)
     specs = _scan_flat_artifacts_ro(specs_dir, atelier_root)
-    handoffs = _scan_flat_artifacts_ro(handoffs_dir, atelier_root)
+    tasks = _scan_flat_artifacts_ro(active_tasks_dir, atelier_root)
 
     available = bool(
         atelier_root.is_dir()
@@ -725,7 +731,7 @@ def get_architect_state(
             or proj_exists
             or delta["exists"]
             or specs
-            or handoffs
+            or tasks
             or audits
             or index_audit is not None
         )
@@ -756,9 +762,9 @@ def get_architect_state(
         "watches_count": watches_count,
         "projects": projects,
         "specs": specs,
-        "handoffs": handoffs,
+        "tasks": tasks,
         "archived_specs_count": arch_specs_cnt,
-        "archived_handoffs_count": arch_handoffs_cnt,
+        "archived_tasks_count": arch_tasks_cnt,
         "audits": audits,
         "index_audit": index_audit,
         "index_audits": index_audits,
@@ -766,6 +772,6 @@ def get_architect_state(
     }
     return enforce_payload_budget(
         payload,
-        ("audits", "handoffs", "specs", "projects", "ateliers"),
+        ("audits", "tasks", "specs", "projects", "ateliers"),
         max_bytes=MAX_PAYLOAD_BYTES,
     )

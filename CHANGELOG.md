@@ -5,6 +5,10 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Changed
+- **Dashboard Architect (`tasks/`) (`plugin/dashboard/providers/architect_provider.py`, `plugin/dashboard/api.py`, `plugin/mcp/server.py`, `plugin/mcp/ui/views_js.py`, `tests/test_dashboard_providers.py`) :**
+  - Bascule du fournisseur Architect, du serveur MCP (`gravity_get_architect_state`) et de la vue UI vers `tasks/` + `tasks/archive/` (`tasks`, `archived_tasks_count`) avec repli lecture seule legacy sur `handoffs/` et `handoffs/archive/` uniquement si `tasks/` est absent.
+
 ### Added
 - **Vérification parallèle multi-dépôts (`scripts/audit_ecosystem.py --verify-parallel`, W1) :**
   - Ajout de `verify_repo_checks()`, `verify_ecosystem_parallel()` (`ThreadPoolExecutor`, `max_workers=4`, fail-closed) et `format_verify_parallel_report()` dans `scripts/audit_ecosystem.py` pour exécuter en parallèle `plugin/scripts/validate.py --strict`, `agy plugin validate ./plugin --strict` et `unittest discover` sur les `4` dépôts actifs (`--json` et sortie console).
