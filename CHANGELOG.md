@@ -5,6 +5,13 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Fixed
+- **Hygiène des sessions `En direct`, worktrees `metrics_provider` & UI dossiers (`plugin/dashboard/providers/live_provider.py`, `plugin/dashboard/providers/metrics_provider.py`, `plugin/mcp/ui/charts_js.py`, `plugin/mcp/ui/metrics_views_js.py`, `plugin/mcp/ui/live_views_js.py`, `tests/`) :**
+  - Exclusion des conversations enfants `[GRAVITY-BRIDGE]` (cache `_BRIDGE_SNIFF_CACHE` `<= 20` lignes) et `run_workflow` (`_WF_CHILD_CACHE` sur `tasks/task-*.log` et `messages/*.json` hors `read.json`) dans `_discover_brain_sessions` sans altérer `_CACHE_STATS["bytes_read"]` (caches vidés dans `reset_live_cache()`).
+  - Filtrage par fraîcheur (`LIVE_RECENT_WINDOW_S = 6 * 3600` d'après `mtime_ns`) et croisement léger `history.jsonl` (`archived: bool` avec tolérance `+60s` et repli fail-safe jusqu'aux `3` racines récentes + `explicit_cid` / `active_captures`).
+  - Alignement de `metrics_provider._is_worktree_cwd` sur `/gravity-worktrees/`, `/.worktrees/`, `/worktrees/`, `/.gemini/antigravity/worktrees/` et `\worktrees\` (avec préservation des worktrees explicitement présents dans `active_captures`), et exposition de `source` sur `pending_sessions`.
+  - Clarification UI : affichage `%` + `sess.` dans `renderWorkspaceBreakdown`, badge de sessions uniques dans `Répartition par Dossier / Workspace` (`metrics_views_js.py`) et suffixe `[archivée]` dans le sélecteur `En direct` (`live_views_js.py`).
+
 ### Changed
 - **Refonte UI/UX `Métriques` & contrôleur unifié `app_js.py` (Vague 4 — `plugin/mcp/ui/metrics_views_js.py`, `plugin/mcp/ui/views_js.py`, `plugin/mcp/ui/app_js.py`, `plugin/mcp/widget_html.py`, `docs/`, `tests/`) :**
   - Création de `metrics_views_js.py` (`METRICS_VIEWS_JS`) : 3 sous-vues purement DOM sans `innerHTML` centrées sur le coût technique des agents : `Vue d'ensemble technique` (tokens utiles, cache %, contexte `>128k`/`>200k`, parallélisme, thinking/compactions/latence `p95`, gaspillages/erreurs, répartitions `Atelier` vs `Code`, par modèle et par rôle), `Sessions` (Maître/Détail fluide sans débordement horizontal, filtres `Enregistrées`/`À enregistrer`/`Ignorées`, tri technique, `Comparateur A/B`, fiche détail `Synthèse` [repère `$` secondaire discret uniquement] / `Agents & Outils` expansible / `Diagnostic`, actions 1 clic `gravity_metrics_action` dont `Mettre à jour (+N appels)`, édition inline et suppression confirmée en 2 clics sans `window.confirm`), et `Audits Agents` (lecture en ligne via `gravity_read_audit` + ouverture `.md`).

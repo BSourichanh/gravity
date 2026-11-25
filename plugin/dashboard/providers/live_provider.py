@@ -23,22 +23,27 @@ from dashboard.providers.workflow_provider import get_workflow_state
 
 MAX_ROOT_SESSIONS, MAX_AGENT_EVENTS, MAX_BOARD_EVENTS, MAX_RECENT_EVENTS = 25, 25, 30, 40
 MAX_PAYLOAD_BYTES, MAX_CACHE_ENTRIES = 450_000, 256
+LIVE_RECENT_WINDOW_S, MAX_FALLBACK_ROOTS = 6 * 3600, 3
 
 _WORKTREE_RE = re.compile(r"/(?:gravity-worktrees|\.gemini/antigravity/worktrees|\.worktrees)/([^/]+)(?:/|$)", re.IGNORECASE)
 _WORKTREE_SUFFIX_RE = re.compile(r"-w\d+$", re.IGNORECASE)
 _REPO_MARKER_RE = re.compile(r"/([^/]+)/(?:plugin|src|tests|specs|tasks|docs|scripts|config|audits|assets|README\.md|AGENTS\.md|CHANGELOG\.md)(?:/|$)")
 _CMD_CD_RE = re.compile(r"(?:^|[;&|]\s*)(?:cd|git\s+-C)\s+[\"']?([^\s\"';&|]+)", re.IGNORECASE)
 _UUID_LIKE_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F-]{12,}$|^[A-Za-z0-9._-]{4,80}$")
+_WF_AGENT_CID_RE = re.compile(r"\[agent:[^\]]+\][^\n]*?\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)")
 
 _TRANSCRIPT_CACHE: dict[str, dict[str, Any]] = {}
 _BOARD_CACHE: dict[str, dict[str, Any]] = {}
 _JSON_CACHE: dict[str, dict[str, Any]] = {}
+_BRIDGE_SNIFF_CACHE: dict[tuple[str, int], bool] = {}
+_WF_CHILD_CACHE: dict[str, tuple[int, int, int, frozenset[str]]] = {}
+_HISTORY_ARCHIVE_CACHE: dict[str, tuple[int, int, int, dict[str, tuple[str, Optional[float]]]]] = {}
 _CACHE_STATS: dict[str, int] = {"bytes_read": 0, "incremental_reads": 0, "full_reads": 0, "cache_hits": 0}
 
 
 def reset_live_cache() -> None:
     """Clear in-memory incremental caches and counters."""
-    for cache in (_TRANSCRIPT_CACHE, _BOARD_CACHE, _JSON_CACHE):
+    for cache in (_TRANSCRIPT_CACHE, _BOARD_CACHE, _JSON_CACHE, _BRIDGE_SNIFF_CACHE, _WF_CHILD_CACHE, _HISTORY_ARCHIVE_CACHE):
         cache.clear()
     for k in _CACHE_STATS:
         _CACHE_STATS[k] = 0
@@ -325,7 +330,122 @@ def _build_agent_entry(
     }
 
 
-def _discover_brain_sessions(brain_root: Path, active_captures: dict[str, Any], session_meta: dict[str, Any]) -> list[dict[str, Any]]:
+def _cache_put(cache: dict[Any, Any], key: Any, val: Any) -> None:
+    while len(cache) >= MAX_CACHE_ENTRIES:
+        cache.pop(next(iter(cache)), None)
+    cache[key] = val
+
+
+def _is_bridge_child_transcript(tpath: Path) -> bool:
+    """Return True if first USER_INPUT within 20 lines is a [GRAVITY-BRIDGE prompt (no bytes_read)."""
+    try:
+        if tpath.is_symlink() or not tpath.is_file():
+            return False
+        st = tpath.stat()
+    except OSError:
+        return False
+    if st.st_size <= 0:
+        return False
+    key = (str(tpath), int(st.st_ino))
+    if key in _BRIDGE_SNIFF_CACHE:
+        return _BRIDGE_SNIFF_CACHE[key]
+    is_bridge = False
+    try:
+        with tpath.open("r", encoding="utf-8", errors="replace") as fh:
+            for idx, raw_line in enumerate(fh):
+                if idx >= 20:
+                    break
+                line = raw_line.lstrip("\ufeff").strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict) and obj.get("type") == "USER_INPUT":
+                    is_bridge = "[GRAVITY-BRIDGE" in str(obj.get("content") or "")
+                    break
+    except OSError:
+        return False
+    _cache_put(_BRIDGE_SNIFF_CACHE, key, is_bridge)
+    return is_bridge
+
+
+def _collect_wf_children_from_file(path: Path, parent_cid: str, *, is_msg_json: bool) -> frozenset[str]:
+    """Extract run_workflow child UUIDs from task-*.log or messages/*.json (no bytes_read)."""
+    try:
+        if path.is_symlink() or not path.is_file():
+            return frozenset()
+        st = path.stat()
+    except OSError:
+        return frozenset()
+    key = str(path)
+    cached = _WF_CHILD_CACHE.get(key)
+    fp = (int(st.st_ino), int(st.st_size), int(st.st_mtime_ns))
+    if cached and cached[:3] == fp:
+        return cached[3]
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return frozenset()
+    if is_msg_json and "run_workflow" not in raw and "[agent:" not in raw:
+        found: frozenset[str] = frozenset()
+    else:
+        p_low = parent_cid.lower()
+        found = frozenset(m.strip() for m in _WF_AGENT_CID_RE.findall(raw) if m.strip() and m.strip().lower() != p_low)
+    _cache_put(_WF_CHILD_CACHE, key, (*fp, found))
+    return found
+
+
+def _load_history_status_ro(metrics_home: Optional[Path]) -> dict[str, tuple[str, Optional[float]]]:
+    """Read lightweight (status, ended_at_ts) map from history.jsonl (no bytes_read)."""
+    if metrics_home is None:
+        return {}
+    hpath = metrics_home / "data" / "history.jsonl"
+    try:
+        if hpath.is_symlink() or not hpath.is_file():
+            return {}
+        st = hpath.stat()
+    except OSError:
+        return {}
+    key = str(hpath)
+    cached = _HISTORY_ARCHIVE_CACHE.get(key)
+    fp = (int(st.st_ino), int(st.st_size), int(st.st_mtime_ns))
+    if cached and cached[:3] == fp:
+        return cached[3]
+    out: dict[str, tuple[str, Optional[float]]] = {}
+    try:
+        with hpath.open("r", encoding="utf-8", errors="replace") as fh:
+            for raw_line in fh:
+                line = raw_line.lstrip("\ufeff").strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                cid = str(obj.get("conversation_id") or "").strip()
+                if not cid:
+                    continue
+                status = str(obj.get("status") or "archived").strip().lower()
+                dt = _parse_iso_ts(obj.get("ended_at") or obj.get("updated_at"))
+                out[cid] = (status, dt.timestamp() if dt is not None else None)
+    except OSError:
+        return {}
+    _cache_put(_HISTORY_ARCHIVE_CACHE, key, (*fp, out))
+    return out
+
+
+def _discover_brain_sessions(
+    brain_root: Path,
+    active_captures: dict[str, Any],
+    session_meta: dict[str, Any],
+    *,
+    metrics_home: Optional[Path] = None,
+    explicit_cid: str = "",
+) -> list[dict[str, Any]]:
     if not brain_root.is_dir():
         return []
     child_cids: set[str] = set()
@@ -353,11 +473,30 @@ def _discover_brain_sessions(brain_root: Path, active_captures: dict[str, Any], 
             for m_info in (mdata.get("members") if isinstance(mdata, dict) and isinstance(mdata.get("members"), dict) else {}).values():
                 if isinstance(m_info, dict) and str(m_info.get("conversation_id") or "").strip() not in ("", cid):
                     child_cids.add(str(m_info["conversation_id"]).strip())
+        if (sg / "tasks").is_dir():
+            try:
+                for tf in (sg / "tasks").iterdir():
+                    if tf.name.lower().startswith("task-") and tf.suffix.lower() == ".log" and not tf.is_symlink():
+                        child_cids.update(_collect_wf_children_from_file(tf, cid, is_msg_json=False))
+            except OSError:
+                pass
+        if (sg / "messages").is_dir():
+            try:
+                for mf in (sg / "messages").iterdir():
+                    if mf.suffix.lower() == ".json" and mf.name.lower() != "read.json" and not mf.is_symlink():
+                        child_cids.update(_collect_wf_children_from_file(mf, cid, is_msg_json=True))
+            except OSError:
+                pass
         tpath = sg / "logs" / "transcript.jsonl"
-        if not (tpath.is_file() and not tpath.is_symlink()) and cid not in active_captures:
+        has_transcript = tpath.is_file() and not tpath.is_symlink()
+        if not has_transcript and cid not in active_captures:
+            continue
+        if has_transcript and _is_bridge_child_transcript(tpath):
+            child_cids.add(cid)
             continue
         mtime_ns = max((p.stat().st_mtime_ns for p in (tpath, members_file, sg / "swarm" / "board.jsonl", entry) if p.exists()), default=0)
         candidates.append({"cid": cid, "dir": entry, "sg": sg, "mtime_ns": mtime_ns})
+
     roots = [
         it for it in candidates
         if it["cid"] not in child_cids and not (
@@ -366,7 +505,39 @@ def _discover_brain_sessions(brain_root: Path, active_captures: dict[str, Any], 
         )
     ]
     roots.sort(key=lambda r: (-int(r["mtime_ns"]), r["cid"]))
-    return roots[:MAX_ROOT_SESSIONS]
+
+    history_map = _load_history_status_ro(metrics_home)
+    now_s = datetime.now(timezone.utc).timestamp()
+    q_cid = explicit_cid.strip().lower()
+    has_priority = False
+    for r in roots:
+        rcid = r["cid"]
+        in_cap = rcid in active_captures
+        hist = history_map.get(rcid)
+        is_archived = False
+        if hist is not None and not in_cap and hist[0] == "archived":
+            ended_ts = hist[1]
+            is_archived = True if ended_ts is None else ((r["mtime_ns"] / 1e9) <= (ended_ts + 60.0))
+        is_stale = (r["mtime_ns"] <= 0) or ((now_s - (r["mtime_ns"] / 1e9)) > LIVE_RECENT_WINDOW_S)
+        is_explicit = bool(q_cid and (rcid.lower() == q_cid or rcid.lower().startswith(q_cid)))
+        r["archived"] = is_archived
+        r["_priority"] = not is_archived and not is_stale
+        r["_keep"] = r["_priority"] or in_cap or is_explicit
+        has_priority = has_priority or r["_priority"]
+
+    if has_priority:
+        filtered = [r for r in roots if r["_keep"]]
+    else:
+        filtered = list(roots[:MAX_FALLBACK_ROOTS])
+        seen = {r["cid"] for r in filtered}
+        for r in roots[MAX_FALLBACK_ROOTS:]:
+            if r["cid"] not in seen and (r["cid"] in active_captures or (q_cid and (r["cid"].lower() == q_cid or r["cid"].lower().startswith(q_cid)))):
+                filtered.append(r)
+                seen.add(r["cid"])
+    for r in filtered:
+        r.pop("_priority", None)
+        r.pop("_keep", None)
+    return filtered[:MAX_ROOT_SESSIONS]
 
 
 def get_live_session_state(
@@ -389,12 +560,12 @@ def get_live_session_state(
     cap_raw, meta_raw = _read_json_cached(cap_path), _read_json_cached(meta_path)
     active_captures = cap_raw.get("captures") if isinstance(cap_raw, dict) and isinstance(cap_raw.get("captures"), dict) else {}
     session_meta = meta_raw.get("sessions") if isinstance(meta_raw, dict) and isinstance(meta_raw.get("sessions"), dict) else {}
-    roots = _discover_brain_sessions(b_dir, active_captures, session_meta)
     q_cid = session_id.strip().lower()
+    roots = _discover_brain_sessions(b_dir, active_captures, session_meta, metrics_home=m_home, explicit_cid=q_cid)
     selected = (next((r for r in roots if r["cid"].lower() == q_cid), None) or next((r for r in roots if r["cid"].lower().startswith(q_cid)), None) or roots[0]) if (roots and q_cid) else (roots[0] if roots else None)
     wf_state = get_workflow_state(ws=ws, gravity_home=gravity_home, workflow_home=workflow_home, registry_path=registry_path)
     wf_slim = {k: wf_state.get(k) for k in ("available", "stage", "progress", "mode", "level", "preset_profile", "suggested_profile", "guard_status", "nodes", "selected_workspace")}
-    sig_parts: list[Any] = [str(b_dir), q_cid, bool(include_events), stat_token(cap_path), stat_token(meta_path), wf_state.get("signature", ""), [(r["cid"], r["mtime_ns"]) for r in roots[:10]]]
+    sig_parts: list[Any] = [str(b_dir), q_cid, bool(include_events), stat_token(cap_path), stat_token(meta_path), stat_token(m_home / "data" / "history.jsonl"), wf_state.get("signature", ""), [(r["cid"], r["mtime_ns"], bool(r.get("archived"))) for r in roots[:10]]]
     subagent_files, task_logs = [], []
     if selected is not None:
         sg = selected["sg"]
@@ -409,7 +580,7 @@ def get_live_session_state(
     sig = short_digest(sig_parts)
     if since_signature and since_signature == sig:
         return unchanged_response(sig)
-    sessions_list = [{"conversation_id": r["cid"], "label": str((active_captures.get(r["cid"]) or {}).get("label") or f"session-{r['cid'][:8]}"), "project": str((active_captures.get(r["cid"]) or {}).get("project") or (session_meta.get(r["cid"]) or {}).get("project") or _normalize_repo_name(str((session_meta.get(r["cid"]) or {}).get("cwd") or ""))), "captured": r["cid"] in active_captures, "updated_at": str((active_captures.get(r["cid"]) or {}).get("updated_at") or (session_meta.get(r["cid"]) or {}).get("updated_at") or (datetime.fromtimestamp(r["mtime_ns"] / 1e9, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if r["mtime_ns"] else ""))} for r in roots]
+    sessions_list = [{"conversation_id": r["cid"], "label": str((active_captures.get(r["cid"]) or {}).get("label") or f"session-{r['cid'][:8]}"), "project": str((active_captures.get(r["cid"]) or {}).get("project") or (session_meta.get(r["cid"]) or {}).get("project") or _normalize_repo_name(str((session_meta.get(r["cid"]) or {}).get("cwd") or ""))), "captured": r["cid"] in active_captures, "archived": bool(r.get("archived")), "updated_at": str((active_captures.get(r["cid"]) or {}).get("updated_at") or (session_meta.get(r["cid"]) or {}).get("updated_at") or (datetime.fromtimestamp(r["mtime_ns"] / 1e9, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if r["mtime_ns"] else ""))} for r in roots]
     if selected is None:
         return {"changed": True, "unchanged": False, "signature": sig, "available": False, "brain_dir": str(b_dir), "sessions": sessions_list, "selected_session": None, "agents": [], "recent_events": [], "summary": {"total_agents": 0, "active_agents": 0, "waiting_agents": 0, "done_agents": 0, "error_agents": 0}, "workflow": wf_slim}
 

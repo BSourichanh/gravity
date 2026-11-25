@@ -162,6 +162,7 @@ METRICS_VIEWS_JS = r"""
     const wsHead = el("div", "panel-head");
     wsHead.appendChild(el("div", "panel-title", "Répartition par Dossier / Workspace"));
     const wsMeta = el("div", "actions-row");
+    wsMeta.appendChild(makeBadge((kpis.sessions_count || 0) + " session(s) unique(s) · multi-dépôts comptés par dossier"));
     wsMeta.appendChild(makeBadge("Atelier : " + fmtTokens(atelierTok), "atelier"));
     wsMeta.appendChild(makeBadge("Code : " + fmtTokens(codeTok), "code"));
     wsHead.appendChild(wsMeta);

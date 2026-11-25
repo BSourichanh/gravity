@@ -338,6 +338,157 @@ class TestLiveProvider(unittest.TestCase):
             self.assertEqual(by_id[f"sub-{rev_cid[:8]}"]["workspace"], "gravity-metrics")
             self.assertTrue(any(ev["kind"] == "board" for ev in state["recent_events"]))
 
+    def test_excludes_bridge_and_run_workflow_children_without_bytes_read_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            brain = tmp_path / "brain"
+            g_home = tmp_path / "gravity"
+            m_home = g_home / "metrics"
+            wf_home = g_home / "workflow"
+            (m_home / "data").mkdir(parents=True)
+            wf_home.mkdir(parents=True)
+
+            root_cid = "11111111-aaaa-bbbb-cccc-111111111111"
+            bridge_cid = "22222222-aaaa-bbbb-cccc-222222222222"
+            wf_task_cid = "33333333-aaaa-bbbb-cccc-333333333333"
+            wf_msg_cid = "44444444-aaaa-bbbb-cccc-444444444444"
+            read_json_cid = "55555555-aaaa-bbbb-cccc-555555555555"
+
+            _write_jsonl(
+                brain / root_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [
+                    {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-25T10:00:00Z", "content": "Orchestrate wave"},
+                    {"step_index": 1, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-25T10:00:05Z", "model": "gemini-4-neon-high", "input_tokens": 200, "cache_read_tokens": 0, "output_tokens": 50},
+                ],
+            )
+            _write_jsonl(
+                brain / bridge_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [{"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-25T10:01:00Z", "content": "<USER_REQUEST>\n[GRAVITY-BRIDGE | job-1] Execute task\n</USER_REQUEST>"}],
+            )
+            _write_jsonl(
+                brain / wf_task_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [{"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-25T10:02:00Z", "content": "wf task child"}],
+            )
+            _write_jsonl(
+                brain / wf_msg_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [{"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-25T10:03:00Z", "content": "wf msg child"}],
+            )
+            _write_jsonl(
+                brain / read_json_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [{"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-25T10:04:00Z", "content": "independent session"}],
+            )
+
+            sg_root = brain / root_cid / ".system_generated"
+            (sg_root / "tasks").mkdir(parents=True)
+            (sg_root / "tasks" / "task-1.log").write_text(
+                f"[agent:builder] started ({wf_task_cid})\n", encoding="utf-8"
+            )
+            (sg_root / "messages").mkdir(parents=True)
+            (sg_root / "messages" / "m1.json").write_text(
+                json.dumps({"tool": "run_workflow", "content": f"[agent:reviewer] done ({wf_msg_cid})"}),
+                encoding="utf-8",
+            )
+            # read.json must be ignored when discovering workflow children
+            (sg_root / "messages" / "read.json").write_text(
+                json.dumps({"tool": "run_workflow", "content": f"[agent:ignored] ({read_json_cid})"}),
+                encoding="utf-8",
+            )
+
+            st = api.get_live_session_state(
+                session_id=root_cid,
+                gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
+            )
+            cids = {s["conversation_id"] for s in st["sessions"]}
+            self.assertEqual(cids, {root_cid, read_json_cid})
+            self.assertGreater(len(live_provider._BRIDGE_SNIFF_CACHE), 0)
+            self.assertGreater(len(live_provider._WF_CHILD_CACHE), 0)
+
+            # Appending to root transcript must only add extra_line bytes to bytes_read
+            bytes_before = live_provider.get_live_cache_stats()["bytes_read"]
+            tpath = brain / root_cid / ".system_generated" / "logs" / "transcript.jsonl"
+            extra = json.dumps({"step_index": 2, "type": "PLANNER_RESPONSE", "status": "DONE", "input_tokens": 10}) + "\n"
+            with tpath.open("a", encoding="utf-8") as fh:
+                fh.write(extra)
+            api.get_live_session_state(
+                session_id=root_cid,
+                since_signature=st["signature"],
+                gravity_home=g_home,
+                brain_dir=brain,
+                metrics_home=m_home,
+                workflow_home=wf_home,
+            )
+            bytes_after = live_provider.get_live_cache_stats()["bytes_read"]
+            self.assertEqual(bytes_after - bytes_before, len(extra.encode("utf-8")))
+
+            live_provider.reset_live_cache()
+            self.assertEqual(live_provider._BRIDGE_SNIFF_CACHE, {})
+            self.assertEqual(live_provider._WF_CHILD_CACHE, {})
+
+    def test_freshness_filtering_archived_and_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            brain = tmp_path / "brain"
+            g_home = tmp_path / "gravity"
+            m_home = g_home / "metrics"
+            wf_home = g_home / "workflow"
+            (m_home / "data").mkdir(parents=True)
+            wf_home.mkdir(parents=True)
+
+            fresh_cid = "11111111-0000-0000-0000-000000000001"
+            arch_cid = "22222222-0000-0000-0000-000000000002"
+            stale_cid = "33333333-0000-0000-0000-000000000003"
+            cap_stale_cid = "44444444-0000-0000-0000-000000000004"
+
+            for cid in (fresh_cid, arch_cid, stale_cid, cap_stale_cid):
+                _write_jsonl(
+                    brain / cid / ".system_generated" / "logs" / "transcript.jsonl",
+                    [{"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2020-01-01T00:00:00Z", "content": cid}],
+                )
+
+            now_ns = int((brain / fresh_cid / ".system_generated" / "logs" / "transcript.jsonl").stat().st_mtime_ns)
+            old_ns = now_ns - int(8 * 3600 * 1e9)
+            for cid in (stale_cid, cap_stale_cid):
+                tp = brain / cid / ".system_generated" / "logs" / "transcript.jsonl"
+                os.utime(tp, ns=(old_ns, old_ns))
+                os.utime(brain / cid, ns=(old_ns, old_ns))
+
+            # Mark arch_cid as archived with ended_at in the future relative to its mtime -> truly archived
+            from datetime import datetime, timezone
+            ended_iso = datetime.fromtimestamp((now_ns / 1e9) + 10, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            _write_jsonl(
+                m_home / "data" / "history.jsonl",
+                [{"conversation_id": arch_cid, "status": "archived", "ended_at": ended_iso}],
+            )
+            (m_home / "active_captures.json").write_text(
+                json.dumps({"schema_version": 1, "captures": {cap_stale_cid: {"label": "cap-stale", "start_step": 0}}}),
+                encoding="utf-8",
+            )
+
+            # When fresh_cid exists, archived & stale (uncaptured) are filtered out; active_capture is kept
+            st1 = api.get_live_session_state(
+                gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
+            )
+            self.assertEqual({s["conversation_id"] for s in st1["sessions"]}, {fresh_cid, cap_stale_cid})
+            self.assertFalse(st1["sessions"][0]["archived"])
+
+            # Explicitly requesting archived session keeps it and marks archived=True
+            st_exp = api.get_live_session_state(
+                session_id=arch_cid, gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
+            )
+            by_cid = {s["conversation_id"]: s for s in st_exp["sessions"]}
+            self.assertIn(arch_cid, by_cid)
+            self.assertTrue(by_cid[arch_cid]["archived"])
+
+            # Make fresh_cid stale too -> fallback keeps up to 3 most recent roots (+ active_captures)
+            os.utime(brain / fresh_cid / ".system_generated" / "logs" / "transcript.jsonl", ns=(old_ns, old_ns))
+            os.utime(brain / fresh_cid, ns=(old_ns, old_ns))
+            st_fb = api.get_live_session_state(
+                gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
+            )
+            self.assertGreaterEqual(len(st_fb["sessions"]), 3)
+            self.assertLessEqual(len(st_fb["sessions"]), 4)
+            self.assertTrue(any(s["archived"] for s in st_fb["sessions"]))
+
 
 class TestMetricsActionsAndAudits(unittest.TestCase):
     def test_dip_cli_actions_and_fail_closed(self) -> None:

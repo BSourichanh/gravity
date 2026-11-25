@@ -208,8 +208,9 @@ CHARTS_JS = r"""
 
       const countTxt = r.agents_count != null
         ? (r.agents_count + " agent(s)")
-        : (r.sessions != null ? (r.sessions + " session(s)") : "");
-      const rightTxt = fmtTokens(val) + (countTxt ? " · " + countTxt : "");
+        : (r.sessions != null ? (r.sessions + (r.share_pct != null ? " sess." : " session(s)")) : "");
+      const shareTxt = r.share_pct != null ? (" (" + fmtPct(r.share_pct) + ")") : "";
+      const rightTxt = fmtTokens(val) + shareTxt + (countTxt ? " · " + countTxt : "");
       head.appendChild(el("span", "mono num", rightTxt));
       row.appendChild(head);
 

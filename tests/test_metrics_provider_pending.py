@@ -132,6 +132,16 @@ class TestMetricsProviderPendingStrict(unittest.TestCase):
                 "project": "gravity",
                 "updated_at": "2026-11-24T10:27:00Z",
             },
+            "cid-wt-gwt": {
+                "cwd": "/tmp/gravity-worktrees/gravity-w1",
+                "project": "gravity",
+                "updated_at": "2026-11-24T10:27:30Z",
+            },
+            "cid-wt-dot": {
+                "cwd": "/home/user/repo/.worktrees/feat-z",
+                "project": "gravity",
+                "updated_at": "2026-11-24T10:27:45Z",
+            },
             "cid-wt-captured": {
                 "cwd": "/home/user/.gemini/antigravity/worktrees/gravity/explicit-capture",
                 "project": "gravity",
@@ -139,8 +149,8 @@ class TestMetricsProviderPendingStrict(unittest.TestCase):
             },
         }
         active_captures = {
-            "cid-captured": {"label": "cap-session", "start_step": 1, "updated_at": "2026-11-24T09:35:00Z"},
-            "cid-wt-captured": {"label": "wt-cap", "start_step": 2},
+            "cid-captured": {"label": "cap-session", "start_step": 1, "source": "architect_auto", "updated_at": "2026-11-24T09:35:00Z"},
+            "cid-wt-captured": {"label": "wt-cap", "start_step": 2, "source": "manual"},
         }
         ignored_map = {
             "cid-wt-short": {"ignored_at": "2026-11-24T10:00:00Z", "reason": "noise"},
@@ -174,7 +184,15 @@ class TestMetricsProviderPendingStrict(unittest.TestCase):
         self.assertEqual(by_cid["cid-active-hist"]["cwd"], "/home/user/Documents/Github/gravity-studio")
         self.assertEqual(by_cid["cid-active-hist"]["started_at"], "2026-11-24T10:00:00Z")
         self.assertEqual(by_cid["cid-active-hist"]["bridge_children_count"], 2)
+        self.assertEqual(by_cid["cid-active-hist"]["source"], "")
         self.assertEqual(by_cid["cid-captured"]["project"], "Gravity")
+        self.assertEqual(by_cid["cid-captured"]["source"], "architect_auto")
+        self.assertEqual(by_cid["cid-wt-captured"]["source"], "manual")
+        self.assertTrue(metrics_provider._is_worktree_cwd("/tmp/gravity-worktrees/gravity-w1"))
+        self.assertTrue(metrics_provider._is_worktree_cwd("/home/user/repo/.worktrees/w1"))
+        self.assertTrue(metrics_provider._is_worktree_cwd("/home/user/repo/worktrees/w1"))
+        self.assertTrue(metrics_provider._is_worktree_cwd(r"D:\repos\worktrees\sub-1"))
+        self.assertFalse(metrics_provider._is_worktree_cwd("/home/user/Documents/Github/gravity"))
         self.assertEqual([i["conversation_id"] for i in ignored], ["cid-ignored-keep"])
 
     def test_get_metrics_state_ignores_live_bridge_db_and_preserves_archived_counters(self) -> None:

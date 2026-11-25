@@ -18,6 +18,7 @@ if str(PLUGIN_ROOT) not in sys.path:
 
 from mcp.ui.charts_js import CHARTS_JS  # noqa: E402
 from mcp.ui.live_views_js import LIVE_VIEWS_JS  # noqa: E402
+from mcp.ui.metrics_views_js import METRICS_VIEWS_JS  # noqa: E402
 from mcp.ui.styles import WIDGET_CSS  # noqa: E402
 from mcp.ui.views_js import VIEWS_JS  # noqa: E402
 from mcp.widget_html import render_dashboard_html  # noqa: E402
@@ -75,7 +76,23 @@ const document = {
   createElementNS(_ns, tag) { return makeNode(tag); },
   getElementById() { return null; }
 };
-const state = { overview: { tabs: [] } };
+const state = {
+  overview: { tabs: [] },
+  metricsSub: "overview",
+  metricsProject: "",
+  metricsQ: "",
+  metricsFilter: "recorded",
+  metricsSort: "date",
+  metrics: {
+    projects: ["gravity"],
+    kpis: { sessions_count: 14, useful_tokens: 57000, cache_read_tokens: 10000, thinking_est_tokens: 500, total_tokens: 67000 },
+    by_workspace: [
+      { workspace: "gravity-studio", kind: "atelier", useful_tokens: 12000, sessions: 5, share_pct: 21.1 },
+      { workspace: "gravity", kind: "code", useful_tokens: 45000, sessions: 14, share_pct: 78.9 }
+    ],
+    records: [], pending_sessions: [], ignored_sessions: [], audits: []
+  }
+};
 """
 
 _ASSERTIONS_JS = r"""
@@ -117,6 +134,18 @@ const wb = renderWorkspaceBreakdown([
 const wbTxt = collectText(wb);
 assert(wbTxt.includes("Atelier") && wbTxt.includes("Code") && wbTxt.includes("gravity"), "workspace breakdown");
 
+const wbShare = renderWorkspaceBreakdown([
+  { workspace: "gravity-studio", kind: "atelier", useful_tokens: 12000, sessions: 5, share_pct: 21.1 },
+  { workspace: "gravity", kind: "code", useful_tokens: 45000, sessions: 14, share_pct: 78.9 }
+]);
+const wbShareTxt = collectText(wbShare);
+assert(wbShareTxt.includes("21,1 %") && wbShareTxt.includes("5 sess.") && wbShareTxt.includes("14 sess."), "workspace breakdown share_pct + sess.");
+
+const metBox = makeNode("div");
+renderMetricsUnifiedView(metBox);
+const metTxt = collectText(metBox);
+assert(metTxt.includes("14 session(s) unique(s)"), "unique sessions badge in workspace panel header");
+
 const kpi = renderMetricKpiCard("Pic", "150 k", "Actuel 120 k", { tone: "warn", series: [10, 40, 90, 150] });
 assert(kpi.className.includes("warn") && findAll(kpi, (n) => n.tagName === "SVG").length === 1, "kpi sparkline");
 
@@ -132,8 +161,8 @@ const fullBox = makeNode("div");
 const payload = {
   available: true,
   sessions: [
-    { conversation_id: "cid-1111", label: "Audit Live", project: "gravity", captured: false },
-    { conversation_id: "cid-2222", label: "Autre", project: "gravity-metrics", captured: true }
+    { conversation_id: "cid-1111", label: "Audit Live", project: "gravity", captured: false, archived: false },
+    { conversation_id: "cid-2222", label: "Autre", project: "gravity-metrics", captured: true, archived: true }
   ],
   selected_session: {
     conversation_id: "cid-1111",
@@ -173,6 +202,7 @@ assert(fullTxt.includes("Actifs") && fullTxt.includes("En attente") && fullTxt.i
 assert(findAll(fullBox, (n) => n.className.startsWith("agent-card")).length === 4, "4 agent cards");
 assert(fullTxt.includes("Activité récente (3)") && fullTxt.includes("Board") && fullTxt.includes("@w1 GO"), "recent events & board");
 assert(fullTxt.includes("Alerte >128k") && fullTxt.includes("Critique >200k"), "gauge thresholds in cards");
+assert(fullTxt.includes("[archivée]"), "archived suffix in live session selector");
 
 const pausedBox = makeNode("div");
 payload.selected_session.captured = true;
@@ -214,7 +244,7 @@ class TestUiLiveAndCharts(unittest.TestCase):
 
             dom_test = tmp_path / "dom_test.js"
             dom_test.write_text(
-                "\n".join([_DOM_HARNESS_JS, VIEWS_JS, CHARTS_JS, LIVE_VIEWS_JS, _ASSERTIONS_JS]),
+                "\n".join([_DOM_HARNESS_JS, VIEWS_JS, CHARTS_JS, LIVE_VIEWS_JS, METRICS_VIEWS_JS, _ASSERTIONS_JS]),
                 encoding="utf-8",
             )
             run = subprocess.run([node_bin, str(dom_test)], capture_output=True, text=True, check=False)

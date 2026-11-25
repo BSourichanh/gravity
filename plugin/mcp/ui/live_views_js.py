@@ -46,7 +46,8 @@ LIVE_VIEWS_JS = r"""
         const cid = String(s.conversation_id || "");
         const lbl = String(s.label || ("session-" + cid.slice(0, 8))) +
           (s.project ? " · " + s.project : "") +
-          (s.captured ? " [suivie]" : "");
+          (s.captured ? " [suivie]" : "") +
+          (s.archived ? " [archivée]" : "");
         const opt = el("option", null, lbl, { value: cid });
         if (cid === selCid || cid === ui.selectedSessionId) opt.selected = true;
         sel.appendChild(opt);

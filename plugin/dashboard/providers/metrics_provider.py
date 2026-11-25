@@ -357,17 +357,17 @@ def _matches_query(rec: dict[str, Any], q_cf: str) -> bool:
 
 
 def _is_worktree_cwd(cwd: Any) -> bool:
-    """Return True if `cwd` points inside an Antigravity worktree directory."""
+    """Return True if `cwd` points inside a Gravity or Antigravity worktree directory."""
     if not isinstance(cwd, str) or not cwd.strip():
         return False
-    low = cwd.strip().casefold()
-    norm = low.replace("\\", "/")
-    return (
-        "/.gemini/antigravity/worktrees/" in norm
-        or norm.endswith("/.gemini/antigravity/worktrees")
-        or "\\worktrees\\" in low
-        or low.endswith("\\worktrees")
+    norm = cwd.strip().casefold().replace("\\", "/")
+    tokens = (
+        "/.gemini/antigravity/worktrees/",
+        "/gravity-worktrees/",
+        "/.worktrees/",
+        "/worktrees/",
     )
+    return any(tok in norm or norm.endswith(tok.rstrip("/")) for tok in tokens)
 
 
 def _derive_pending_states_ro(
@@ -430,6 +430,7 @@ def _derive_pending_states_ro(
                 or ""
             ),
             "active_capture": cap is not None,
+            "source": str((cap or {}).get("source") or ""),
             "start_step": (cap or {}).get("start_step")
             if isinstance((cap or {}).get("start_step"), int)
             else None,
