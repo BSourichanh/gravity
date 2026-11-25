@@ -34,15 +34,15 @@ Référence rapide orientée **intention utilisateur**, combinaisons efficaces e
 | Réduire les tokens de réponse | `/caveman [lite\|full\|ultra\|off\|auto]` | Règle l'intensité (`auto`/`evo` bascule `lite`↔`full` selon le coût/contexte `metrics`) |
 | Générer un message ou compresser un doc | `/caveman commit` · `compress <fichier>` | Message *Conventional Commits* `<= 50` car. ou compression Markdown avec sauvegarde `.original` |
 
-### Télémétrie & coûts (`gravity-metrics` : `/gravity-metrics`)
+### Télémétrie & agents (`gravity-metrics` : `/gravity-metrics`)
 
 | Je veux… | Commande | Effet exact |
 |---|---|---|
-| Consulter coûts, tokens et cache | `/gravity-metrics` | Ouvre le widget MCP App en **lecture seule** (`view="overview"`, zéro mutation) |
+| Consulter métriques techniques et audits | `/gravity-metrics` | Ouvre `open_gravity_dashboard(view="metrics")` dans l'interface unifiée (`Vue d'ensemble`, `Sessions`, `Audits Agents`) |
 | Démarrer une fenêtre de capture | `/gravity-metrics start [label]` | Enregistre le point de départ à **0 token LLM** via hook `PreInvocation` |
-| Clôturer et archiver la fenêtre | `/gravity-metrics stop [label]` | Scelle et archive la capture, puis ouvre la vue détail |
-| Voir les sessions non archivées | `/gravity-metrics pending [--project <nom>]` | Liste les sessions Gravity racines en attente (`view="pending"`) |
-| Archiver une session passée | `/gravity-metrics archive <uuid> [label]` | Analyse et archive *a posteriori* (`--full`, `--force`, support `--self-archiving`) |
+| Clôturer et archiver la fenêtre | `/gravity-metrics stop [label]` | Scelle et archive la capture, puis ouvre la fiche session dans `gravity` (`view="metrics"`) |
+| Voir les sessions à enregistrer | `/gravity-metrics pending [--project <nom>]` | Liste les sessions Gravity racines en attente (`view="metrics"`, `metrics_sub="pending"`) ; actions 1 clic dans l'UI |
+| Archiver ou gérer une session | `/gravity-metrics archive <uuid> [label]` | Analyse et archive *a posteriori* (`--full`, `--force`) — également pilotable en 1 clic (`Enregistrer`, `Mettre à jour`, `Éditer`, `Ignorer`, `Supprimer`) depuis `En direct` / `Métriques` |
 
 ### Coordination & atelier (`gravity-architect`, orchestration native Antigravity)
 

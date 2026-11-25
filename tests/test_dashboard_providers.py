@@ -139,7 +139,7 @@ class TestCoreAndGenericProviders(unittest.TestCase):
             fake_user.mkdir()
             plugins_root = tmp_path / "plugins"
             _write_module_plugin(plugins_root, mod_id="core", plugin_name="gravity", ui_mode="core")
-            _write_module_plugin(plugins_root, mod_id="metrics", plugin_name="gravity-metrics", ui_mode="transition-mcp")
+            _write_module_plugin(plugins_root, mod_id="metrics", plugin_name="gravity-metrics", ui_mode="none")
             _write_module_plugin(plugins_root, mod_id="architect", plugin_name="gravity-architect")
 
             (g_home / "core").mkdir(parents=True)
@@ -168,7 +168,7 @@ class TestCoreAndGenericProviders(unittest.TestCase):
                     "storage": {"subdir": "metrics", "env_override": "GRAVITY_METRICS_HOME"},
                     "commands": ["/gravity-metrics"],
                     "capabilities": ["metrics"],
-                    "ui": {"mode": "transition-mcp", "target": "gravity"},
+                    "ui": {"mode": "none", "target": "gravity"},
                     "signals": {"produces": ["session-metrics"], "consumes": []},
                 },
                 {
@@ -1147,7 +1147,7 @@ class TestDashboardFacade(unittest.TestCase):
             plugins_root = tmp_path / "plugins"
             _write_module_plugin(plugins_root, mod_id="core", plugin_name="gravity", ui_mode="core")
             _write_module_plugin(plugins_root, mod_id="workflow", plugin_name="gravity-workflow", ui_mode="none")
-            _write_module_plugin(plugins_root, mod_id="metrics", plugin_name="gravity-metrics", ui_mode="transition-mcp")
+            _write_module_plugin(plugins_root, mod_id="metrics", plugin_name="gravity-metrics", ui_mode="none")
             _write_module_plugin(plugins_root, mod_id="architect", plugin_name="gravity-architect")
 
             summary = api.build_initial_summary(

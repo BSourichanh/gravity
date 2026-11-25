@@ -149,10 +149,26 @@ class TestMcpServer(unittest.TestCase):
             "com.google.antigravity/toggle-aux-pane",
             'addEventListener("message"',
             "renderArchitectView",
+            "renderLiveView",
+            "renderMetricsUnifiedView",
+            "gravity_get_live_session",
+            "gravity_metrics_action",
+            "gravity_read_audit",
+            "since_signature",
+            "captureFocusAndScroll",
             "g-arch-ws",
         ):
             self.assertIn(required, html_txt)
-        for absent in ("renderBridgeView", "renderBridgeSvgChart", "gravity_get_bridge_state", "loadBridgeState"):
+        for absent in (
+            "renderBridgeView",
+            "renderBridgeSvgChart",
+            "gravity_get_bridge_state",
+            "loadBridgeState",
+            "Tarif 2026",
+            "Tarif 2027",
+            "metricsTariff",
+            "set-tariff",
+        ):
             self.assertNotIn(absent, html_txt)
 
         bad_read = mcp_server.handle_jsonrpc_message(
@@ -883,6 +899,153 @@ class TestMcpServer(unittest.TestCase):
             txt_cli = res_cli["content"][0]["text"]  # type: ignore[index]
             self.assertIn("[WARN UI]", txt_cli)
             self.assertIn("agy 1.0.0", txt_cli)
+
+    def test_metrics_ui_bundle_dom_renderers_and_actions(self) -> None:
+        import re
+        import shutil
+        from mcp.ui.charts_js import CHARTS_JS
+        from mcp.ui.live_views_js import LIVE_VIEWS_JS
+        from mcp.ui.metrics_views_js import METRICS_VIEWS_JS
+        from mcp.ui.views_js import VIEWS_JS
+
+        html = render_dashboard_html()
+        self.assertLess(len(html.encode("utf-8")), 200 * 1024)
+        node_bin = shutil.which("node")
+        if not node_bin:
+            self.skipTest("node binary not available")
+
+        match = re.search(r"<script>\n(.*)\n</script>", html, flags=re.DOTALL)
+        self.assertIsNotNone(match)
+        assert match is not None
+
+        harness = r"""
+function makeNode(tag) {
+  return {
+    tagName: String(tag).toUpperCase(), className: "", textContent: "", attrs: {}, style: {},
+    children: [], listeners: {}, value: "", selected: false, disabled: false, open: false,
+    get firstChild() { return this.children[0] || null; },
+    appendChild(c) { this.children.push(c); return c; },
+    removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); return c; },
+    setAttribute(k, v) { this.attrs[k] = String(v); if (k === "id") this.id = String(v); if (k === "value") this.value = String(v); },
+    getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; },
+    addEventListener(ev, fn) { this.listeners[ev] = this.listeners[ev] || []; this.listeners[ev].push(fn); }
+  };
+}
+function collectText(n) {
+  if (!n) return "";
+  const out = n.textContent ? [n.textContent] : [];
+  for (const ch of (n.children || [])) out.push(collectText(ch));
+  return out.join(" ");
+}
+const document = { createElement: (t) => makeNode(t), createElementNS: (_ns, t) => makeNode(t), getElementById: () => null };
+const state = {
+  overview: { tabs: [{ id: "live", kind: "live" }, { id: "metrics", kind: "metrics" }, { id: "architect", kind: "architect" }, { id: "overview", kind: "core" }] },
+  live: { selected_session: { conversation_id: "cid-1" }, summary: { llm_calls: 15 } },
+  metricsProject: "", metricsQ: "", metricsSub: "overview", metricsFilter: "recorded", metricsSort: "date",
+  metricsActionInFlight: false, compareOpen: false, compareA: "s-1", compareB: "s-2",
+  sessionTarget: "", sessionDetail: null, sessionDetailLoading: false, sessionDetailSub: "summary",
+  sessionEditOpen: false, sessionDeleteConfirm: false, pendingDeleteTarget: "",
+  auditTarget: "", auditData: null, auditLoading: false,
+  metrics: {
+    projects: ["gravity", "gravity-studio"],
+    metrics_md_uri: "file:///tmp/METRICS.md",
+    total_matching: 2,
+    kpis: {
+      sessions_count: 2, archived_count: 2, active_count: 0, useful_tokens: 45000, cache_read_tokens: 120000,
+      total_tokens: 165000, avg_cache_hit_rate_pct: 72.7, total_llm_calls: 20, max_context_tokens: 145000,
+      context_alerts_count: 1, context_critical_count: 0, wall_clock_s: 320, latency_p95_ms: 1850,
+      latency_avg_ms: 920, thinking_est_tokens: 4200, compaction_count: 1, error_steps: 1, avg_error_rate_pct: 5.0,
+      duplicate_spawns: 0, rewind_calls: 1, interrupted_agents: 0
+    },
+    by_workspace: [
+      { workspace: "gravity-studio", kind: "atelier", useful_tokens: 15000, sessions: 1 },
+      { workspace: "gravity", kind: "code", useful_tokens: 30000, sessions: 2 }
+    ],
+    records: [
+      {
+        conversation_id: "cid-1", label: "Session One", detail_slug: "s-1", project: "gravity", status: "archived",
+        primary_model: "gemini-4-neon-high", models: { "gemini-4-neon-high": { calls: 12 } },
+        category_share_pct: { builder: 75, reviewer: 25 }, input_tokens: 20000, output_tokens: 5000,
+        cache_read_tokens: 80000, total_tokens: 105000, cache_hit_rate_pct: 80, max_context_tokens: 145000,
+        llm_calls: 12, tool_calls: 24, latency_p95_ms: 1850, error_steps: 1, error_rate_pct: 8.3,
+        compaction_count: 1, wall_clock_s: 200, cost_usd: 0.25, cache_savings_usd: 0.40,
+        started_at: "2026-11-25T10:00:00Z", ended_at: "2026-11-25T10:03:20Z"
+      },
+      {
+        conversation_id: "cid-2", label: "Session Two", detail_slug: "s-2", project: "gravity-studio", status: "archived",
+        primary_model: "gemini-4-hydrogen-high", input_tokens: 16000, output_tokens: 4000,
+        cache_read_tokens: 40000, total_tokens: 60000, cache_hit_rate_pct: 66.7, max_context_tokens: 90000,
+        llm_calls: 8, tool_calls: 10, latency_p95_ms: 1100, error_steps: 0, error_rate_pct: 0,
+        compaction_count: 0, wall_clock_s: 120, cost_usd: 0.15, cache_savings_usd: 0.20,
+        started_at: "2026-11-25T09:00:00Z", ended_at: "2026-11-25T09:02:00Z"
+      }
+    ],
+    pending_sessions: [{ conversation_id: "cid-pend", label: "Pending Run", project: "gravity", cwd: "/tmp/gravity", updated_at: "2026-11-25T11:00:00Z" }],
+    ignored_sessions: [{ conversation_id: "cid-ign", label: "Noise Run", project: "gravity", ignored_reason: "test", ignored_at: "2026-11-25T08:00:00Z" }],
+    audits: [{ audit_id: "studio:2026-11-25.md", title: "Audit W4", workspace: "gravity-studio", verdict: "PASS", verdict_tone: "ok", date: "2026-11-25", size_bytes: 512, uri: "file:///tmp/a.md" }]
+  }
+};
+"""
+        assertions = r"""
+function assert(c, m) { if (!c) throw new Error("ASSERT: " + m); }
+const box1 = makeNode("div");
+renderMetricsUnifiedView(box1);
+const t1 = collectText(box1);
+assert(t1.includes("Tokens utiles") && t1.includes("Pression contexte") && t1.includes("Atelier") && t1.includes("Code"), "overview technical KPIs & workspaces");
+assert(t1.includes("Répartition par Modèle") && t1.includes("Répartition par Rôle"), "model & role breakdown");
+assert(!t1.includes("Tarif 2026") && !t1.includes("Tarif 2027"), "no tariff toggle");
+
+state.metricsSub = "sessions";
+state.compareOpen = true;
+state.sessionTarget = "s-1";
+state.sessionEditOpen = true;
+state.sessionDeleteConfirm = true;
+state.pendingDeleteTarget = "s-1";
+state.sessionDetail = {
+  found: true, source: "report_json", slug: "s-1", conversation_id: "cid-1", label: "Session One",
+  report_md_uri: "file:///tmp/s1.md", record: state.metrics.records[0],
+  detail: {
+    summary: { input_tokens: 20000, output_tokens: 5000, cache_read_tokens: 80000, cache_hit_rate_pct: 80, total_llm_calls: 12, total_tool_calls: 24, wall_clock_s: 200, cost_usd: { total_usd: 0.25, cache_savings_usd: 0.40 } },
+    agents: [{ role: "Builder", workspace: "gravity", workspace_kind: "code", model: "gemini-4-neon-high", max_context_tokens: 145000, input_tokens: 20000, output_tokens: 5000, cache_read_tokens: 80000, llm_calls: 12, tool_calls: 24, clean_termination: true }],
+    tool_usage: { by_tool: { edit_file: 10 } }
+  }
+};
+const box2 = makeNode("div");
+renderMetricsUnifiedView(box2);
+const t2 = collectText(box2);
+assert(t2.includes("Mettre à jour (+3 appels)") && t2.includes("Comparateur A/B") && t2.includes("Delta (B - A)"), "freshness badge & A/B comparator");
+assert(t2.includes("Supprimer cette session") && t2.includes("Repère secondaire ($)"), "inline delete confirm & discrete $ footnote");
+
+state.sessionDetailSub = "agents";
+const box2b = makeNode("div");
+renderMetricsUnifiedView(box2b);
+assert(collectText(box2b).includes("Outils les plus utilisés") && collectText(box2b).includes("edit_file"), "agents & tools subtab");
+
+state.sessionDetailSub = "diagnostic";
+const box2c = makeNode("div");
+renderMetricsUnifiedView(box2c);
+assert(collectText(box2c).includes("Doublons de rôles") && collectText(box2c).includes("Compactions contexte"), "diagnostic subtab");
+
+state.metricsSub = "audits";
+state.auditTarget = "studio:2026-11-25.md";
+state.auditData = { found: true, title: "Audit W4", verdict: "PASS", workspace: "gravity-studio", date: "2026-11-25", content: "# Audit Body", uri: "file:///tmp/a.md" };
+const box3 = makeNode("div");
+renderMetricsUnifiedView(box3);
+assert(collectText(box3).includes("# Audit Body") && collectText(box3).includes("Ouvrir .md"), "audits inline reader");
+console.log(JSON.stringify({ ok: true }));
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bundle = tmp_path / "bundle.js"
+            bundle.write_text(match.group(1), encoding="utf-8")
+            chk = subprocess.run([node_bin, "--check", str(bundle)], capture_output=True, text=True, check=False)
+            self.assertEqual(chk.returncode, 0, msg=chk.stderr or chk.stdout)
+
+            dom = tmp_path / "metrics_dom.js"
+            dom.write_text("\n".join([harness, VIEWS_JS, CHARTS_JS, LIVE_VIEWS_JS, METRICS_VIEWS_JS, assertions]), encoding="utf-8")
+            run = subprocess.run([node_bin, str(dom)], capture_output=True, text=True, check=False)
+            self.assertEqual(run.returncode, 0, msg=run.stderr or run.stdout)
+            self.assertTrue(json.loads(run.stdout.strip()).get("ok"))
 
 
 if __name__ == "__main__":

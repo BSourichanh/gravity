@@ -53,7 +53,7 @@ Exemple de référence (`gravity` Core) :
 | `storage.env_override` | `str` | Nom de variable d'environnement dédiée non vide (ex. `GRAVITY_METRICS_HOME`) |
 | `commands` | `list[str]` | Liste de chaînes non vides (ex. `["/gravity-workflow", "/caveman"]`) |
 | `capabilities` | `list[str]` | Liste de capacités déclarées (chaînes non vides) |
-| `ui.mode` | `str` | Mode UI non vide (`"core"`, `"none"`, `"transition-mcp"`, ou autre mode contractuel) |
+| `ui.mode` | `str` | Mode UI non vide (`"core"`, `"none"`, ou autre mode contractuel) |
 | `ui.target` | `str` | Cible UI de convergence (ex. `"gravity"`) |
 | `signals.produces` | `list[str]` | Liste de signaux émis (peut être `[]`) |
 | `signals.consumes` | `list[str]` | Liste de signaux consommés (peut être `[]` ou `["*"]`) |
@@ -78,7 +78,7 @@ Lors de l'exécution de `init_env.py` (hors `--check` et `--status`), Gravity Co
 | `core` | `gravity` | `GRAVITY_CORE_HOME` | `core` | `environment-state` | `*` |
 | `architect` | `gravity-architect` | `GRAVITY_ARCHITECT_HOME` | `none` | `ecosystem-health`, `upgrade-deltas` | `—` |
 | `workflow` | `gravity-workflow` | `GRAVITY_WORKFLOW_HOME` | `none` | `workflow-state`, `routing-profile` | `session-metrics` |
-| `metrics` | `gravity-metrics` | `GRAVITY_METRICS_HOME` | `transition-mcp` | `session-metrics`, `cost-telemetry` | `—` |
+| `metrics` | `gravity-metrics` | `GRAVITY_METRICS_HOME` | `none` | `session-metrics`, `cost-telemetry` | `—` |
 
 ---
 

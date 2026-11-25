@@ -5,6 +5,13 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Changed
+- **Refonte UI/UX `Métriques` & contrôleur unifié `app_js.py` (Vague 4 — `plugin/mcp/ui/metrics_views_js.py`, `plugin/mcp/ui/views_js.py`, `plugin/mcp/ui/app_js.py`, `plugin/mcp/widget_html.py`, `docs/`, `tests/`) :**
+  - Création de `metrics_views_js.py` (`METRICS_VIEWS_JS`) : 3 sous-vues purement DOM sans `innerHTML` centrées sur le coût technique des agents : `Vue d'ensemble technique` (tokens utiles, cache %, contexte `>128k`/`>200k`, parallélisme, thinking/compactions/latence `p95`, gaspillages/erreurs, répartitions `Atelier` vs `Code`, par modèle et par rôle), `Sessions` (Maître/Détail fluide sans débordement horizontal, filtres `Enregistrées`/`À enregistrer`/`Ignorées`, tri technique, `Comparateur A/B`, fiche détail `Synthèse` [repère `$` secondaire discret uniquement] / `Agents & Outils` expansible / `Diagnostic`, actions 1 clic `gravity_metrics_action` dont `Mettre à jour (+N appels)`, édition inline et suppression confirmée en 2 clics sans `window.confirm`), et `Audits Agents` (lecture en ligne via `gravity_read_audit` + ouverture `.md`).
+  - Mise à jour de `views_js.py` et `widget_html.py` : délégation de `renderMetricsView` vers `renderMetricsUnifiedView`, retrait complet du toggle `2026/2027`, des KPI `$` et des mentions `transition-mcp`.
+  - Mise à jour de `app_js.py` : 4 onglets (`live` | `metrics` | `architect` | `overview`, alias `workflow -> live`), polling live `2 000 ms` (`visible`, non en pause, `pollInFlight`, `since_signature`), dispatch `gravity_metrics_action` / `gravity_read_audit` et préservation du scroll et du focus lors des rafraîchissements.
+  - Alignement documentaire (`docs/roadmap.md`, `docs/module-contract.md`, `docs/architecture.md`, `docs/command-cheatsheet.md`, `plugin/README.md`) et couverture de tests (`tests/test_mcp_server.py`, `tests/test_dashboard_providers.py`).
+
 ### Added
 - **Design system adaptatif & Cockpit `En direct` (Vague 3 — `plugin/mcp/ui/styles.py`, `plugin/mcp/ui/charts_js.py`, `plugin/mcp/ui/live_views_js.py`, `plugin/mcp/widget_html.py`, `tests/test_ui_live_and_charts.py`) :**
   - Extension de `WIDGET_CSS` (`styles.py`) : thème adaptatif dark/light `--color-*`, responsive `@container` (`aux_pane` 1 colonne sans débordement horizontal vs `global` 2 colonnes Maître/Détail), cartes agents, jauges contexte (`>128k` alerte, `>200k` critique), badges `Atelier` / `Code`, panneaux dépliables et confirmations inline.
