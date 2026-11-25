@@ -8,7 +8,13 @@ from typing import Any, Optional, Sequence
 from dashboard.providers.architect_provider import get_architect_state
 from dashboard.providers.core_provider import get_overview
 from dashboard.providers.generic_provider import get_module_info
-from dashboard.providers.metrics_provider import get_metrics_state, get_session_detail
+from dashboard.providers.live_provider import get_live_session_state
+from dashboard.providers.metrics_actions import run_metrics_cli_action
+from dashboard.providers.metrics_provider import (
+    get_metrics_state,
+    get_session_detail,
+    read_audit_content_ro as read_metrics_audit,
+)
 from dashboard.providers.workflow_provider import get_workflow_state
 
 
@@ -19,7 +25,9 @@ def build_initial_summary(
     ws: str = "",
     atelier: str = "",
     module_id: str = "",
+    session_id: str = "",
     overview: Optional[dict[str, Any]] = None,
+    live: Optional[dict[str, Any]] = None,
     workflow: Optional[dict[str, Any]] = None,
     metrics: Optional[dict[str, Any]] = None,
     architect: Optional[dict[str, Any]] = None,
@@ -27,6 +35,7 @@ def build_initial_summary(
     gravity_home: Optional[Path] = None,
     plugin_roots: Optional[Sequence[Path]] = None,
     home_dir: Optional[Path] = None,
+    brain_dir: Optional[Path] = None,
     workflow_home: Optional[Path] = None,
     metrics_home: Optional[Path] = None,
     audits_dirs: Optional[Sequence[Path]] = None,
@@ -65,6 +74,25 @@ def build_initial_summary(
         else:
             parts.append(f"Module {module_id.strip()}: introuvable")
 
+    if live is not None or req_view == "live" or "live" in tab_ids:
+        lv = live if live is not None else get_live_session_state(
+            session_id=session_id,
+            ws=ws,
+            gravity_home=gravity_home,
+            brain_dir=brain_dir,
+            metrics_home=metrics_home,
+            workflow_home=workflow_home,
+            home_dir=home_dir,
+        )
+        lv_sum = lv.get("summary") or {}
+        if lv.get("available"):
+            parts.append(
+                f"Live: {len(lv.get('sessions') or [])} session(s), "
+                f"{lv_sum.get('active_agents', 0)}/{lv_sum.get('total_agents', 0)} agent(s) actif(s)"
+            )
+        else:
+            parts.append("Live: aucune session active")
+
     if workflow is not None or req_view == "workflow" or "workflow" in tab_ids:
         wf = workflow if workflow is not None else get_workflow_state(
             ws=ws,
@@ -90,7 +118,7 @@ def build_initial_summary(
         scope_lbl = f"projet '{project.strip()}'" if project.strip() else "global"
         parts.append(
             f"Metrics ({scope_lbl}): {kpis.get('sessions_count', 0)} session(s), "
-            f"${float(kpis.get('cost_usd') or 0.0):.4f}, "
+            f"{int(kpis.get('useful_tokens') or 0)} tok. utiles, "
             f"{len(met.get('pending_sessions') or [])} en attente"
         )
 
@@ -118,9 +146,12 @@ def build_initial_summary(
 __all__ = [
     "build_initial_summary",
     "get_architect_state",
+    "get_live_session_state",
     "get_metrics_state",
     "get_module_info",
     "get_overview",
     "get_session_detail",
     "get_workflow_state",
+    "read_metrics_audit",
+    "run_metrics_cli_action",
 ]

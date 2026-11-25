@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
 import json
-import os
 from pathlib import Path
 import re
 from typing import Any, Optional, Sequence
@@ -13,25 +11,26 @@ from typing import Any, Optional, Sequence
 from core.registry import resolve_module_home
 from dashboard.providers import (
     enforce_payload_budget,
-    extract_md_excerpt,
-    extract_md_title,
-    extract_md_verdict,
     file_uri_if_exists,
     read_json_ro,
     short_digest,
     stat_token,
     unchanged_response,
 )
+from dashboard.providers.metrics_audits import (
+    build_audits_bundle_ro,
+    collect_audit_files_ro,
+    discover_audit_roots_ro,
+    read_audit_content_ro,
+)
 
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 MAX_PAYLOAD_BYTES = 450_000
-MAX_AUDIT_HEAD_BYTES = 32_768
 MAX_AGENTS_IN_DETAIL = 200
 
 _HEX_PREFIX_RE = re.compile(r"^[0-9a-fA-F]{8,}(?:-[0-9a-fA-F]{0,4}){0,4}$")
 _SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_DATE_PREFIX_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\b")
 _TRAJECTORY_KEYS = frozenset(
     {
         "trajectory",
@@ -196,6 +195,86 @@ def _aggregate_by_project(records: Sequence[dict[str, Any]]) -> list[dict[str, A
     return out
 
 
+def _infer_workspace_kind(ws_name: str, explicit_kinds: dict[str, Any]) -> str:
+    raw_kind = str(explicit_kinds.get(ws_name) or "").strip().lower()
+    if raw_kind in ("atelier", "code"):
+        return raw_kind
+    low = ws_name.strip().lower()
+    if low == "gravity-studio" or low.endswith("-studio"):
+        return "atelier"
+    return "code"
+
+
+def _aggregate_by_workspace(records: Sequence[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    buckets: dict[str, dict[str, Any]] = {}
+    explicit_kinds: dict[str, str] = {}
+
+    for rec in records:
+        rec_kinds = rec.get("workspace_kinds")
+        if isinstance(rec_kinds, dict):
+            for k, v in rec_kinds.items():
+                if isinstance(k, str) and isinstance(v, str) and v.strip().lower() in ("atelier", "code"):
+                    explicit_kinds[k.strip()] = v.strip().lower()
+
+        shares = rec.get("workspace_share_pct")
+        if not isinstance(shares, dict) or not shares:
+            proj = str(rec.get("project") or "").strip() or "(sans projet)"
+            shares = {proj: 100.0}
+
+        in_t = int(rec.get("input_tokens") or 0)
+        out_t = int(rec.get("output_tokens") or 0)
+        cache_t = int(rec.get("cache_read_tokens") or 0)
+        tot_t = int(rec.get("total_tokens") or 0)
+        useful_t = (in_t + out_t) if (in_t > 0 or out_t > 0) else max(0, tot_t - cache_t)
+        c26 = float(rec.get("cost_usd") or 0.0)
+
+        for raw_ws, raw_pct in shares.items():
+            ws_name = str(raw_ws or "").strip()
+            if not ws_name:
+                continue
+            try:
+                weight = max(0.0, float(raw_pct)) / 100.0
+            except (TypeError, ValueError):
+                weight = 0.0
+            key = ws_name.casefold()
+            if key not in buckets:
+                buckets[key] = {
+                    "workspace": ws_name,
+                    "kind": _infer_workspace_kind(ws_name, explicit_kinds),
+                    "sessions": 0,
+                    "useful_tokens": 0,
+                    "total_tokens": 0,
+                    "cost_usd": 0.0,
+                }
+            b = buckets[key]
+            if b["kind"] == "code":
+                b["kind"] = _infer_workspace_kind(ws_name, explicit_kinds)
+            b["sessions"] += 1
+            b["useful_tokens"] += int(round(useful_t * weight))
+            b["total_tokens"] += int(round(tot_t * weight))
+            b["cost_usd"] += c26 * weight
+
+    grand_tokens = sum(b["total_tokens"] for b in buckets.values())
+    out: list[dict[str, Any]] = []
+    kinds_map: dict[str, str] = {}
+    for b in buckets.values():
+        kinds_map[b["workspace"]] = b["kind"]
+        share = round((b["total_tokens"] / grand_tokens) * 100.0, 2) if grand_tokens > 0 else 0.0
+        out.append(
+            {
+                "workspace": b["workspace"],
+                "kind": b["kind"],
+                "sessions": b["sessions"],
+                "useful_tokens": b["useful_tokens"],
+                "total_tokens": b["total_tokens"],
+                "share_pct": share,
+                "cost_usd": round(b["cost_usd"], 6),
+            }
+        )
+    out.sort(key=lambda item: (-item["total_tokens"], -item["sessions"], item["workspace"].casefold()))
+    return out, kinds_map
+
+
 def _compute_kpis(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
     sessions_count = len(records)
     archived_count = sum(
@@ -212,9 +291,21 @@ def _compute_kpis(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
     cache_savings_usd = sum(float(r.get("cache_savings_usd") or 0.0) for r in records)
     cache_sum = sum(float(r.get("cache_hit_rate_pct") or 0.0) for r in records)
     total_tokens = sum(int(r.get("total_tokens") or 0) for r in records)
+    cache_read_tokens = sum(int(r.get("cache_read_tokens") or 0) for r in records)
+    useful_tokens = sum(
+        (int(r.get("input_tokens") or 0) + int(r.get("output_tokens") or 0))
+        if (r.get("input_tokens") is not None or r.get("output_tokens") is not None)
+        else max(0, int(r.get("total_tokens") or 0) - int(r.get("cache_read_tokens") or 0))
+        for r in records
+    )
     total_llm_calls = sum(int(r.get("llm_calls") or 0) for r in records)
     bridge_sessions_count = sum(1 for r in records if int(r.get("bridge_children_count") or 0) > 0)
     bridge_children_total = sum(int(r.get("bridge_children_count") or 0) for r in records)
+
+    ctx_vals = [int(r.get("max_context_tokens") or 0) for r in records]
+    p95_vals = [float(r["latency_p95_ms"]) for r in records if float(r.get("latency_p95_ms") or 0.0) > 0.0]
+    avg_lat_vals = [float(r["latency_avg_ms"]) for r in records if float(r.get("latency_avg_ms") or 0.0) > 0.0]
+    err_rate_sum = sum(float(r.get("error_rate_pct") or 0.0) for r in records)
 
     return {
         "sessions_count": sessions_count,
@@ -225,6 +316,22 @@ def _compute_kpis(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "cache_savings_usd": round(cache_savings_usd, 6),
         "avg_cache_hit_rate_pct": round(cache_sum / sessions_count, 2) if sessions_count > 0 else 0.0,
         "total_tokens": total_tokens,
+        "useful_tokens": useful_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "max_context_tokens": max(ctx_vals, default=0),
+        "context_alerts_count": sum(1 for c in ctx_vals if c > 128_000),
+        "context_critical_count": sum(1 for c in ctx_vals if c > 200_000),
+        "thinking_est_tokens": sum(int(r.get("thinking_est_tokens") or 0) for r in records),
+        "compaction_count": sum(int(r.get("compaction_count") or 0) for r in records),
+        "latency_p95_ms": round(sum(p95_vals) / len(p95_vals), 1) if p95_vals else 0.0,
+        "max_latency_p95_ms": round(max(p95_vals, default=0.0), 1),
+        "latency_avg_ms": round(sum(avg_lat_vals) / len(avg_lat_vals), 1) if avg_lat_vals else 0.0,
+        "error_steps": sum(int(r.get("error_steps") or 0) for r in records),
+        "avg_error_rate_pct": round(err_rate_sum / sessions_count, 2) if sessions_count > 0 else 0.0,
+        "duplicate_spawns": sum(int(r.get("duplicate_spawns") or 0) for r in records),
+        "rewind_calls": sum(int(r.get("rewind_calls") or 0) for r in records),
+        "interrupted_agents": sum(int(r.get("interrupted_agents") or 0) for r in records),
+        "wall_clock_s": round(sum(float(r.get("wall_clock_s") or 0.0) for r in records), 2),
         "total_llm_calls": total_llm_calls,
         "bridge_sessions_count": bridge_sessions_count,
         "bridge_children_total": bridge_children_total,
@@ -344,186 +451,6 @@ def _derive_pending_states_ro(
     return pending, ignored
 
 
-def _is_code_audit_path(root_resolved: Path, file_path: Path, resolved_file: Path) -> bool:
-    for candidate in (file_path, resolved_file):
-        try:
-            rel_parts = candidate.relative_to(root_resolved).parts
-        except ValueError:
-            return True
-        if any(part.lower() == "code" for part in rel_parts[:-1]):
-            return True
-    dir_parts = [part.lower() for part in resolved_file.parts[:-1]]
-    return any(
-        dir_parts[idx] == "audits" and dir_parts[idx + 1] == "code"
-        for idx in range(len(dir_parts) - 1)
-    )
-
-
-def _is_audits_code_dir(path: Path, *, is_direct: bool = False) -> bool:
-    low_name = path.name.lower()
-    if is_direct and low_name == "code":
-        return True
-    if low_name == "code" and path.parent.name.lower() == "audits":
-        return True
-    return any(
-        path.parts[idx].lower() == "audits" and path.parts[idx + 1].lower() == "code"
-        for idx in range(len(path.parts) - 1)
-    )
-
-
-def _discover_audit_roots_ro(
-    *,
-    audits_dirs: Optional[Sequence[Path]],
-    session_meta: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    candidates: list[tuple[str, Path, bool]] = []
-    if audits_dirs is not None:
-        for p in audits_dirs:
-            candidates.append(("", Path(p).expanduser(), True))
-    else:
-        env_raw = os.environ.get("GRAVITY_AUDITS_DIR", "").strip()
-        if env_raw:
-            for part in env_raw.split(os.pathsep):
-                clean = part.strip()
-                if clean:
-                    candidates.append(("", Path(clean).expanduser(), True))
-        else:
-            seen_cwds: set[str] = set()
-            for meta in session_meta.values():
-                cwd = str(meta.get("cwd") or "").strip()
-                if not cwd:
-                    continue
-                cwd_key = os.path.normcase(cwd)
-                if cwd_key in seen_cwds:
-                    continue
-                seen_cwds.add(cwd_key)
-                ws_path = Path(cwd).expanduser()
-                candidates.append((ws_path.name or "workspace", ws_path / "audits" / "agents", False))
-
-    roots: list[dict[str, Any]] = []
-    seen_paths: set[str] = set()
-    used_ids: set[str] = set()
-
-    for ws_hint, raw_root, is_direct in candidates:
-        try:
-            abs_raw = Path(os.path.abspath(str(raw_root)))
-            if _is_audits_code_dir(abs_raw, is_direct=is_direct):
-                continue
-            if raw_root.is_symlink() or not raw_root.is_dir():
-                continue
-            resolved = raw_root.resolve()
-            if _is_audits_code_dir(resolved, is_direct=is_direct):
-                continue
-            if is_direct:
-                agents_sub = resolved / "agents"
-                if agents_sub.is_dir() and not agents_sub.is_symlink():
-                    agents_res = agents_sub.resolve()
-                    if _is_audits_code_dir(agents_sub) or _is_audits_code_dir(agents_res):
-                        continue
-                    resolved = agents_res
-                if resolved.name.lower() == "agents" and resolved.parent.name.lower() == "audits":
-                    ws_label = resolved.parent.parent.name or resolved.parent.name or "audits"
-                else:
-                    ws_label = resolved.parent.name or resolved.name or "audits"
-            else:
-                ws_label = ws_hint or resolved.parent.parent.name or "workspace"
-            key = os.path.normcase(str(resolved))
-        except OSError:
-            continue
-
-        if key in seen_paths:
-            continue
-        seen_paths.add(key)
-
-        base_id = re.sub(r"[^a-z0-9._-]+", "-", ws_label.lower()).strip("-") or "audits"
-        root_id = base_id
-        suffix = 2
-        while root_id in used_ids:
-            root_id = f"{base_id}-{suffix}"
-            suffix += 1
-        used_ids.add(root_id)
-
-        roots.append({"root_id": root_id, "workspace": ws_label, "path": resolved})
-    return roots
-
-
-def _collect_audit_files_ro(roots: Sequence[dict[str, Any]]) -> list[tuple[dict[str, Any], Path, str]]:
-    discovered: list[tuple[dict[str, Any], Path, str]] = []
-    for root in roots:
-        root_resolved = root["path"].resolve()
-        try:
-            candidates = sorted(root_resolved.rglob("*"))
-        except OSError:
-            continue
-        for fpath in candidates:
-            try:
-                if fpath.is_symlink() or not fpath.is_file() or fpath.suffix.lower() != ".md":
-                    continue
-                if fpath.name.startswith("_"):
-                    continue
-                resolved_file = fpath.resolve()
-                if resolved_file.name.startswith("_") or not resolved_file.is_relative_to(root_resolved):
-                    continue
-                if _is_code_audit_path(root_resolved, fpath, resolved_file):
-                    continue
-                rel_posix = resolved_file.relative_to(root_resolved).as_posix()
-                discovered.append((root, resolved_file, rel_posix))
-            except OSError:
-                continue
-    return discovered
-
-
-def _build_audits_bundle_ro(
-    audit_files: Sequence[tuple[dict[str, Any], Path, str]],
-) -> dict[str, Any]:
-    regular: list[dict[str, Any]] = []
-    index_audits: list[dict[str, Any]] = []
-
-    for root, resolved_file, rel_posix in audit_files:
-        try:
-            st = resolved_file.stat()
-            with resolved_file.open("rb") as fh:
-                raw = fh.read(MAX_AUDIT_HEAD_BYTES)
-        except OSError:
-            continue
-        text = raw.decode("utf-8", errors="replace").lstrip("\ufeff")
-        updated_at = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        date_m = _DATE_PREFIX_RE.match(resolved_file.name)
-        date_str = date_m.group(1) if date_m else updated_at[:10]
-        verdict, verdict_tone = extract_md_verdict(text)
-
-        entry = {
-            "audit_id": f"{root['root_id']}:{rel_posix}",
-            "workspace": root["workspace"],
-            "rel_path": rel_posix,
-            "title": extract_md_title(text, resolved_file.stem),
-            "verdict": verdict,
-            "verdict_tone": verdict_tone,
-            "date": date_str,
-            "updated_at": updated_at,
-            "size_bytes": int(st.st_size),
-            "excerpt": extract_md_excerpt(text),
-            "uri": resolved_file.as_uri(),
-        }
-        if rel_posix.lower() == "readme.md":
-            index_audits.append(entry)
-        else:
-            regular.append(entry)
-
-    index_audits.sort(
-        key=lambda a: (str(a.get("workspace") or "").casefold(), str(a.get("rel_path") or "").casefold())
-    )
-    regular.sort(
-        key=lambda a: (str(a.get("date") or ""), str(a.get("updated_at") or ""), str(a.get("rel_path") or "")),
-        reverse=True,
-    )
-    return {
-        "audits": regular,
-        "index_audit": index_audits[0] if index_audits else None,
-        "index_audits": index_audits,
-    }
-
-
 def get_metrics_state(
     project: str = "",
     limit: int = DEFAULT_LIMIT,
@@ -552,8 +479,8 @@ def get_metrics_state(
 
     warnings: list[str] = []
     session_meta = _load_state_map_ro(session_meta_path, "sessions", warnings)
-    audit_roots = _discover_audit_roots_ro(audits_dirs=audits_dirs, session_meta=session_meta)
-    audit_files = _collect_audit_files_ro(audit_roots)
+    audit_roots = discover_audit_roots_ro(audits_dirs=audits_dirs, session_meta=session_meta)
+    audit_files = collect_audit_files_ro(audit_roots)
 
     sig = short_digest(
         [
@@ -588,13 +515,14 @@ def get_metrics_state(
     kpis = _compute_kpis(filtered)
     projects = _collect_projects(all_records)
     by_project = _aggregate_by_project(filtered)
+    by_workspace, workspace_kinds = _aggregate_by_workspace(filtered)
     pending_sessions, ignored_sessions = _derive_pending_states_ro(
         records=all_records,
         active_captures=active_captures,
         ignored_map=ignored_map,
         session_meta=session_meta,
     )
-    audits_bundle = _build_audits_bundle_ro(audit_files)
+    audits_bundle = build_audits_bundle_ro(audit_files)
     records_page = list(reversed(filtered))[:eff_limit]
 
     payload: dict[str, Any] = {
@@ -610,6 +538,8 @@ def get_metrics_state(
         "kpis": kpis,
         "projects": projects,
         "by_project": by_project,
+        "by_workspace": by_workspace,
+        "workspace_kinds": workspace_kinds,
         "records": records_page,
         "active_captures": active_captures,
         "pending_sessions": pending_sessions,

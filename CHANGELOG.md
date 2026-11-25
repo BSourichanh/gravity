@@ -5,6 +5,12 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Added
+- **Providers backend Live & Actions CLI DIP (Vague 1 — `plugin/dashboard/providers/live_provider.py`, `plugin/dashboard/providers/metrics_actions.py`, `plugin/dashboard/providers/metrics_audits.py`, `plugin/dashboard/providers/metrics_provider.py`, `plugin/dashboard/api.py`) :**
+  - Ajout de `get_live_session_state()` : scan RO incrémental par `(path, inode, size)` + `seek(last_offset)` sur `brain/<cid>/.system_generated/` (`logs/transcript.jsonl`, `subagents/*.json`, `swarm/{members,plan,board}.{json,jsonl}`, `tasks/task-*.log`), fusion `workflow_provider.get_workflow_state()`, filtrage des conversations enfants, normalisation des worktrees et fast-path `since_signature`.
+  - Ajout de `run_metrics_cli_action()` : découverte DIP de `gravity-metrics/scripts/cli.py` via `modules.json` / `discover_modules()`, validation stricte des entrées et exécution `subprocess.run(..., shell=False, timeout=20)` avec `--json` (`record`, `update`, `update-meta`, `ignore`, `unignore`, `remove`).
+  - Extension de `metrics_provider.py` (`< 800 L`) via `metrics_audits.py` : signaux techniques (`useful_tokens`, `thinking_est_tokens`, `compaction_count`, `latency_p95_ms`, `context_alerts_count`), `by_workspace` / `workspace_kinds` (`atelier` vs `code`) et `read_audit_content_ro()` confiné aux racines `audits/agents/`.
+
 ### Changed
 - **Dashboard Architect (`tasks/`) (`plugin/dashboard/providers/architect_provider.py`, `plugin/dashboard/api.py`, `plugin/mcp/server.py`, `plugin/mcp/ui/views_js.py`, `tests/test_dashboard_providers.py`) :**
   - Bascule du fournisseur Architect, du serveur MCP (`gravity_get_architect_state`) et de la vue UI vers `tasks/` + `tasks/archive/` (`tasks`, `archived_tasks_count`) avec repli lecture seule legacy sur `handoffs/` et `handoffs/archive/` uniquement si `tasks/` est absent.
