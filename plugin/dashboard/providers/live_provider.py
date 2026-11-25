@@ -32,13 +32,15 @@ from dashboard.providers.live_tree import (
 )
 from dashboard.providers.workflow_provider import get_workflow_state
 
-MAX_ROOT_SESSIONS, MAX_AGENT_EVENTS, MAX_BOARD_EVENTS, MAX_RECENT_EVENTS = 25, 25, 30, 40
+MAX_ROOT_SESSIONS, MAX_AGENT_EVENTS, MAX_BOARD_EVENTS, MAX_RECENT_EVENTS = 25, 25, 30, 80
 MAX_PAYLOAD_BYTES, MAX_CACHE_ENTRIES = 450_000, 256
 LIVE_RECENT_WINDOW_S = 6 * 3600
 
 _WORKTREE_RE = re.compile(r"/(?:gravity-worktrees|\.gemini/antigravity/worktrees|\.worktrees)/([^/]+)(?:/|$)", re.IGNORECASE)
 _WORKTREE_SUFFIX_RE = re.compile(r"-w\d+$", re.IGNORECASE)
-_REPO_MARKER_RE = re.compile(r"/([^/]+)/(?:plugin|src|tests|specs|tasks|docs|scripts|config|audits|assets|README\.md|AGENTS\.md|CHANGELOG\.md)(?:/|$)")
+_REPO_MARKER_RE = re.compile(
+    r"/([^/]+)/(?:plugin|src|tests|specs|tasks|docs|scripts|config|audits|assets|tracking|dashboard|templates|archives|README\.md|AGENTS\.md|CHANGELOG\.md)(?:/|$)"
+)
 _CMD_CD_RE = re.compile(r"(?:^|[;&|]\s*)(?:cd|git\s+-C)\s+[\"']?([^\s\"';&|]+)", re.IGNORECASE)
 _UUID_LIKE_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F-]{12,}$|^[A-Za-z0-9._-]{4,80}$")
 
@@ -85,8 +87,9 @@ def _normalize_repo_name(raw_path: str, root_parent: Optional[Path] = None) -> s
         return _WORKTREE_SUFFIX_RE.sub("", m.group(1)) if "/gravity-worktrees/" in cleaned.lower() else m.group(1)
     if root_parent is not None:
         parent_posix = str(root_parent).replace("\\", "/").rstrip("/")
-        if parent_posix and cleaned.startswith(parent_posix + "/"):
-            rest = cleaned[len(parent_posix) + 1 :].split("/", 1)[0]
+        prefix = parent_posix + "/"
+        if parent_posix and cleaned[: len(prefix)].casefold() == prefix.casefold():
+            rest = cleaned[len(prefix) :].split("/", 1)[0]
             if rest:
                 return _WORKTREE_SUFFIX_RE.sub("", rest) if "worktree" in parent_posix.lower() else rest
     marker_m = _REPO_MARKER_RE.search(cleaned)
@@ -111,7 +114,7 @@ def _classify_workspace_kind(ws_name: str, ws_path: str = "", root_ws: str = "")
         p = Path(_strip_file_uri(ws_path))
         if p.is_dir() and ((p / "projects.json").is_file() or (p / "specs").is_dir()):
             return "atelier"
-    return "atelier" if (root_ws and ws_name and ws_name.casefold() == root_ws.casefold()) else "code"
+    return "code"
 
 
 def _read_json_cached(path: Path) -> Any:
@@ -281,27 +284,33 @@ def _read_board_events(board_jsonl: Path, board_json: Path) -> list[dict[str, An
 def _resolve_agent_workspace(
     acc: dict[str, Any], *, uris: Sequence[str], meta_cwd: str, root_ws: str, root_parent: Optional[Path]
 ) -> tuple[str, str]:
+    root_cf = root_ws.casefold()
     for bucket, skip_root in ((acc["write_paths"], False), (acc["read_paths"], True)):
         repos: Counter[str] = Counter()
         for p, cnt in bucket.items():
-            norm_p = p.replace("\\", "/")
-            if skip_root and root_ws and (f"/{root_ws}/specs/" in norm_p or f"/{root_ws}/tasks/" in norm_p):
+            norm_cf = p.replace("\\", "/").casefold()
+            if skip_root and root_cf and (f"/{root_cf}/specs/" in norm_cf or f"/{root_cf}/tasks/" in norm_cf):
                 continue
             repo = _normalize_repo_name(p, root_parent=root_parent)
-            if repo and (not skip_root or repo.casefold() != root_ws.casefold()):
+            if repo and (not skip_root or repo.casefold() != root_cf):
                 repos[repo] += cnt
         if repos:
             ws = repos.most_common(1)[0][0]
-            return ws, _classify_workspace_kind(ws, root_ws=root_ws)
+            ws_path = meta_cwd if (meta_cwd and root_cf and ws.casefold() == root_cf) else ""
+            if not ws_path and root_parent is not None:
+                cand = root_parent / ws
+                if cand.is_dir():
+                    ws_path = str(cand)
+            return ws, _classify_workspace_kind(ws, ws_path, root_ws=root_ws)
     for uri in uris:
         repo = _normalize_repo_name(uri, root_parent=root_parent)
-        if repo and (not root_ws or repo.casefold() != root_ws.casefold()):
+        if repo and (not root_cf or repo.casefold() != root_cf):
             return repo, _classify_workspace_kind(repo, uri, root_ws=root_ws)
     if meta_cwd:
         repo = _normalize_repo_name(meta_cwd, root_parent=root_parent)
         if repo:
             return repo, _classify_workspace_kind(repo, meta_cwd, root_ws=root_ws)
-    return root_ws or "workspace", _classify_workspace_kind(root_ws, root_ws=root_ws)
+    return root_ws or "workspace", _classify_workspace_kind(root_ws, meta_cwd if (meta_cwd and root_ws) else "", root_ws=root_ws)
 
 
 def _derive_agent_status(
@@ -346,7 +355,8 @@ def _build_agent_entry(
         "cache_hit_pct": round((cache_t / prompt_t) * 100.0, 2) if prompt_t > 0 else 0.0,
         "llm_calls": acc["llm_calls"], "tool_calls": acc["tool_calls"],
         "duration_s": round(max(0.0, (t1 - t0).total_seconds()), 1) if t0 and t1 else 0.0,
-        "error_count": acc["error_count"], "error_steps": acc["error_count"], "last_ts": acc["last_ts"],
+        "error_count": acc["error_count"], "error_steps": acc["error_count"],
+        "started_at": acc["first_ts"], "last_ts": acc["last_ts"],
     }
 
 
@@ -647,14 +657,14 @@ def _discover_brain_sessions(
         r["archived"] = _is_candidate_archived(r["cid"], int(r["mtime_ns"]), active_captures, history_map)
 
     captured_roots = [r for r in roots if not r["archived"] and r["cid"] in active_captures]
-    if captured_roots:
-        return [captured_roots[0]]
-
     fresh_roots = [
         r for r in roots
-        if not r["archived"] and r["mtime_ns"] > 0 and (now_s - (r["mtime_ns"] / 1e9)) <= LIVE_RECENT_WINDOW_S
+        if not r["archived"]
+        and r["cid"] not in active_captures
+        and r["mtime_ns"] > 0
+        and (now_s - (r["mtime_ns"] / 1e9)) <= LIVE_RECENT_WINDOW_S
     ]
-    return [fresh_roots[0]] if fresh_roots else []
+    return (captured_roots + fresh_roots)[:MAX_ROOT_SESSIONS]
 
 
 def get_live_session_state(
@@ -680,8 +690,14 @@ def get_live_session_state(
     q_cid = session_id.strip().lower()
     roots = _discover_brain_sessions(b_dir, active_captures, session_meta, metrics_home=m_home, explicit_cid=q_cid)
     selected = roots[0] if roots else None
-    wf_state = get_workflow_state(ws=ws, gravity_home=gravity_home, workflow_home=workflow_home, registry_path=registry_path)
+    sel_meta: dict[str, Any] = (session_meta.get(selected["cid"]) or {}) if selected is not None else {}
+    sel_cap: Optional[dict[str, Any]] = active_captures.get(selected["cid"]) if selected is not None else None
+    root_cwd = str(sel_meta.get("cwd") or "").strip() if selected is not None else ""
+    root_ws = str((sel_cap or {}).get("project") or sel_meta.get("project") or _normalize_repo_name(root_cwd) or "workspace") if selected is not None else ""
+    effective_ws = ws.strip() or (root_cwd or (root_ws if root_ws and root_ws != "workspace" else ""))
+    wf_state = get_workflow_state(ws=effective_ws, gravity_home=gravity_home, workflow_home=workflow_home, registry_path=registry_path)
     wf_slim = {k: wf_state.get(k) for k in ("available", "stage", "progress", "mode", "level", "preset_profile", "suggested_profile", "guard_status", "nodes", "selected_workspace")}
+    wf_slim["is_active"] = str(wf_slim.get("stage") or "").strip().lower() not in ("", "idle")
     sig_parts: list[Any] = [str(b_dir), q_cid, bool(include_events), stat_token(cap_path), stat_token(meta_path), stat_token(m_home / "data" / "history.jsonl"), wf_state.get("signature", ""), [(r["cid"], r["mtime_ns"], bool(r.get("archived"))) for r in roots]]
     root_task_logs_count = 0
     if selected is not None:
@@ -700,12 +716,9 @@ def get_live_session_state(
         return unchanged_response(sig)
     sessions_list = [{"conversation_id": r["cid"], "label": str((active_captures.get(r["cid"]) or {}).get("label") or f"session-{r['cid'][:8]}"), "project": str((active_captures.get(r["cid"]) or {}).get("project") or (session_meta.get(r["cid"]) or {}).get("project") or _normalize_repo_name(str((session_meta.get(r["cid"]) or {}).get("cwd") or ""))), "captured": r["cid"] in active_captures, "archived": bool(r.get("archived")), "updated_at": str((active_captures.get(r["cid"]) or {}).get("updated_at") or (session_meta.get(r["cid"]) or {}).get("updated_at") or (datetime.fromtimestamp(r["mtime_ns"] / 1e9, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if r["mtime_ns"] else ""))} for r in roots]
     if selected is None:
-        return {"changed": True, "unchanged": False, "signature": sig, "available": False, "brain_dir": str(b_dir), "sessions": sessions_list, "selected_session": None, "agents": [], "recent_events": [], "summary": {"total_agents": 0, "active_agents": 0, "waiting_agents": 0, "done_agents": 0, "error_agents": 0}, "workflow": wf_slim}
+        return {"changed": True, "unchanged": False, "signature": sig, "available": False, "brain_dir": str(b_dir), "sessions": sessions_list, "selected_session": None, "session_started_at": "", "session_last_ts": "", "agents": [], "recent_events": [], "summary": {"total_agents": 0, "active_agents": 0, "waiting_agents": 0, "done_agents": 0, "error_agents": 0, "session_started_at": "", "session_last_ts": ""}, "workflow": wf_slim}
 
     sel_cid, sg = selected["cid"], selected["sg"]
-    sel_meta, sel_cap = session_meta.get(sel_cid) or {}, active_captures.get(sel_cid)
-    root_cwd = str(sel_meta.get("cwd") or "").strip()
-    root_ws = str((sel_cap or {}).get("project") or sel_meta.get("project") or _normalize_repo_name(root_cwd) or "workspace")
     root_parent = Path(_strip_file_uri(root_cwd)).parent if root_cwd else None
 
     members_raw, plan_raw = _read_json_cached(sg / "swarm" / "members.json"), _read_json_cached(sg / "swarm" / "plan.json")
@@ -761,11 +774,16 @@ def get_live_session_state(
 
     sc = Counter(a["status"] for a in agents)
     tot_in, tot_cache = sum(a["useful_tokens"] for a in agents), sum(a["cache_read_tokens"] for a in agents)
+    start_ts_list = [str(a["started_at"]) for a in agents if a.get("started_at")]
+    last_ts_list = [str(a["last_ts"]) for a in agents if a.get("last_ts")]
+    session_started_at = min(start_ts_list, key=lambda s: (_parse_iso_ts(s) or datetime.max.replace(tzinfo=timezone.utc), s)) if start_ts_list else root_acc["first_ts"]
+    session_last_ts = max(last_ts_list, key=lambda s: (_parse_iso_ts(s) or datetime.min.replace(tzinfo=timezone.utc), s)) if last_ts_list else root_acc["last_ts"]
     payload: dict[str, Any] = {
         "changed": True, "unchanged": False, "signature": sig, "available": True, "brain_dir": str(b_dir), "sessions": sessions_list,
-        "selected_session": {"conversation_id": sel_cid, "label": str((sel_cap or {}).get("label") or swarm_title or goal_title or f"session-{sel_cid[:8]}"), "project": root_ws, "workspace_kind": r_kind, "captured": sel_cap is not None, "start_step": (sel_cap or {}).get("start_step"), "swarm_title": swarm_title, "goal_title": goal_title, "last_step_index": root_acc["last_step_index"], "last_ts": root_acc["last_ts"]},
+        "session_started_at": session_started_at, "session_last_ts": session_last_ts,
+        "selected_session": {"conversation_id": sel_cid, "label": str((sel_cap or {}).get("label") or swarm_title or goal_title or f"session-{sel_cid[:8]}"), "project": root_ws, "workspace_kind": r_kind, "captured": sel_cap is not None, "start_step": (sel_cap or {}).get("start_step"), "swarm_title": swarm_title, "goal_title": goal_title, "last_step_index": root_acc["last_step_index"], "started_at": session_started_at, "session_started_at": session_started_at, "session_last_ts": session_last_ts, "last_ts": root_acc["last_ts"]},
         "agents": agents, "recent_events": all_events if include_events else [],
-        "summary": {"total_agents": len(agents), "active_agents": sc["active"], "waiting_agents": sc["waiting"], "done_agents": sc["done"], "error_agents": sc["error"], "useful_tokens": tot_in, "cache_read_tokens": tot_cache, "cache_hit_pct": round((tot_cache / (tot_in + tot_cache)) * 100.0, 2) if (tot_in + tot_cache) > 0 else 0.0, "max_context_tokens": max((a["max_context_tokens"] for a in agents), default=0), "context_tokens": root_agent["context_tokens"], "thinking_est_tokens": sum(a["thinking_est_tokens"] for a in agents), "llm_calls": sum(a["llm_calls"] for a in agents), "tool_calls": sum(a["tool_calls"] for a in agents), "error_count": sum(a["error_count"] for a in agents), "duration_s": max((a["duration_s"] for a in agents), default=0.0), "background_tasks": root_task_logs_count},
+        "summary": {"total_agents": len(agents), "active_agents": sc["active"], "waiting_agents": sc["waiting"], "done_agents": sc["done"], "error_agents": sc["error"], "useful_tokens": tot_in, "cache_read_tokens": tot_cache, "cache_hit_pct": round((tot_cache / (tot_in + tot_cache)) * 100.0, 2) if (tot_in + tot_cache) > 0 else 0.0, "max_context_tokens": max((a["max_context_tokens"] for a in agents), default=0), "context_tokens": root_agent["context_tokens"], "thinking_est_tokens": sum(a["thinking_est_tokens"] for a in agents), "llm_calls": sum(a["llm_calls"] for a in agents), "tool_calls": sum(a["tool_calls"] for a in agents), "error_count": sum(a["error_count"] for a in agents), "duration_s": max((a["duration_s"] for a in agents), default=0.0), "session_started_at": session_started_at, "session_last_ts": session_last_ts, "background_tasks": root_task_logs_count},
         "workflow": wf_slim,
     }
     return enforce_payload_budget(payload, ("recent_events", "agents", "sessions"), max_bytes=MAX_PAYLOAD_BYTES)

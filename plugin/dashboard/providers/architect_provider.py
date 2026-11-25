@@ -32,6 +32,10 @@ _HYGIENE_BLOCK_RE = re.compile(
     r"<!--\s*AUTO:START:ecosystem-hygiene\s*-->(.*?)<!--\s*AUTO:END:ecosystem-hygiene\s*-->",
     re.DOTALL | re.IGNORECASE,
 )
+_PROJECTS_BLOCK_RE = re.compile(
+    r"<!--\s*AUTO:START:ecosystem-projects\s*-->(.*?)<!--\s*AUTO:END:ecosystem-projects\s*-->",
+    re.DOTALL | re.IGNORECASE,
+)
 _HYGIENE_HEADING_RE = re.compile(
     r"(?:^|\n)#{2,3}\s+Alertes\s+hygi[eè]ne[^\n]*\n(.*?)(?=\n#{1,3}\s+|\Z)",
     re.DOTALL | re.IGNORECASE,
@@ -54,6 +58,11 @@ _TARGET_LINE_RE = re.compile(
     r"^\s*-\s*\*\*(?:D[ée]p[ôo]t\s+cible|Projets?\s+impact[ée]s?|Cible)\s*:\*\*\s*(.+?)\s*$",
     re.MULTILINE | re.IGNORECASE,
 )
+_WAVE_LINE_RE = re.compile(r"^\s*-\s*\*\*Vague\s*:\*\*\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+_DEPS_LINE_RE = re.compile(r"^\s*-\s*\*\*D[ée]pendances\s*:\*\*\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+_PROFILE_LINE_RE = re.compile(r"^\s*-\s*\*\*Profil\s+workflow\s*:\*\*\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+_SPEC_SOURCE_LINE_RE = re.compile(r"^\s*-\s*\*\*Spec\s+source\s*:\*\*\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+_BRANCH_LINE_RE = re.compile(r"^\s*-\s*\*\*Branche\s+attendue\s*:\*\*\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
 _DATE_PREFIX_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\b")
 _NO_HYGIENE_ALERT_RE = re.compile(r"aucune alerte d'hygi[eè]ne", re.IGNORECASE)
 
@@ -268,7 +277,47 @@ def _empty_ecosystem(budget_bytes: Optional[int] = None) -> dict[str, Any]:
         "updated_at": "",
         "uri": "",
         "alerts": [],
+        "projects_status": {},
     }
+
+
+def _parse_ecosystem_projects_table(text: str) -> dict[str, dict[str, str]]:
+    m_block = _PROJECTS_BLOCK_RE.search(text)
+    if not m_block:
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for raw_line in m_block.group(1).splitlines():
+        line = raw_line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) < 5:
+            continue
+        if all(re.fullmatch(r":?-{2,}:?", c.replace(" ", "")) for c in cells if c):
+            continue
+        first_clean = clean_md_inline(cells[0])
+        first_low = first_clean.lower()
+        if first_low in ("projet", "project"):
+            continue
+        m_id = re.search(r"\(\s*(?:\.\./)?([A-Za-z0-9._-]+)\s*\)", first_clean)
+        if m_id:
+            pid = m_id.group(1).strip()
+        elif len(cells) >= 6 and (m_card := re.search(r"([A-Za-z0-9._-]+)\.md", cells[5])):
+            pid = m_card.group(1).strip()
+        else:
+            pid = re.sub(r"[^a-z0-9._-]+", "-", first_low).strip("-")
+        if not pid:
+            continue
+        label = clean_md_inline(re.sub(r"\([^)]*\)", "", cells[0])).strip() or pid
+        out[pid] = {
+            "id": pid,
+            "label": label,
+            "release_main": clean_md_inline(cells[1]),
+            "dev_status": clean_md_inline(cells[2]),
+            "installed_version": clean_md_inline(cells[3]),
+            "wip_status": clean_md_inline(cells[4]),
+        }
+    return out
 
 
 def _empty_delta() -> dict[str, Any]:
@@ -293,6 +342,7 @@ def _read_ecosystem_ro(eco_path: Path, budget_bytes: Optional[int]) -> dict[str,
     if not m_block:
         m_block = _HYGIENE_HEADING_RE.search(text)
     alerts = _extract_bullet_alerts(m_block.group(1)) if m_block else []
+    projects_status = _parse_ecosystem_projects_table(text)
     over_budget = bool(budget_bytes and size_bytes > budget_bytes)
     return {
         "exists": True,
@@ -302,6 +352,7 @@ def _read_ecosystem_ro(eco_path: Path, budget_bytes: Optional[int]) -> dict[str,
         "updated_at": updated_at,
         "uri": uri,
         "alerts": alerts,
+        "projects_status": projects_status,
     }
 
 
@@ -381,13 +432,16 @@ def _read_projects_ro(
                 card_bytes = int(card_path.stat().st_size)
             except OSError:
                 card_bytes = 0
+        dev_branch = str(raw.get("default_dev_branch") or raw.get("dev_branch") or "dev")
         projects_out.append(
             {
                 "id": pid,
                 "name": str(raw.get("name") or pid),
                 "path": str(raw.get("path") or raw.get("repo_path") or ""),
+                "role": str(raw.get("role") or ""),
                 "main_branch": str(raw.get("main_branch") or raw.get("branch") or "main"),
-                "dev_branch": str(raw.get("dev_branch") or "dev"),
+                "default_dev_branch": dev_branch,
+                "dev_branch": dev_branch,
                 "card_uri": card_uri,
                 "card_bytes": card_bytes,
                 "over_budget": bool(card_budget and card_bytes > card_budget),
@@ -395,6 +449,43 @@ def _read_projects_ro(
         )
 
     return True, workspace_name, public_mode, hot_budgets, watches_count, projects_out
+
+
+def _normalize_status_code(status_val: str) -> str:
+    low = status_val.strip().lower()
+    if not low or low == "unknown":
+        return "unknown"
+    tail = re.sub(r"^\d{4}-\d{2}-\d{2}\s*(?:[—–-]|/)?\s*", "", low).strip()
+    candidate = tail or low
+    for code in (
+        "ready",
+        "validated",
+        "draft",
+        "backlog",
+        "in_progress",
+        "in-progress",
+        "running",
+        "blocked",
+        "done",
+        "completed",
+        "archived",
+        "pending",
+    ):
+        if re.search(rf"\b{re.escape(code)}\b", candidate):
+            return code.replace("-", "_")
+    m = re.match(r"([a-z0-9_-]+)", candidate)
+    return m.group(1) if m else "unknown"
+
+
+def _parse_dependencies_list(raw: str) -> list[str]:
+    cleaned = clean_md_inline(raw)
+    if cleaned.lower() in ("", "aucune", "none", "n/a", "-"):
+        return []
+    return [
+        tok.strip()
+        for tok in re.split(r"[,|;]+", cleaned)
+        if tok.strip() and tok.strip().lower() not in ("aucune", "none", "n/a", "-")
+    ]
 
 
 def _scan_flat_artifacts_ro(directory: Path, atelier_root: Path) -> list[dict[str, Any]]:
@@ -418,11 +509,27 @@ def _scan_flat_artifacts_ro(directory: Path, atelier_root: Path) -> list[dict[st
         date_m = _DATE_PREFIX_RE.match(fpath.name)
         status_m = _STATUS_LINE_RE.search(text)
         target_m = _TARGET_LINE_RE.search(text)
+        wave_m = _WAVE_LINE_RE.search(text)
+        deps_m = _DEPS_LINE_RE.search(text)
+        profile_m = _PROFILE_LINE_RE.search(text)
+        spec_src_m = _SPEC_SOURCE_LINE_RE.search(text)
+        branch_m = _BRANCH_LINE_RE.search(text)
+
         status_val = clean_md_inline(status_m.group(1)) if status_m else "unknown"
         target_val = ""
         if target_m:
             raw_tgt = re.sub(r"\*?\([^)]*\)\*?", "", target_m.group(1)).strip()
             target_val = clean_md_inline(raw_tgt)
+        wave_val: Optional[int] = None
+        if wave_m:
+            w_digits = re.search(r"\d+", clean_md_inline(wave_m.group(1)))
+            if w_digits:
+                wave_val = int(w_digits.group(0))
+        spec_source = ""
+        if spec_src_m:
+            raw_spec = spec_src_m.group(1).strip()
+            link_m = re.search(r"\[[^\]]*\]\(([^)]+)\)", raw_spec)
+            spec_source = link_m.group(1).strip() if link_m else clean_md_inline(raw_spec)
         try:
             rel_path = fpath.resolve().relative_to(atelier_root.resolve()).as_posix()
         except (OSError, ValueError):
@@ -434,7 +541,13 @@ def _scan_flat_artifacts_ro(directory: Path, atelier_root: Path) -> list[dict[st
                 "title": extract_md_title(text, fpath.stem),
                 "date": date_m.group(1) if date_m else updated_at[:10],
                 "status": status_val,
+                "status_code": _normalize_status_code(status_val),
                 "target_project": target_val,
+                "wave": wave_val,
+                "dependencies": _parse_dependencies_list(deps_m.group(1)) if deps_m else [],
+                "workflow_profile": clean_md_inline(profile_m.group(1)) if profile_m else "",
+                "spec_source": spec_source,
+                "expected_branch": clean_md_inline(branch_m.group(1)) if branch_m else "",
                 "size_bytes": size_bytes,
                 "updated_at": updated_at,
                 "uri": fpath.resolve().as_uri(),
@@ -592,6 +705,75 @@ def _merge_ateliers(
     return merged
 
 
+def _target_mentions_project(target_str: str, pid: str, pname: str) -> bool:
+    if not target_str:
+        return False
+    tokens = {tok.strip().casefold() for tok in re.split(r"[|,;/()]+", target_str) if tok.strip()}
+    if pid and pid.casefold() in tokens:
+        return True
+    if pname and pname.casefold() in tokens:
+        return True
+    return False
+
+
+def _enrich_projects_ro(
+    projects: list[dict[str, Any]],
+    ecosystem: dict[str, Any],
+    specs: list[dict[str, Any]],
+    tasks: list[dict[str, Any]],
+    audits: list[dict[str, Any]],
+) -> None:
+    eco_map = ecosystem.get("projects_status") if isinstance(ecosystem.get("projects_status"), dict) else {}
+    eco_by_cf = {str(k).casefold(): v for k, v in eco_map.items() if isinstance(v, dict)}
+    for proj in projects:
+        pid = str(proj.get("id") or "")
+        pname = str(proj.get("name") or "")
+        path_name = Path(str(proj.get("path") or "")).name if proj.get("path") else ""
+        eco = eco_by_cf.get(pid.casefold()) or (eco_by_cf.get(path_name.casefold()) if path_name else None) or {}
+        proj["release_main"] = str(eco.get("release_main") or "")
+        proj["dev_status"] = str(eco.get("dev_status") or "")
+        proj["installed_version"] = str(eco.get("installed_version") or "")
+        proj["wip_status"] = str(eco.get("wip_status") or "")
+        proj["specs_count"] = sum(1 for s in specs if _target_mentions_project(str(s.get("target_project") or ""), pid, pname))
+        proj["tasks_count"] = sum(1 for t in tasks if _target_mentions_project(str(t.get("target_project") or ""), pid, pname))
+        proj["audits_count"] = sum(1 for a in audits if _target_mentions_project(str(a.get("target") or ""), pid, pname))
+
+
+def _build_waves_summary(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    by_wave: dict[Optional[int], list[dict[str, Any]]] = {}
+    for task in tasks:
+        w = task.get("wave")
+        by_wave.setdefault(w if isinstance(w, int) else None, []).append(task)
+    ordered_keys = sorted(k for k in by_wave if k is not None) + ([None] if None in by_wave else [])
+    waves: list[dict[str, Any]] = []
+    for w_num in ordered_keys:
+        w_tasks = by_wave[w_num]
+        status_counts: dict[str, int] = {}
+        projects_set: set[str] = set()
+        for wt in w_tasks:
+            sc = str(wt.get("status_code") or "unknown")
+            status_counts[sc] = status_counts.get(sc, 0) + 1
+            tgt = str(wt.get("target_project") or "").strip()
+            if tgt:
+                for tok in re.split(r"[|,;/]+", tgt):
+                    if tok.strip():
+                        projects_set.add(tok.strip())
+        waves.append(
+            {
+                "wave": w_num,
+                "tasks_count": len(w_tasks),
+                "projects": sorted(projects_set),
+                "status_counts": status_counts,
+                "filenames": [str(wt.get("filename") or "") for wt in w_tasks],
+            }
+        )
+    return {
+        "total_tasks": len(tasks),
+        "waves_count": len([k for k in ordered_keys if k is not None]),
+        "waves": waves,
+    }
+
+
 def get_architect_state(
     since_signature: str = "",
     *,
@@ -666,6 +848,7 @@ def get_architect_state(
             "projects": [],
             "specs": [],
             "tasks": [],
+            "waves_summary": {"total_tasks": 0, "waves_count": 0, "waves": []},
             "archived_specs_count": 0,
             "archived_tasks_count": 0,
             "audits": [],
@@ -723,6 +906,8 @@ def get_architect_state(
     delta = _read_delta_ro(delta_path)
     specs = _scan_flat_artifacts_ro(specs_dir, atelier_root)
     tasks = _scan_flat_artifacts_ro(active_tasks_dir, atelier_root)
+    _enrich_projects_ro(projects, ecosystem, specs, tasks, audits)
+    waves_summary = _build_waves_summary(tasks)
 
     available = bool(
         atelier_root.is_dir()
@@ -763,6 +948,7 @@ def get_architect_state(
         "projects": projects,
         "specs": specs,
         "tasks": tasks,
+        "waves_summary": waves_summary,
         "archived_specs_count": arch_specs_cnt,
         "archived_tasks_count": arch_tasks_cnt,
         "audits": audits,

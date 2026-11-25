@@ -113,7 +113,8 @@ class TestDashboardHelpers(unittest.TestCase):
             {"id": "core", "plugin_name": "gravity", "valid": True},
         ]
         tabs_4 = build_dashboard_tabs(modules_4)
-        self.assertEqual([t["id"] for t in tabs_4], ["live", "metrics", "architect", "overview"])
+        self.assertEqual([t["id"] for t in tabs_4], ["live", "architect", "metrics", "overview"])
+        self.assertEqual([t["label"] for t in tabs_4], ["Session", "Projets", "Historique", "Système"])
         self.assertTrue(all(t["dedicated"] for t in tabs_4))
 
         modules = [
@@ -122,7 +123,7 @@ class TestDashboardHelpers(unittest.TestCase):
             *modules_4,
         ]
         tabs = build_dashboard_tabs(modules)
-        self.assertEqual([t["id"] for t in tabs], ["live", "metrics", "architect", "overview", "custom", "bridge"])
+        self.assertEqual([t["id"] for t in tabs], ["live", "architect", "metrics", "overview", "custom", "bridge"])
         self.assertTrue(all(t["dedicated"] for t in tabs[:4]))
         self.assertFalse(tabs[4]["dedicated"])
         self.assertEqual(tabs[4]["kind"], "generic")
@@ -191,7 +192,7 @@ class TestCoreAndGenericProviders(unittest.TestCase):
             self.assertEqual(ov["registry_source"], "modules.json")
             self.assertEqual(ov["doctor"]["status"], "ok")
             self.assertTrue(ov["doctor"]["initialized"])
-            self.assertEqual([t["id"] for t in ov["tabs"]], ["live", "metrics", "architect", "overview"])
+            self.assertEqual([t["id"] for t in ov["tabs"]], ["live", "architect", "metrics", "overview"])
 
             by_id = {m["id"]: m for m in ov["modules"]}
             self.assertTrue(by_id["core"]["home_exists"])
@@ -771,6 +772,12 @@ class TestArchitectProvider(unittest.TestCase):
 
         (root / "ECOSYSTEM.md").write_text(
             "# Tableau de bord\n\n"
+            "<!-- AUTO:START:ecosystem-projects -->\n"
+            "| Projet | Release (`main`) | Branche `dev` | Installé local | WIP | Fiche |\n"
+            "|---|---|---|---|---|---|\n"
+            "| **Gravity Core** (`../gravity`) | `v0.3.0` (`abc123`) | `0.3.0` (+2 vs `main`) | `0.3.0` *(aligné)* | **Propre** | [`gravity.md`](tracking/projects/gravity.md) |\n"
+            "| **Gravity Metrics** (`../gravity-metrics`) | `v0.5.1` | `0.5.1` | `0.5.1` | **Propre** |\n"
+            "<!-- AUTO:END:ecosystem-projects -->\n\n"
             "<!-- AUTO:START:ecosystem-hygiene -->\n"
             "- `gravity` : WIP local détecté.\n"
             "<!-- AUTO:END:ecosystem-hygiene -->\n",
@@ -790,7 +797,15 @@ class TestArchitectProvider(unittest.TestCase):
                     "workspace_name": "Atelier Test",
                     "hot_budgets": {"ECOSYSTEM.md": 6000, "project_card_max_bytes": 3500},
                     "watches": [{"id": "antigravity"}],
-                    "projects": [{"id": "gravity", "name": "Gravity", "path": "../gravity"}],
+                    "projects": [
+                        {
+                            "id": "gravity",
+                            "name": "Gravity",
+                            "path": "../gravity",
+                            "default_dev_branch": "dev-next",
+                            "role": "Core plugin",
+                        }
+                    ],
                 }
             ),
             encoding="utf-8",
@@ -804,7 +819,14 @@ class TestArchitectProvider(unittest.TestCase):
         (root / "specs" / "archive" / "2026-11-01-old.md").write_text("# Old Spec\n", encoding="utf-8")
         (root / "tasks" / "_TEMPLATE.md").write_text("# Template Task\n", encoding="utf-8")
         (root / "tasks" / "2026-11-23-lot2.md").write_text(
-            "# Lot 2\n\n- **Date / Statut :** `ready`\n- **Dépôt cible :** `gravity`\n",
+            "# Lot 2\n\n"
+            "- **Vague :** `2`\n"
+            "- **Dépôt cible :** `gravity` (`../gravity`)\n"
+            "- **Branche attendue :** `dev`\n"
+            "- **Dépendances :** `2026-11-23-lot1`\n"
+            "- **Profil workflow :** `standard`\n"
+            "- **Spec source :** `specs/2026-11-23-dashboard.md`\n"
+            "- **Date / Statut :** `2026-11-23` — `ready`\n",
             encoding="utf-8",
         )
         (root / "tasks" / "archive" / "2026-11-01-old-task.md").write_text("# Old Task\n", encoding="utf-8")
@@ -812,6 +834,10 @@ class TestArchitectProvider(unittest.TestCase):
         (root / "audits" / "code" / "_TEMPLATE.md").write_text("# Template Audit\n", encoding="utf-8")
         (root / "audits" / "code" / "2026-11-23-audit-code-gravity.md").write_text(
             "# Audit Code Gravity\n\n- **Cible :** `gravity`\n- **Verdict :** `PASS`\n\nClean architecture.\n",
+            encoding="utf-8",
+        )
+        (root / "audits" / "code" / "2026-11-24-audit-code-ecosystem.md").write_text(
+            "# Audit Code Ecosystem\n\n- **Cible :** `ecosystem (gravity, gravity-architect)`\n- **Verdict :** `PASS`\n\nEcosystem audit.\n",
             encoding="utf-8",
         )
         (root / "audits" / "agents" / "2026-11-23-secret-agent.md").write_text(
@@ -859,13 +885,37 @@ class TestArchitectProvider(unittest.TestCase):
             self.assertEqual(via_registry["ecosystem"]["alerts"], ["gravity : WIP local détecté."])
             self.assertEqual(via_registry["delta"]["editorial_status"], "EDITORIAL_UPDATE_REQUIRED")
             self.assertEqual(len(via_registry["projects"]), 1)
+            proj0 = via_registry["projects"][0]
+            self.assertEqual(proj0["default_dev_branch"], "dev-next")
+            self.assertEqual(proj0["dev_branch"], "dev-next")
+            self.assertEqual(proj0["role"], "Core plugin")
+            self.assertEqual(proj0["release_main"], "v0.3.0 (abc123)")
+            self.assertEqual(proj0["dev_status"], "0.3.0 (+2 vs main)")
+            self.assertEqual(proj0["installed_version"], "0.3.0 (aligné)")
+            self.assertEqual(proj0["wip_status"], "Propre")
+            self.assertEqual(proj0["specs_count"], 1)
+            self.assertEqual(proj0["tasks_count"], 1)
+            self.assertEqual(proj0["audits_count"], 2)
+            self.assertIn("gravity-metrics", via_registry["ecosystem"]["projects_status"])
+            self.assertEqual(via_registry["ecosystem"]["projects_status"]["gravity-metrics"]["release_main"], "v0.5.1")
             self.assertEqual([s["filename"] for s in via_registry["specs"]], ["2026-11-23-dashboard.md"])
+            self.assertEqual(via_registry["specs"][0]["status_code"], "validated")
             self.assertEqual(via_registry["archived_specs_count"], 1)
             self.assertEqual([t["filename"] for t in via_registry["tasks"]], ["2026-11-23-lot2.md"])
+            task0 = via_registry["tasks"][0]
+            self.assertEqual(task0["wave"], 2)
+            self.assertEqual(task0["dependencies"], ["2026-11-23-lot1"])
+            self.assertEqual(task0["workflow_profile"], "standard")
+            self.assertEqual(task0["spec_source"], "specs/2026-11-23-dashboard.md")
+            self.assertEqual(task0["expected_branch"], "dev")
+            self.assertEqual(task0["status_code"], "ready")
+            self.assertEqual(via_registry["waves_summary"]["waves_count"], 1)
+            self.assertEqual(via_registry["waves_summary"]["waves"][0]["wave"], 2)
+            self.assertEqual(via_registry["waves_summary"]["waves"][0]["tasks_count"], 1)
             self.assertEqual(via_registry["archived_tasks_count"], 1)
             self.assertNotIn("handoffs", via_registry)
             self.assertNotIn("archived_handoffs_count", via_registry)
-            self.assertEqual(len(via_registry["audits"]), 1)
+            self.assertEqual(len(via_registry["audits"]), 2)
             self.assertEqual(via_registry["audits"][0]["verdict"], "PASS")
             self.assertEqual(via_registry["audits"][0]["verdict_tone"], "ok")
             self.assertIsNotNone(via_registry["index_audit"])

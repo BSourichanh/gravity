@@ -142,6 +142,38 @@ def _collect_projects(records: Sequence[dict[str, Any]]) -> list[str]:
     return sorted(_canonical_projects_map(records).values(), key=lambda s: (s.casefold(), s))
 
 
+def _collect_workspaces(records: Sequence[dict[str, Any]]) -> list[str]:
+    grouped: dict[str, Counter[str]] = defaultdict(Counter)
+    for rec in records:
+        proj = str(rec.get("project") or "").strip()
+        if proj:
+            grouped[proj.casefold()][proj] += 1
+        shares = rec.get("workspace_share_pct")
+        if isinstance(shares, dict):
+            for raw_ws in shares.keys():
+                ws_name = str(raw_ws or "").strip()
+                if ws_name:
+                    grouped[ws_name.casefold()][ws_name] += 1
+    canonical = [
+        min(counts.items(), key=lambda kv: (-kv[1], kv[0] != kv[0].lower(), kv[0]))[0]
+        for counts in grouped.values()
+    ]
+    return sorted(canonical, key=lambda s: (s.casefold(), s))
+
+
+def _record_matches_project(rec: dict[str, Any], proj_cf: str) -> bool:
+    if not proj_cf:
+        return True
+    if str(rec.get("project") or "").strip().casefold() == proj_cf:
+        return True
+    shares = rec.get("workspace_share_pct")
+    if isinstance(shares, dict):
+        for raw_ws in shares.keys():
+            if str(raw_ws or "").strip().casefold() == proj_cf:
+                return True
+    return False
+
+
 def _aggregate_by_project(records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     proj_map = _canonical_projects_map(records)
     buckets: dict[str, dict[str, Any]] = {}
@@ -516,12 +548,12 @@ def get_metrics_state(
     filtered = [
         rec
         for rec in all_records
-        if (not proj_cf or str(rec.get("project") or "").strip().casefold() == proj_cf)
-        and _matches_query(rec, q_cf)
+        if _record_matches_project(rec, proj_cf) and _matches_query(rec, q_cf)
     ]
 
     kpis = _compute_kpis(filtered)
     projects = _collect_projects(all_records)
+    workspaces = _collect_workspaces(all_records)
     by_project = _aggregate_by_project(filtered)
     by_workspace, workspace_kinds = _aggregate_by_workspace(filtered)
     pending_sessions, ignored_sessions = _derive_pending_states_ro(
@@ -545,6 +577,7 @@ def get_metrics_state(
         "truncated": False,
         "kpis": kpis,
         "projects": projects,
+        "workspaces": workspaces,
         "by_project": by_project,
         "by_workspace": by_workspace,
         "workspace_kinds": workspace_kinds,

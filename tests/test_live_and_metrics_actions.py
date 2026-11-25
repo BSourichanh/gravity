@@ -325,9 +325,13 @@ class TestLiveProvider(unittest.TestCase):
             self.assertEqual([s["conversation_id"] for s in state["sessions"]], [root_cid])
             self.assertEqual(state["workflow"]["stage"], "build")
             self.assertEqual(state["workflow"]["progress"], "4/8")
+            self.assertTrue(state["workflow"]["is_active"])
+            self.assertEqual(state["selected_session"]["session_started_at"], "2026-11-25T11:00:00Z")
+            self.assertEqual(state["selected_session"]["session_last_ts"], "2026-11-25T11:00:20Z")
 
             by_id = {a["id"]: a for a in state["agents"]}
             self.assertEqual(set(by_id.keys()), {"coordinator", "core-w1", f"sub-{rev_cid[:8]}"})
+            self.assertEqual(by_id["coordinator"]["started_at"], "2026-11-25T11:00:00Z")
             self.assertEqual(by_id["coordinator"]["workspace"], "gravity-studio")
             self.assertEqual(by_id["coordinator"]["workspace_kind"], "atelier")
             self.assertEqual(by_id["core-w1"]["status"], "active")
@@ -406,11 +410,15 @@ class TestLiveProvider(unittest.TestCase):
             self.assertGreater(len(live_provider._BRIDGE_SNIFF_CACHE), 0)
             self.assertGreater(len(live_provider._WF_CHILD_CACHE), 0)
 
-            # Without explicit session_id: bridge, wf_task and wf_msg are excluded as roots, leaving read_json_cid (newest root)
+            # Without explicit session_id: bridge, wf_task and wf_msg are excluded as roots, leaving multi-session fresh roots
             st_auto = api.get_live_session_state(
                 gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
             )
-            self.assertEqual([s["conversation_id"] for s in st_auto["sessions"]], [read_json_cid])
+            auto_cids = [s["conversation_id"] for s in st_auto["sessions"]]
+            self.assertEqual(set(auto_cids), {read_json_cid, root_cid})
+            self.assertNotIn(bridge_cid, auto_cids)
+            self.assertNotIn(wf_task_cid, auto_cids)
+            self.assertNotIn(wf_msg_cid, auto_cids)
 
             # Appending to root transcript must only add extra_line bytes to bytes_read
             bytes_before = live_provider.get_live_cache_stats()["bytes_read"]
@@ -473,12 +481,13 @@ class TestLiveProvider(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            # Without explicit session_id: selects only 1 root (non-archived active capture has priority)
+            # Without explicit session_id: active capture first, then non-archived fresh roots (cap <= MAX_ROOT_SESSIONS)
             st1 = api.get_live_session_state(
                 gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
             )
-            self.assertEqual([s["conversation_id"] for s in st1["sessions"]], [cap_stale_cid])
+            self.assertEqual([s["conversation_id"] for s in st1["sessions"]], [cap_stale_cid, fresh_cid])
             self.assertFalse(st1["sessions"][0]["archived"])
+            self.assertFalse(st1["sessions"][1]["archived"])
 
             # Clear active_captures -> selects the single most recent non-archived fresh root
             (m_home / "active_captures.json").write_text(json.dumps({"schema_version": 1, "captures": {}}), encoding="utf-8")
@@ -840,8 +849,25 @@ class TestMetricsActionsAndAudits(unittest.TestCase):
             self.assertEqual(kpis["context_critical_count"], 0)
             self.assertEqual(kpis["latency_p95_ms"], 2400.0)
             self.assertEqual(state["workspace_kinds"], {"gravity": "code", "gravity-studio": "atelier"})
+            self.assertEqual(state["workspaces"], ["gravity", "gravity-studio"])
             self.assertEqual(state["by_workspace"][0]["workspace"], "gravity")
             self.assertEqual(state["by_workspace"][0]["kind"], "code")
+
+            filtered_gravity = api.get_metrics_state(
+                project="gravity",
+                gravity_home=g_home,
+                metrics_home=m_home,
+                audits_dirs=[audits_agents, audits_code],
+            )
+            self.assertEqual(filtered_gravity["total_matching"], 1)
+            self.assertEqual(filtered_gravity["workspaces"], ["gravity", "gravity-studio"])
+            filtered_other = api.get_metrics_state(
+                project="gravity-metrics",
+                gravity_home=g_home,
+                metrics_home=m_home,
+                audits_dirs=[audits_agents, audits_code],
+            )
+            self.assertEqual(filtered_other["total_matching"], 0)
 
             aid = state["audits"][0]["audit_id"]
             read_ok = api.read_metrics_audit(aid, audits_dirs=[audits_agents])
@@ -1019,6 +1045,84 @@ class TestMetricsActionsAndAudits(unittest.TestCase):
             self.assertEqual(st["summary"]["total_agents"], 3)
             self.assertEqual(st["summary"]["done_agents"], 3)
             self.assertEqual(st["summary"]["error_agents"], 0)
+
+    def test_windows_repo_normalization_arbitrary_root_code_and_session_workflow_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            brain = tmp_path / "brain"
+            g_home = tmp_path / "gravity"
+            m_home = g_home / "metrics"
+            wf_home = g_home / "workflow"
+            (m_home / "data").mkdir(parents=True)
+            wf_home.mkdir(parents=True)
+
+            root_parent = Path("D:/Neko/Documents/GitHub")
+            self.assertEqual(
+                live_provider._normalize_repo_name(
+                    "d:\\neko\\documents\\github\\gravity-studio\\tracking\\projects\\gravity.md",
+                    root_parent=root_parent,
+                ),
+                "gravity-studio",
+            )
+            self.assertEqual(
+                live_provider._normalize_repo_name(
+                    "C:/Users/Test/gravity-studio/templates/repo-standard.md",
+                ),
+                "gravity-studio",
+            )
+            self.assertEqual(
+                live_provider._normalize_repo_name(
+                    "C:/Users/Test/gravity/dashboard/providers/live_provider.py",
+                ),
+                "gravity",
+            )
+            self.assertEqual(live_provider._classify_workspace_kind("my-product", root_ws="my-product"), "code")
+            self.assertEqual(live_provider._classify_workspace_kind("gravity-studio", root_ws="gravity"), "atelier")
+            atelier_disk = tmp_path / "custom-ws"
+            (atelier_disk / "specs").mkdir(parents=True)
+            self.assertEqual(
+                live_provider._classify_workspace_kind("custom-ws", str(atelier_disk), root_ws="custom-ws"),
+                "atelier",
+            )
+
+            product_repo = tmp_path / "repos" / "gravity"
+            product_repo.mkdir(parents=True)
+            other_repo = tmp_path / "repos" / "other-ws"
+            other_repo.mkdir(parents=True)
+            other_state = wf_home / "workspaces" / "other-ws" / "live_state.json"
+            other_state.parent.mkdir(parents=True)
+            other_state.write_text(json.dumps({"stage": "build", "progress": "2/8"}), encoding="utf-8")
+            (wf_home / "live_workspaces.json").write_text(
+                json.dumps(
+                    {
+                        "workspaces": [
+                            {
+                                "workspace_path": str(other_repo),
+                                "state_path": str(other_state),
+                                "updated_at": "2026-11-26T00:00:00Z",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            root_cid = "77777777-aaaa-bbbb-cccc-111111111111"
+            _write_jsonl(
+                brain / root_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [{"step_index": 0, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-26T00:01:00Z"}],
+            )
+            (m_home / "session_meta.json").write_text(
+                json.dumps({"schema_version": 1, "sessions": {root_cid: {"cwd": str(product_repo), "project": "gravity"}}}),
+                encoding="utf-8",
+            )
+            st = api.get_live_session_state(
+                gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
+            )
+            self.assertEqual(live_provider.MAX_RECENT_EVENTS, 80)
+            self.assertEqual(st["selected_session"]["workspace_kind"], "code")
+            self.assertFalse(st["workflow"]["is_active"])
+            self.assertEqual(st["workflow"]["stage"], "idle")
 
 
 if __name__ == "__main__":

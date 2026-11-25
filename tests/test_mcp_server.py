@@ -352,7 +352,7 @@ class TestMcpServer(unittest.TestCase):
             self.assertLessEqual(len(json.dumps(open_res, ensure_ascii=False).encode("utf-8")), mcp_server.MAX_TRAJECTORY_BYTES)
             sc = open_res["structuredContent"]
             self.assertEqual(sc["initial_view"], "live")
-            self.assertEqual([t["id"] for t in sc["overview"]["tabs"]], ["live", "metrics", "architect", "overview"])
+            self.assertEqual([t["id"] for t in sc["overview"]["tabs"]], ["live", "architect", "metrics", "overview"])
             self.assertTrue(sc["live"]["available"])
             self.assertEqual(sc["workflow"]["stage"], "build")
             self.assertEqual(sc["metrics"]["kpis"]["sessions_count"], 1)

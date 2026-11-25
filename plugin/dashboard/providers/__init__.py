@@ -12,12 +12,12 @@ from typing import Any, Optional, Sequence
 DEDICATED_PROVIDERS: tuple[str, ...] = ("core", "workflow", "metrics", "architect")
 
 _DEFAULT_LABELS: dict[str, str] = {
-    "live": "En direct",
-    "metrics": "Métriques",
-    "architect": "Atelier",
+    "live": "Session",
+    "architect": "Projets",
+    "metrics": "Historique",
     "core": "Système",
     "overview": "Système",
-    "workflow": "En direct",
+    "workflow": "Session",
 }
 
 _TITLE_RE = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)
@@ -67,7 +67,7 @@ def resolve_provider_kind(module_id: str) -> str:
 
 
 def build_dashboard_tabs(modules: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Build ordered dashboard tabs: `live`, `metrics`, `architect`, `overview`, then generic OCP modules."""
+    """Build ordered dashboard tabs: `live`, `architect`, `metrics`, `overview`, then generic OCP modules."""
     by_id: dict[str, dict[str, Any]] = {}
     ordered_others: list[dict[str, Any]] = []
 
@@ -93,7 +93,7 @@ def build_dashboard_tabs(modules: Sequence[dict[str, Any]]) -> list[dict[str, An
             "kind": "live",
             "module_id": "workflow" if wf_mod else "core",
             "label": _DEFAULT_LABELS["live"],
-            "display_name": wf_mod.get("display_name") or "En direct (Session & Workflow)",
+            "display_name": wf_mod.get("display_name") or "Session (En direct & Workflow)",
             "plugin_name": wf_mod.get("plugin_name") or core_mod.get("plugin_name") or "gravity",
             "version": wf_mod.get("version") or core_mod.get("version"),
             "valid": bool(wf_mod.get("valid", True)) if wf_mod else (bool(core_mod.get("valid", True)) if core_mod else True),
@@ -103,7 +103,7 @@ def build_dashboard_tabs(modules: Sequence[dict[str, Any]]) -> list[dict[str, An
         }
     ]
 
-    for mod_id in ("metrics", "architect"):
+    for mod_id in ("architect", "metrics"):
         mod = by_id.get(mod_id)
         if mod is None:
             continue
