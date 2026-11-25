@@ -1006,7 +1006,10 @@ state.sessionDetail = {
   report_md_uri: "file:///tmp/s1.md", record: state.metrics.records[0],
   detail: {
     summary: { input_tokens: 20000, output_tokens: 5000, cache_read_tokens: 80000, cache_hit_rate_pct: 80, total_llm_calls: 12, total_tool_calls: 24, wall_clock_s: 200, cost_usd: { total_usd: 0.25, cache_savings_usd: 0.40 } },
-    agents: [{ role: "Builder", workspace: "gravity", workspace_kind: "code", model: "gemini-4-neon-high", max_context_tokens: 145000, input_tokens: 20000, output_tokens: 5000, cache_read_tokens: 80000, llm_calls: 12, tool_calls: 24, clean_termination: true }],
+    agents: [
+      { role: "Builder", conversation_id: "cid-root", workspace: "gravity", workspace_kind: "code", model: "gemini-4-neon-high", max_context_tokens: 145000, input_tokens: 20000, output_tokens: 5000, cache_read_tokens: 80000, llm_calls: 12, tool_calls: 24, clean_termination: true },
+      { role: "Verifier", conversation_id: "cid-wf", parent_id: "cid-root", depth: 1, source: "workflow", category: "verification", workspace: "gravity", workspace_kind: "code", by_model: { "gemini-4-hydrogen-high": { calls: 15 } }, max_context_tokens: 60000, input_tokens: 8000, output_tokens: 2000, cache_read_tokens: 30000, llm_calls: 15, tool_calls_total: 37, active_s: 95, clean_termination: false, error_steps: 1, total_anomalies: 2, cost_usd: { total_usd: 0.12 } }
+    ],
     tool_usage: { by_tool: { edit_file: 10 } }
   }
 };
@@ -1019,7 +1022,10 @@ assert(t2.includes("Supprimer cette session") && t2.includes("Repère secondaire
 state.sessionDetailSub = "agents";
 const box2b = makeNode("div");
 renderMetricsUnifiedView(box2b);
-assert(collectText(box2b).includes("Outils les plus utilisés") && collectText(box2b).includes("edit_file"), "agents & tools subtab");
+const t2b = collectText(box2b);
+assert(t2b.includes("Outils les plus utilisés") && t2b.includes("edit_file"), "agents & tools subtab");
+assert(t2b.includes("gemini-4-neon-high") && t2b.includes("Outils : 24"), "legacy agent model & tool_calls fallback");
+assert(t2b.includes("gemini-4-hydrogen-high") && t2b.includes("Outils : 37") && t2b.includes("Workflow") && t2b.includes("Vérification") && t2b.includes("Erreur") && t2b.includes("↳ Builder · N1") && t2b.includes("Anomalies : 2") && t2b.includes("$0.1200"), "report schema agent by_model, tool_calls_total, source, filiation, anomalies, cost");
 
 state.sessionDetailSub = "diagnostic";
 const box2c = makeNode("div");

@@ -282,6 +282,11 @@ WIDGET_CSS = r"""
   .badge.info { background: var(--g-accent-bg); color: var(--g-accent); border-color: transparent; }
   .badge.atelier, .badge-atelier { background: var(--g-atelier-bg); color: var(--g-atelier); border-color: transparent; }
   .badge.code, .badge-code { background: var(--g-code-bg); color: var(--g-code); border-color: transparent; }
+  .badge.src-root { background: var(--g-accent-bg); color: var(--g-accent); border-color: transparent; }
+  .badge.src-swarm { background: var(--g-atelier-bg); color: var(--g-atelier); border-color: transparent; }
+  .badge.src-subagent { background: var(--g-code-bg); color: var(--g-code); border-color: transparent; }
+  .badge.src-workflow { background: var(--g-warn-bg); color: var(--g-warn); border-color: transparent; }
+  .badge.src-other { background: var(--g-muted); color: var(--g-fg-sec); }
   .panel {
     background: var(--g-card);
     border: 1px solid var(--g-border);
@@ -395,6 +400,10 @@ WIDGET_CSS = r"""
     gap: 8px;
     min-width: 0;
   }
+  .agent-group.has-error {
+    border-left: 2px solid var(--g-err);
+    padding-left: 8px;
+  }
   .agent-group-head {
     display: flex;
     align-items: center;
@@ -403,6 +412,20 @@ WIDGET_CSS = r"""
     font-size: 12px;
     font-weight: 600;
     color: var(--g-fg-sec);
+    min-width: 0;
+  }
+  .agent-filiation {
+    font-size: 11px;
+    color: var(--g-fg-sec);
+    overflow-wrap: anywhere;
+  }
+  .agent-done-fold > .fold-summary {
+    padding: 7px 10px;
+    font-size: 12px;
+    color: var(--g-fg-sec);
+  }
+  .agent-done-fold > .fold-body {
+    padding: 8px;
   }
   .pill-list {
     display: flex;

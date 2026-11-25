@@ -4,9 +4,13 @@ from __future__ import annotations
 
 METRICS_VIEWS_JS = r"""
   const ROLE_LABELS_FR = {
-    orchestrator: "Orchestration", coordinator: "Coordination", worker: "Exécution (Workers)",
-    builder: "Construction", reviewer: "Revue & Audit", research: "Exploration",
-    subagent: "Sous-agents", root: "Session racine", planner: "Planification"
+    orchestrator: "Orchestration", orchestration: "Orchestration",
+    coordinator: "Coordination", worker: "Exécution (Workers)",
+    builder: "Construction", build: "Construction",
+    reviewer: "Revue & Audit", verification: "Vérification",
+    research: "Exploration", discovery: "Découverte",
+    subagent: "Sous-agents", root: "Session racine",
+    planner: "Planification", other: "Autre"
   };
 
   function _recUseful(r) {
@@ -330,25 +334,58 @@ METRICS_VIEWS_JS = r"""
       if (!agents.length) {
         drawer.appendChild(el("div", "empty", "Aucun sous-agent détaillé dans ce rapport."));
       } else {
-        agents.slice(0, 30).forEach((ag) => {
+        drawer.appendChild(el("div", "kpi-sub mono", fmtInt(agents.length) + " agent(s) enregistré(s)"));
+        const idMap = {};
+        agents.forEach((a) => {
+          if (!a) return;
+          const lbl = String(a.role || a.name || a.type_name || a.conversation_id || "");
+          if (a.conversation_id && lbl) idMap[String(a.conversation_id)] = lbl;
+          if (a.id && lbl) idMap[String(a.id)] = lbl;
+        });
+        agents.forEach((ag) => {
           const fold = el("details", "fold-panel");
           const sum = el("summary", "fold-summary");
           const left = el("div", "actions-row");
           left.appendChild(el("span", null, String(ag.role || ag.name || "Agent")));
           left.appendChild(renderWorkspaceKindBadge(ag.workspace_kind || (String(ag.workspace || "").toLowerCase().endsWith("-studio") ? "atelier" : "code")));
+          const srcBadge = renderSourceBadge(ag.source || (Number(ag.depth) === 0 ? "root" : ""));
+          if (srcBadge) left.appendChild(srcBadge);
           sum.appendChild(left);
-          const clean = ag.clean_termination !== false;
-          sum.appendChild(makeBadge(clean ? "Propre" : "Interrompu", clean ? "ok" : "warn"));
+
+          const errSteps = Number(ag.error_steps != null ? ag.error_steps : (ag.error_count || 0)) || 0;
+          const anomalies = Number(ag.total_anomalies != null ? ag.total_anomalies : errSteps) || 0;
+          const agStatus = (String(ag.status || "").toLowerCase() === "error" || (ag.clean_termination === false && errSteps > 0) || ag.transcript_missing)
+            ? "error"
+            : (ag.clean_termination === false ? "interrupted" : "done");
+          sum.appendChild(renderStatusBadge(agStatus));
           fold.appendChild(sum);
+
           const body = el("div", "fold-body");
+          const fil = renderFiliationLabel(ag, idMap);
+          if (fil) body.appendChild(fil);
           const pills = el("div", "pill-list");
-          if (ag.model) pills.appendChild(el("span", "pill", String(ag.model)));
+          const agModel = resolveAgentModel(ag);
+          if (agModel) pills.appendChild(el("span", "pill", agModel));
           if (ag.workspace) pills.appendChild(el("span", "pill", String(ag.workspace)));
           if (ag.category) pills.appendChild(el("span", "pill", ROLE_LABELS_FR[String(ag.category).toLowerCase()] || String(ag.category)));
+          if (anomalies > 0 || errSteps > 0) {
+            pills.appendChild(makeBadge(
+              (errSteps > 0 ? fmtInt(errSteps) + " err" : fmtInt(anomalies) + " anom.") + (anomalies > errSteps && errSteps > 0 ? " · " + fmtInt(anomalies) + " anom." : ""),
+              errSteps > 0 ? "error" : "warn"
+            ));
+          }
           body.appendChild(pills);
+
           const agUseful = (Number(ag.input_tokens || 0) + Number(ag.output_tokens || 0)) || Number(ag.useful_tokens || 0);
           body.appendChild(renderContextGauge(ag.max_context_tokens || 0, ag.max_context_tokens || 0, { label: "Pic contexte" }));
-          body.appendChild(el("div", "mono", "Utiles : " + fmtTokens(agUseful) + " · Cache : " + fmtTokens(ag.cache_read_tokens || 0) + " · Appels : " + fmtInt(ag.llm_calls || 0) + " · Outils : " + fmtInt(ag.tool_calls || 0)));
+          body.appendChild(el("div", "mono", "Utiles : " + fmtTokens(agUseful) + " · Cache : " + fmtTokens(ag.cache_read_tokens || 0) + " · Appels : " + fmtInt(ag.llm_calls || 0) + " · Outils : " + fmtInt(resolveAgentToolCalls(ag))));
+          const dur = ag.active_s != null ? ag.active_s : (ag.lifespan_s != null ? ag.lifespan_s : ag.duration_s);
+          const agCostObj = typeof ag.cost_usd === "object" && ag.cost_usd ? ag.cost_usd : null;
+          const agCost = agCostObj ? (agCostObj.total_usd != null ? agCostObj.total_usd : agCostObj.total) : ag.cost_usd;
+          const metaParts = ["Durée : " + fmtDuration(dur)];
+          if (anomalies > 0 || errSteps > 0) metaParts.push("Anomalies : " + fmtInt(anomalies));
+          if (agCost != null && Number(agCost) > 0) metaParts.push("Repère $ : " + fmtUsd(agCost));
+          body.appendChild(el("div", "kpi-sub mono", metaParts.join(" · ")));
           if (ag.conversation_id) body.appendChild(el("div", "mono", "ID : " + String(ag.conversation_id)));
           fold.appendChild(body);
           drawer.appendChild(fold);

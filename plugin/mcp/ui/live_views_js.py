@@ -133,7 +133,7 @@ LIVE_VIEWS_JS = r"""
     return panel;
   }
 
-  function _renderAgentCard(ag) {
+  function _renderAgentCard(ag, idMap) {
     const st = String(ag.status || "done").toLowerCase();
     const card = el("article", "agent-card " + st);
 
@@ -147,10 +147,18 @@ LIVE_VIEWS_JS = r"""
     head.appendChild(renderStatusBadge(st));
     card.appendChild(head);
 
+    const fil = renderFiliationLabel(ag, idMap);
+    if (fil) card.appendChild(fil);
+
     const pills = el("div", "pill-list");
-    pills.appendChild(el("span", "pill", String(ag.model || "modèle inconnu")));
+    const srcBadge = renderSourceBadge(ag.source || (Number(ag.depth) === 0 ? "root" : ""));
+    if (srcBadge) pills.appendChild(srcBadge);
+    pills.appendChild(el("span", "pill", resolveAgentModel(ag) || "modèle inconnu"));
     pills.appendChild(el("span", "pill", String(ag.workspace || "workspace")));
     pills.appendChild(renderWorkspaceKindBadge(ag.workspace_kind));
+    if ((Number(ag.children_count) || 0) > 0) {
+      pills.appendChild(el("span", "pill", fmtInt(ag.children_count) + " enfant(s)"));
+    }
     card.appendChild(pills);
 
     if (ag.task_title) {
@@ -163,17 +171,19 @@ LIVE_VIEWS_JS = r"""
     card.appendChild(renderContextGauge(ag.context_tokens || 0, ag.max_context_tokens || 0, { label: "Contexte" }));
 
     const stats = el("div", "agent-stats");
+    stats.appendChild(el("span", "num", "LLM : " + fmtInt(ag.llm_calls || 0) + " · Outils : " + fmtInt(resolveAgentToolCalls(ag))));
     stats.appendChild(el("span", "num", "Tokens utiles : " + fmtTokens(ag.useful_tokens || 0)));
     stats.appendChild(el("span", "num", "Cache : " + fmtPct(ag.cache_hit_pct || 0)));
     stats.appendChild(el("span", "num", "Durée : " + fmtDuration(ag.duration_s || 0)));
-    if ((Number(ag.error_count) || 0) > 0) {
-      stats.appendChild(makeBadge(ag.error_count + " erreur(s)", "error"));
+    const errCnt = Number(ag.error_count != null ? ag.error_count : (ag.error_steps || 0)) || 0;
+    if (errCnt > 0) {
+      stats.appendChild(makeBadge(errCnt + " erreur(s)", "error"));
     }
     card.appendChild(stats);
     return card;
   }
 
-  function _renderAgentGroupsPanel(agents) {
+  function _renderAgentGroupsPanel(agents, ui) {
     const panel = el("section", "panel");
     const head = el("div", "panel-head");
     head.appendChild(el("div", "panel-title", "Agents de la session"));
@@ -185,26 +195,59 @@ LIVE_VIEWS_JS = r"""
       return panel;
     }
 
-    const activeList = agents.filter((a) => a.status === "active" || a.status === "error");
-    const waitingList = agents.filter((a) => a.status === "waiting");
-    const doneList = agents.filter((a) => a.status !== "active" && a.status !== "error" && a.status !== "waiting");
+    const idMap = {};
+    agents.forEach((a) => {
+      if (!a) return;
+      const lbl = String(a.role || a.id || "");
+      if (a.id && lbl) idMap[String(a.id)] = lbl;
+      if (a.conversation_id && lbl) idMap[String(a.conversation_id)] = lbl;
+    });
+
+    const activeList = agents.filter((a) => a && a.status === "active");
+    const waitingList = agents.filter((a) => a && a.status === "waiting");
+    const errorList = agents.filter((a) => a && a.status === "error");
+    const doneList = agents.filter((a) => a && a.status !== "active" && a.status !== "waiting" && a.status !== "error");
 
     const groups = el("div", "agent-groups");
     [
       { key: "active", label: "Actifs", items: activeList, tone: "ok" },
       { key: "waiting", label: "En attente", items: waitingList, tone: "warn" },
+      { key: "error", label: "Erreurs", items: errorList, tone: "error" },
       { key: "done", label: "Terminés", items: doneList, tone: "" }
     ].forEach((grp) => {
       if (!grp.items.length) return;
-      const sec = el("div", "agent-group", null, { "data-agent-group": grp.key });
-      const gHead = el("div", "agent-group-head");
-      gHead.appendChild(el("span", null, grp.label));
-      gHead.appendChild(makeBadge(String(grp.items.length), grp.tone));
-      sec.appendChild(gHead);
+      const sec = el("div", "agent-group" + (grp.key === "error" ? " has-error" : ""), null, { "data-agent-group": grp.key });
 
-      const grid = el("div", "agent-grid");
-      grp.items.forEach((ag) => grid.appendChild(_renderAgentCard(ag)));
-      sec.appendChild(grid);
+      if (grp.key === "done" && grp.items.length > 6) {
+        const det = el("details", "fold-panel agent-done-fold", null, { id: "g-live-done-fold" });
+        if (ui && ui.doneOpen) det.open = true;
+        if (ui && typeof ui === "object") {
+          det.addEventListener("toggle", () => { ui.doneOpen = Boolean(det.open); });
+        }
+        const sum = el("summary", "fold-summary agent-group-head");
+        sum.appendChild(el("span", null, grp.label + " (" + grp.items.length + ")"));
+        const meta = el("span", "actions-row");
+        meta.appendChild(el("span", "mono", "Afficher / Replier"));
+        meta.appendChild(makeBadge(String(grp.items.length), grp.tone));
+        sum.appendChild(meta);
+        det.appendChild(sum);
+
+        const body = el("div", "fold-body");
+        const grid = el("div", "agent-grid");
+        grp.items.forEach((ag) => grid.appendChild(_renderAgentCard(ag, idMap)));
+        body.appendChild(grid);
+        det.appendChild(body);
+        sec.appendChild(det);
+      } else {
+        const gHead = el("div", "agent-group-head");
+        gHead.appendChild(el("span", null, grp.label));
+        gHead.appendChild(makeBadge(String(grp.items.length), grp.tone));
+        sec.appendChild(gHead);
+
+        const grid = el("div", "agent-grid");
+        grp.items.forEach((ag) => grid.appendChild(_renderAgentCard(ag, idMap)));
+        sec.appendChild(grid);
+      }
       groups.appendChild(sec);
     });
     panel.appendChild(groups);
@@ -267,6 +310,7 @@ LIVE_VIEWS_JS = r"""
       if (wfBlock) container.appendChild(wfBlock);
       const emptyPanel = el("section", "panel");
       emptyPanel.appendChild(el("div", "empty", "Aucune session active détectée dans le dossier brain/."));
+      emptyPanel.appendChild(el("div", "kpi-sub", "Seule la session en cours est affichée ici. Les sessions archivées sont consultables dans l'onglet Métriques."));
       container.appendChild(emptyPanel);
       return;
     }
@@ -302,6 +346,7 @@ LIVE_VIEWS_JS = r"""
     const maxCtx = Number(summary.max_context_tokens) || 0;
     const ctxTone = maxCtx > CTX_CRIT_TOKENS ? "error" : (maxCtx > CTX_WARN_TOKENS ? "warn" : "");
     const errCnt = Number(summary.error_count) || 0;
+    const errAgents = summary.error_agents != null ? Number(summary.error_agents) : agents.filter((a) => a && a.status === "error").length;
     const kpiGrid = el("div", "grid-kpi");
     kpiGrid.appendChild(renderMetricKpiCard(
       "Tokens utiles",
@@ -322,13 +367,21 @@ LIVE_VIEWS_JS = r"""
     kpiGrid.appendChild(renderMetricKpiCard(
       "Agents actifs",
       fmtInt(summary.active_agents || 0) + " / " + fmtInt(summary.total_agents || agents.length),
-      (summary.waiting_agents || 0) + " en attente · " + (summary.done_agents || 0) + " terminé(s)"
+      (summary.waiting_agents || 0) + " en attente · " + errAgents + " en erreur · " + (summary.done_agents || 0) + " terminé(s)"
     ));
     kpiGrid.appendChild(renderMetricKpiCard(
-      "Raisonnement & Erreurs",
+      "Erreurs",
+      fmtInt(errAgents) + " agent(s)",
+      fmtInt(errCnt) + " étape(s) en erreur",
+      {
+        tone: (errAgents > 0 || errCnt > 0) ? "error" : "",
+        badge: errAgents > 0 ? { label: errAgents + " err", tone: "error" } : null
+      }
+    ));
+    kpiGrid.appendChild(renderMetricKpiCard(
+      "Raisonnement & Durée",
       fmtTokens(summary.thinking_est_tokens || 0),
-      errCnt + " erreur(s) · " + fmtDuration(summary.duration_s || 0),
-      errCnt > 0 ? "warn" : ""
+      "Durée : " + fmtDuration(summary.duration_s || 0)
     ));
     healthPanel.appendChild(kpiGrid);
 
@@ -342,7 +395,7 @@ LIVE_VIEWS_JS = r"""
     if (wfBlock) container.appendChild(wfBlock);
 
     const layout = el("div", "master-detail");
-    layout.appendChild(_renderAgentGroupsPanel(agents));
+    layout.appendChild(_renderAgentGroupsPanel(agents, ui));
 
     const sideCol = el("div", null);
     sideCol.style.display = "flex";

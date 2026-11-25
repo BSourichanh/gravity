@@ -69,7 +69,63 @@ CHARTS_JS = r"""
     if (st === "active") return makeBadge("Actif", "ok");
     if (st === "waiting") return makeBadge("En attente", "warn");
     if (st === "error") return makeBadge("Erreur", "error");
+    if (st === "interrupted") return makeBadge("Interrompu", "warn");
     return makeBadge("Terminé", "");
+  }
+
+  function resolveAgentModel(ag) {
+    if (!ag || typeof ag !== "object") return "";
+    const direct = ag.model ? String(ag.model).trim() : "";
+    if (direct && direct !== "unknown") return direct;
+    const bm = ag.by_model;
+    if (bm && typeof bm === "object") {
+      let best = "";
+      let bestCalls = -1;
+      let bestTok = -1;
+      Object.entries(bm).forEach(([name, info]) => {
+        const calls = Number((info && info.calls) || 0);
+        const tok = Number((info && info.input_tokens) || 0) + Number((info && info.output_tokens) || 0);
+        if (calls > bestCalls || (calls === bestCalls && tok > bestTok)) {
+          best = String(name);
+          bestCalls = calls;
+          bestTok = tok;
+        }
+      });
+      if (best) return best;
+    }
+    return direct;
+  }
+
+  function resolveAgentToolCalls(ag) {
+    if (!ag || typeof ag !== "object") return 0;
+    const v = ag.tool_calls_total != null ? ag.tool_calls_total : ag.tool_calls;
+    return Math.max(0, Number(v) || 0);
+  }
+
+  function renderSourceBadge(source) {
+    const key = String(source || "").toLowerCase().trim();
+    if (!key) return null;
+    const map = {
+      root: ["Racine", "src-root"],
+      swarm: ["Swarm", "src-swarm"],
+      subagent: ["Subagent", "src-subagent"],
+      workflow: ["Workflow", "src-workflow"]
+    };
+    const meta = map[key];
+    return meta ? makeBadge(meta[0], meta[1]) : makeBadge(String(source), "src-other");
+  }
+
+  function renderFiliationLabel(ag, idMap) {
+    if (!ag || typeof ag !== "object") return null;
+    const hasDepth = ag.depth !== null && ag.depth !== undefined && ag.depth !== "" && isFinite(Number(ag.depth));
+    const depth = hasDepth ? Math.max(0, Math.round(Number(ag.depth))) : null;
+    const pid = ag.parent_id ? String(ag.parent_id) : "";
+    const pName = ag.parent_name ? String(ag.parent_name) : (pid && idMap && idMap[pid] ? String(idMap[pid]) : (pid ? pid.slice(0, 8) : ""));
+    if (!pName && depth === null) return null;
+    const parts = [];
+    if (pName) parts.push("↳ " + pName);
+    if (depth !== null) parts.push((!pName && depth > 0 ? "↳ " : "") + "N" + depth);
+    return el("div", "agent-filiation mono", parts.join(" · "));
   }
 
   function renderSparkline(values, opts) {
