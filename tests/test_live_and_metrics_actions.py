@@ -120,7 +120,7 @@ class TestLiveProvider(unittest.TestCase):
                 )
                 + "\n"
             )
-            with tpath.open("a", encoding="utf-8") as fh:
+            with tpath.open("a", encoding="utf-8", newline="\n") as fh:
                 fh.write(extra_line)
 
             st2 = api.get_live_session_state(
@@ -416,7 +416,7 @@ class TestLiveProvider(unittest.TestCase):
             bytes_before = live_provider.get_live_cache_stats()["bytes_read"]
             tpath = brain / root_cid / ".system_generated" / "logs" / "transcript.jsonl"
             extra = json.dumps({"step_index": 2, "type": "PLANNER_RESPONSE", "status": "DONE", "input_tokens": 10}) + "\n"
-            with tpath.open("a", encoding="utf-8") as fh:
+            with tpath.open("a", encoding="utf-8", newline="\n") as fh:
                 fh.write(extra)
             api.get_live_session_state(
                 session_id=root_cid,
@@ -655,7 +655,7 @@ class TestLiveProvider(unittest.TestCase):
             # Updating depth-2 transcript must invalidate signature and update statuses without re-reading root
             bytes_before = live_provider.get_live_cache_stats()["bytes_read"]
             extra_wf2 = json.dumps({"step_index": 1, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-25T10:00:12Z"}) + "\n"
-            with (brain / wf2_cid / ".system_generated" / "logs" / "transcript.jsonl").open("a", encoding="utf-8") as fh:
+            with (brain / wf2_cid / ".system_generated" / "logs" / "transcript.jsonl").open("a", encoding="utf-8", newline="\n") as fh:
                 fh.write(extra_wf2)
             st2 = api.get_live_session_state(
                 since_signature=st1["signature"], gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
