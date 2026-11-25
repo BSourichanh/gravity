@@ -19,22 +19,30 @@ if str(REPO_ROOT) not in sys.path:
 import install as installer  # noqa: E402
 
 
-def _isolated_env(fake_home: Path) -> dict[str, str]:
+def _isolated_env(fake_home: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["HOME"] = str(fake_home)
     env["USERPROFILE"] = str(fake_home)
+    env.pop("GRAVITY_HOME", None)
+    if extra:
+        env.update(extra)
     return env
 
 
-def _run_install(args: list[str], fake_home: Path) -> subprocess.CompletedProcess[str]:
+def _run_install(
+    args: list[str],
+    fake_home: Path,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-B", str(REPO_ROOT / "install.py"), *args],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
-        env=_isolated_env(fake_home),
+        env=_isolated_env(fake_home, extra_env),
         timeout=30,
         check=False,
     )
@@ -280,6 +288,83 @@ class TestInstall(unittest.TestCase):
             self.assertEqual(cfg_nofix["mcpServers"]["dashboard"]["command"], "python3")
             hooks_nofix = json.loads((target_nofix / "hooks.json").read_text(encoding="utf-8"))
             self.assertTrue(hooks_nofix["gravity-core-command"]["PreInvocation"][0]["command"].startswith("python3 "))
+
+    def test_sources_json_recorded_only_on_real_global_install(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_home = tmp_path / "home"
+            fake_home.mkdir()
+            gravity_home = tmp_path / "custom-gravity-home"
+            sources_file = gravity_home / "core" / "sources.json"
+
+            # 1) --dry-run global must NOT write sources.json
+            p_dry = _run_install(["--dry-run"], fake_home, extra_env={"GRAVITY_HOME": str(gravity_home)})
+            self.assertEqual(p_dry.returncode, 0, msg=p_dry.stderr or p_dry.stdout)
+            self.assertFalse(sources_file.exists())
+
+            # 2) --scope workspace must NOT write sources.json
+            ws = tmp_path / "ws"
+            ws.mkdir()
+            p_ws = _run_install(
+                ["--scope", "workspace", "--workspace", str(ws)],
+                fake_home,
+                extra_env={"GRAVITY_HOME": str(gravity_home)},
+            )
+            self.assertEqual(p_ws.returncode, 0, msg=p_ws.stderr or p_ws.stdout)
+            self.assertFalse(sources_file.exists())
+
+            # 3) --target must NOT write sources.json
+            p_tgt = _run_install(
+                ["--target", str(tmp_path / "explicit-target")],
+                fake_home,
+                extra_env={"GRAVITY_HOME": str(gravity_home)},
+            )
+            self.assertEqual(p_tgt.returncode, 0, msg=p_tgt.stderr or p_tgt.stdout)
+            self.assertFalse(sources_file.exists())
+
+            # Seed existing companion entry in sources.json to verify preservation
+            sources_file.parent.mkdir(parents=True, exist_ok=True)
+            sources_file.write_text(
+                json.dumps({"schema_version": 1, "sources": {"other-mod": {"repo_dir": "/tmp/other"}}}) + "\n",
+                encoding="utf-8",
+            )
+
+            # 4) Real global install without --target writes sources.json atomically
+            p_glob = _run_install(["--skip-validate"], fake_home, extra_env={"GRAVITY_HOME": str(gravity_home)})
+            self.assertEqual(p_glob.returncode, 0, msg=p_glob.stderr or p_glob.stdout)
+            self.assertTrue(sources_file.is_file())
+            raw = sources_file.read_bytes()
+            self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
+            self.assertNotIn(b"\r\n", raw)
+            data = json.loads(raw.decode("utf-8"))
+            self.assertEqual(data["schema_version"], 1)
+            self.assertIn("other-mod", data["sources"])
+            grav = data["sources"]["gravity"]
+            self.assertEqual(grav["plugin_name"], "gravity")
+            self.assertEqual(Path(grav["repo_dir"]), REPO_ROOT.resolve())
+            self.assertEqual(grav["install_method"], "copy")
+            self.assertEqual(
+                Path(grav["target_dir"]),
+                (fake_home / ".gemini" / "config" / "plugins" / "gravity").resolve(),
+            )
+            self.assertTrue(grav["installed_version"])
+
+    def test_windows_winerror_32_lock_triggers_inplace_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            target = tmp_path / "gravity"
+            self.assertEqual(
+                installer.install_copy(installer.PLUGIN_SOURCE, target, skip_validate=True),
+                0,
+            )
+            stale = target / "stale.txt"
+            stale.write_text("stale", encoding="utf-8")
+            win_err = OSError("sharing violation")
+            win_err.winerror = 32  # type: ignore[attr-defined]
+            with mock.patch("install.os.rename", side_effect=win_err):
+                rc = installer.install_copy(installer.PLUGIN_SOURCE, target, force=True, skip_validate=True)
+            self.assertEqual(rc, 0)
+            self.assertFalse(stale.exists())
 
 
 if __name__ == "__main__":

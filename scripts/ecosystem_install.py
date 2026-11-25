@@ -5,14 +5,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
-import subprocess
 import sys
 from typing import Any, Optional, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_REPOS_ROOT = REPO_ROOT.parent
+
+_PLUGIN_DIR = REPO_ROOT / "plugin"
+if str(_PLUGIN_DIR) not in sys.path:
+    sys.path.insert(0, str(_PLUGIN_DIR))
+
+from core.updater import pull_git_repo_ff_only, run_subprocess_no_shell  # noqa: E402
 
 TOPOLOGICAL_ORDER: tuple[str, ...] = (
     "gravity",
@@ -150,26 +154,6 @@ def _validate_repos_layout(repos_root: Path, repos: Sequence[str]) -> list[dict[
     return missing
 
 
-def _run_subprocess_no_shell(
-    cmd: list[str],
-    *,
-    cwd: Optional[Path] = None,
-) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    return subprocess.run(
-        cmd,
-        cwd=str(cwd) if cwd is not None else None,
-        env=env,
-        shell=False,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
-
-
 def _locate_init_env(repos_root: Path) -> Optional[Path]:
     candidate = repos_root / "gravity" / "plugin" / "scripts" / "init_env.py"
     if candidate.is_file():
@@ -205,7 +189,7 @@ def _run_registry_post_step(
         cmd = [sys.executable, "-B", str(init_script), "--status", "--json"]
         mode = "status"
 
-    proc = _run_subprocess_no_shell(cmd, cwd=init_script.parent.parent)
+    proc = run_subprocess_no_shell(cmd, cwd=init_script.parent.parent, timeout=None)
     parsed: Any = None
     if proc.stdout.strip():
         try:
@@ -242,6 +226,7 @@ def orchestrate(
     method: Optional[str] = None,
     strict: bool = False,
     skip_validate: bool = False,
+    pull: bool = False,
 ) -> tuple[dict[str, Any], int]:
     """Orchestrate local Gravity installers in topological order and return (payload, exit_code)."""
     effective_scope = scope or "global"
@@ -250,6 +235,15 @@ def orchestrate(
         DEFAULT_REPOS_ROOT if repos_root is None else Path(repos_root)
     ).expanduser().resolve()
 
+    if pull and action in ("check", "uninstall"):
+        return (
+            {
+                "ok": False,
+                "action": action,
+                "error": "--pull cannot be combined with --check or --uninstall (requires --install or --update).",
+            },
+            2,
+        )
     if effective_scope == "workspace" and workspace is None:
         return (
             {
@@ -301,6 +295,14 @@ def orchestrate(
             1,
         )
 
+    pull_results: list[dict[str, Any]] = []
+    if pull:
+        for repo_name in ordered_repos:
+            if dry_run:
+                pull_results.append({"repo": repo_name, "status": "dry_run", "ok": True})
+            else:
+                pull_results.append(pull_git_repo_ff_only(resolved_root / repo_name, repo_name=repo_name))
+
     installer_args = _build_installer_args(
         action=action,
         dry_run=dry_run,
@@ -316,7 +318,7 @@ def orchestrate(
         repo_dir = resolved_root / repo_name
         installer = repo_dir / "install.py"
         cmd = [sys.executable, "-B", str(installer), *installer_args]
-        proc = _run_subprocess_no_shell(cmd, cwd=repo_dir)
+        proc = run_subprocess_no_shell(cmd, cwd=repo_dir, timeout=None)
         entry = {
             "repo": repo_name,
             "installer": str(installer),
@@ -328,22 +330,22 @@ def orchestrate(
         }
         results.append(entry)
         if proc.returncode != 0:
-            return (
-                {
-                    "ok": False,
-                    "action": action,
-                    "dry_run": dry_run,
-                    "scope": effective_scope,
-                    "method": effective_method,
-                    "repos_root": str(resolved_root),
-                    "ordered_repos": ordered_repos,
-                    "failed_repo": repo_name,
-                    "error": f"Installer failed for '{repo_name}' (exit {proc.returncode}).",
-                    "results": results,
-                    "registry": {"status": "skipped", "reason": "aborted after installer failure"},
-                },
-                1,
-            )
+            fail_payload: dict[str, Any] = {
+                "ok": False,
+                "action": action,
+                "dry_run": dry_run,
+                "scope": effective_scope,
+                "method": effective_method,
+                "repos_root": str(resolved_root),
+                "ordered_repos": ordered_repos,
+                "failed_repo": repo_name,
+                "error": f"Installer failed for '{repo_name}' (exit {proc.returncode}).",
+                "results": results,
+                "registry": {"status": "skipped", "reason": "aborted after installer failure"},
+            }
+            if pull:
+                fail_payload["pull_results"] = pull_results
+            return fail_payload, 1
 
     registry_info, reg_ok = _run_registry_post_step(
         repos_root=resolved_root,
@@ -351,8 +353,10 @@ def orchestrate(
         dry_run=dry_run,
         effective_scope=effective_scope,
     )
+    pull_errors = [item for item in pull_results if not item.get("ok")]
+    overall_ok = reg_ok and not pull_errors
     payload: dict[str, Any] = {
-        "ok": reg_ok,
+        "ok": overall_ok,
         "action": action,
         "dry_run": dry_run,
         "scope": effective_scope,
@@ -362,9 +366,13 @@ def orchestrate(
         "results": results,
         "registry": registry_info,
     }
+    if pull:
+        payload["pull_results"] = pull_results
     if not reg_ok:
         payload["error"] = registry_info.get("error") or "Failed to refresh core/modules.json."
-    return payload, (0 if reg_ok else 1)
+    elif pull_errors:
+        payload["error"] = "One or more repositories failed during --pull."
+    return payload, (0 if overall_ok else 1)
 
 
 def _print_human_report(payload: dict[str, Any]) -> None:
@@ -379,6 +387,14 @@ def _print_human_report(payload: dict[str, Any]) -> None:
         for item in payload["missing"]:
             print(f"  - {item['repo']}: {item['reason']} ({item['path']})", file=sys.stderr)
         return
+
+    pull_results = payload.get("pull_results") or []
+    if pull_results:
+        print("\n[PULL] Git fast-forward results:")
+        for item in pull_results:
+            reason = item.get("reason") or item.get("error") or ""
+            suffix = f" ({reason})" if reason else ""
+            print(f"  - {item.get('repo')}: {item.get('status')}{suffix}")
 
     for res in payload.get("results") or []:
         tag = "OK" if res["ok"] else "FAIL"
@@ -487,6 +503,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Forward --skip-validate to each repository installer.",
     )
     parser.add_argument(
+        "--pull",
+        action="store_true",
+        help="Opt-in: run git fetch + git pull --ff-only (fail-isolated) before install/update.",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable JSON output.",
@@ -515,6 +536,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         method=args.method,
         strict=args.strict,
         skip_validate=args.skip_validate,
+        pull=args.pull,
     )
 
     if args.json:

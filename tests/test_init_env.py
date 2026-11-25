@@ -899,6 +899,60 @@ class TestInitEnvCLI(unittest.TestCase):
             self.assertEqual(p_core_guide.returncode, 0)
             self.assertNotIn("bridge", p_core_guide.stdout.lower())
 
+    def test_update_and_check_updates_cli_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_home = tmp_path / "user-home"
+            fake_home.mkdir()
+            plugins_dir = tmp_path / "plugins"
+            shutil.copytree(REPO_ROOT / "plugin", plugins_dir / "gravity", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            gravity_home = tmp_path / "gravity-home"
+            env = _isolated_env(fake_home)
+
+            # --check-updates --offline --json on unlinked module -> exit 0, RO, status=unlinked
+            p_chk = subprocess.run(
+                [
+                    sys.executable, "-B", str(INIT_SCRIPT),
+                    "--gravity-home", str(gravity_home),
+                    "--plugins-dir", str(plugins_dir),
+                    "--check-updates", "--offline", "--json",
+                ],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=15, check=False,
+            )
+            self.assertEqual(p_chk.returncode, 0, msg=p_chk.stderr or p_chk.stdout)
+            out_chk = json.loads(p_chk.stdout)
+            self.assertEqual(out_chk["mode"], "check-updates")
+            self.assertTrue(out_chk["ok"])
+            self.assertEqual(out_chk["results"][0]["status"], "unlinked")
+            self.assertFalse(gravity_home.exists())
+
+            # --update --offline --dry-run --json dispatches cleanly
+            p_upd = subprocess.run(
+                [
+                    sys.executable, "-B", str(INIT_SCRIPT),
+                    "--gravity-home", str(gravity_home),
+                    "--plugins-dir", str(plugins_dir),
+                    "--update", "--offline", "--dry-run", "--force", "--modules", "core", "--json",
+                ],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=15, check=False,
+            )
+            self.assertEqual(p_upd.returncode, 0, msg=p_upd.stderr or p_upd.stdout)
+            out_upd = json.loads(p_upd.stdout)
+            self.assertEqual(out_upd["mode"], "update")
+            self.assertTrue(out_upd["dry_run"])
+            self.assertTrue(out_upd["force"])
+            self.assertTrue(out_upd["offline"])
+            self.assertEqual(len(out_upd["results"]), 1)
+
+            # --set-drive-dir + --update is rejected
+            drive_dir = tmp_path / "drive"
+            drive_dir.mkdir()
+            p_bad = subprocess.run(
+                [sys.executable, "-B", str(INIT_SCRIPT), "--set-drive-dir", str(drive_dir), "--update"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=15, check=False,
+            )
+            self.assertEqual(p_bad.returncode, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

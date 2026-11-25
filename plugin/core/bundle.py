@@ -22,6 +22,7 @@ _EXCLUDED_DIR_NAMES = frozenset({".git", "__pycache__", ".venv", "venv", "node_m
 _STRICT_EXCLUDED_EXACT = frozenset(
     {
         "core/modules.json",
+        "core/sources.json",
         "workflow/live_workspaces.json",
         "metrics/session_meta.json",
     }

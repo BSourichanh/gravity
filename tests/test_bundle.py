@@ -126,6 +126,7 @@ class TestBundleExportImport(unittest.TestCase):
             # Seed strictly excluded files
             (gravity_home / "core").mkdir(parents=True)
             (gravity_home / "core" / "modules.json").write_text('{"modules":[]}\n', encoding="utf-8")
+            (gravity_home / "core" / "sources.json").write_text('{"schema_version":1,"sources":{}}\n', encoding="utf-8")
             (gravity_home / "core" / "sync.lock").write_text("lock", encoding="utf-8")
             (gravity_home / "workflow" / "live_workspaces.json").write_text("{}\n", encoding="utf-8")
             (gravity_home / "metrics" / "session_meta.json").write_text("{}\n", encoding="utf-8")
@@ -192,6 +193,7 @@ class TestBundleExportImport(unittest.TestCase):
                 # Strict exclusions and retired bridge assets omitted without error
                 for forbidden in (
                     "core/modules.json",
+                    "core/sources.json",
                     "core/sync.lock",
                     "workflow/live_workspaces.json",
                     "metrics/session_meta.json",

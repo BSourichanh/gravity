@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+import errno
 import json
 import os
 from pathlib import Path
@@ -201,30 +203,72 @@ def run_fix_python_cmd(plugin_dir: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _is_symlink_or_junction(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    is_junc = getattr(path, "is_junction", None)
+    return bool(callable(is_junc) and is_junc())
+
+
+def _is_lock_oserror(exc: OSError) -> bool:
+    """Return True when OSError indicates a file/dir lock (Windows WinError 5/32/33 or EACCES/EPERM/EBUSY)."""
+    if isinstance(exc, PermissionError):
+        return True
+    if getattr(exc, "winerror", None) in (5, 32, 33):
+        return True
+    return exc.errno in (errno.EACCES, errno.EPERM, errno.EBUSY)
+
+
 def _is_empty_dir(path: Path) -> bool:
-    return path.is_dir() and not path.is_symlink() and not any(path.iterdir())
+    return path.is_dir() and not _is_symlink_or_junction(path) and not any(path.iterdir())
 
 
 def _prune_stale_entries(src_dir: Path, dst_dir: Path) -> None:
     src_entries = {entry.name: entry for entry in src_dir.iterdir()}
     for entry in list(dst_dir.iterdir()):
         src_match = src_entries.get(entry.name)
-        if src_match is None or (entry.is_dir() != src_match.is_dir()):
+        entry_is_link = _is_symlink_or_junction(entry)
+        entry_is_dir = entry.is_dir() and not entry_is_link
+        src_is_dir = src_match is not None and src_match.is_dir() and not _is_symlink_or_junction(src_match)
+        if src_match is None or (entry_is_dir != src_is_dir) or entry_is_link:
             try:
-                if entry.is_dir() and not entry.is_symlink():
+                if entry_is_dir:
                     shutil.rmtree(entry, ignore_errors=True)
+                elif entry_is_link:
+                    try:
+                        entry.unlink()
+                    except OSError:
+                        entry.rmdir()
                 else:
                     entry.unlink(missing_ok=True)
-            except PermissionError:
-                pass
-        elif entry.is_dir() and not entry.is_symlink() and src_match.is_dir():
+            except OSError as exc:
+                if not _is_lock_oserror(exc):
+                    raise
+        elif entry_is_dir and src_is_dir and src_match is not None:
             _prune_stale_entries(src_match, entry)
+
+
+def _copy_file_in_place(src_path: str, dst_path: str) -> str:
+    """Copy a file in-place, tolerating a locked destination if bytes are already identical."""
+    src_file = Path(src_path)
+    dst_file = Path(dst_path)
+    dst_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        return shutil.copy2(str(src_file), str(dst_file))
+    except OSError as exc:
+        if _is_lock_oserror(exc) and dst_file.is_file():
+            try:
+                if src_file.read_bytes() == dst_file.read_bytes():
+                    return str(dst_file)
+            except OSError:
+                pass
+        raise
 
 
 def _sync_directory_in_place(src_dir: Path, dst_dir: Path) -> None:
     dst_dir.mkdir(parents=True, exist_ok=True)
     _prune_stale_entries(src_dir, dst_dir)
-    shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
+    shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True, copy_function=_copy_file_in_place)
 
 
 def check_environment(
@@ -377,11 +421,20 @@ def install_copy(
             label = "Replaced legacy 'gravity' install with Gravity Core" if replacing_legacy else "Upgraded Gravity Core"
             try:
                 os.rename(str(target_dir), str(backup_dir))
-            except PermissionError:
+            except OSError as exc:
+                if not _is_lock_oserror(exc):
+                    raise
                 shutil.rmtree(backup_parent, ignore_errors=True)
                 backup_parent = None
                 print("[INFO]  Target directory is in use by a running process; updating files in place.")
-                _sync_directory_in_place(staged_dir, target_dir)
+                try:
+                    _sync_directory_in_place(staged_dir, target_dir)
+                except (OSError, shutil.Error) as sync_exc:
+                    print(
+                        f"[ERROR] In-place update failed because a target file is locked: {sync_exc}",
+                        file=sys.stderr,
+                    )
+                    return 1
                 print(f"[OK]    {label} v{src_version} at {target_dir} (in-place)")
             else:
                 try:
@@ -494,6 +547,116 @@ def uninstall_plugin(
     shutil.rmtree(target_dir)
     print(f"[OK]    Removed Gravity plugin from {target_dir} ($GRAVITY_HOME data preserved).")
     return 0
+
+
+def _resolve_gravity_home() -> Path:
+    env_home = os.environ.get("GRAVITY_HOME", "").strip()
+    if env_home:
+        return Path(env_home).expanduser().resolve()
+    return (Path.home() / ".gemini" / "gravity").resolve()
+
+
+def _probe_git_head(repo_dir: Path) -> tuple[Optional[str], Optional[str]]:
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    branch: Optional[str] = None
+    sha: Optional[str] = None
+    for args, attr in ((["symbolic-ref", "--short", "-q", "HEAD"], "branch"), (["rev-parse", "HEAD"], "sha")):
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(repo_dir), *args],
+                env=env,
+                shell=False,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode == 0 and proc.stdout.strip():
+            if attr == "branch":
+                branch = proc.stdout.strip()
+            else:
+                sha = proc.stdout.strip()
+    return branch, sha
+
+
+def record_source_provenance(
+    plugin_src: Path,
+    *,
+    method: str,
+    target_dir: Optional[Path],
+) -> Optional[Path]:
+    """Atomically record Gravity Core repo provenance in $GRAVITY_HOME/core/sources.json."""
+    gravity_home = _resolve_gravity_home()
+    core_dir = gravity_home / "core"
+    sources_path = core_dir / "sources.json"
+    for p in (gravity_home, core_dir, sources_path):
+        if p.is_symlink():
+            print(f"[WARN]  Skipping sources.json update due to symlink path: {p}", file=sys.stderr)
+            return None
+
+    manifest = read_plugin_manifest(plugin_src) or {}
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    branch, sha = _probe_git_head(REPO_ROOT)
+
+    existing_sources: dict[str, Any] = {}
+    if sources_path.is_file():
+        try:
+            raw_obj = json.loads(sources_path.read_text(encoding="utf-8-sig"))
+            if isinstance(raw_obj, dict) and isinstance(raw_obj.get("sources"), dict):
+                existing_sources = dict(raw_obj["sources"])
+        except (OSError, ValueError):
+            existing_sources = {}
+
+    effective_target = (
+        str(target_dir.resolve())
+        if target_dir is not None
+        else str((Path.home() / ".gemini" / "config" / "plugins" / PLUGIN_NAME).resolve())
+    )
+    existing_sources[PLUGIN_NAME] = {
+        "plugin_name": PLUGIN_NAME,
+        "repo_dir": str(REPO_ROOT.resolve()),
+        "repository": manifest.get("repository"),
+        "install_method": method,
+        "target_dir": effective_target,
+        "git_branch": branch,
+        "git_sha": sha,
+        "installed_version": manifest.get("version"),
+        "installed_at": now_iso,
+    }
+
+    payload = {
+        "schema_version": 1,
+        "updated_at": now_iso,
+        "sources": existing_sources,
+    }
+    serialized = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    core_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=str(core_dir),
+            prefix=".sources-",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            tmp_path = Path(handle.name)
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(str(tmp_path), str(sources_path))
+    except Exception:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
+    return sources_path
 
 
 def print_next_steps(target_dir: Optional[Path]) -> None:
@@ -652,6 +815,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return rc
 
     if not args.dry_run:
+        if args.scope == "global" and args.target is None:
+            record_source_provenance(PLUGIN_SOURCE, method=args.method, target_dir=target_dir)
         print_next_steps(target_dir)
 
     return 0

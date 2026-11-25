@@ -58,6 +58,7 @@ from core.registry import (  # noqa: E402
     resolve_module_home,
     write_modules_registry,
 )
+from core.updater import format_update_report, run_update  # noqa: E402
 
 
 def _configure_stdio() -> None:
@@ -1270,6 +1271,9 @@ def _print_human_report(payload: dict[str, Any]) -> None:
     if mode in ("set-drive-dir", "export", "import"):
         print(format_bundle_report(payload))
         return
+    if mode in ("update", "check-updates"):
+        print(format_update_report(payload))
+        return
     if mode == "overview":
         print(format_overview_markdown(payload))
         return
@@ -1340,10 +1344,17 @@ def build_parser() -> argparse.ArgumentParser:
     mode_group.add_argument("--overview", action="store_true", help="Read-only consolidated overview (home, modules health, MCP, app version, 5-journey help).")
     mode_group.add_argument("--export", action="store_true", help="Export portable Gravity state (and optional ateliers) to a verified ZIP bundle.")
     mode_group.add_argument("--import", dest="import_zip", type=Path, default=None, help="Verify and import a portable Gravity ZIP bundle into $GRAVITY_HOME.")
+    mode_group.add_argument("--update", action="store_true", help="Fetch, pull (--ff-only), and reinstall updated Gravity modules.")
+    mode_group.add_argument("--check-updates", action="store_true", help="Read-only check for available Git updates and local drift.")
     parser.add_argument("--out", type=Path, default=None, help="Output ZIP file or directory for --export (overrides sync.json drive_dir).")
     parser.add_argument("--include-atelier", type=Path, action="append", default=None, help="Include an Architect atelier workspace in --export (repeatable).")
     parser.add_argument("--set-drive-dir", type=Path, default=None, help="Persist default local Google Drive sync directory in <gravity_home>/core/sync.json.")
-    parser.add_argument("--dry-run", action="store_true", help="Verify --import bundle integrity and path remapping without writing to disk.")
+    parser.add_argument("--dry-run", action="store_true", help="Preview or verify operations without modifying files on disk.")
+    parser.add_argument("--force", action="store_true", help="Force reinstallation of selected modules during --update.")
+    parser.add_argument("--modules", type=str, default=None, help="Comma-separated module IDs or plugin names for --update/--check-updates.")
+    parser.add_argument("--link", type=Path, action="append", default=None, help="Link a local repository clone to its module in sources.json (repeatable).")
+    parser.add_argument("--repos-root", type=Path, default=None, help="Parent directory containing cloned Gravity repositories for --update/--check-updates.")
+    parser.add_argument("--offline", action="store_true", help="Skip remote Git network calls during --update/--check-updates.")
     parser.add_argument("--shell", choices=("auto", "powershell", "bash"), default="auto", help="Target shell syntax for --migration-plan commands (default: auto).")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON output.")
     return parser
@@ -1354,7 +1365,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    other_modes = (args.status, args.check, args.migration_plan, args.dashboard, args.guide, args.overview, args.import_zip is not None)
+    other_modes = (
+        args.status, args.check, args.migration_plan, args.dashboard,
+        args.guide, args.overview, args.import_zip is not None,
+        args.update, args.check_updates,
+    )
     if args.set_drive_dir is not None and any(other_modes):
         parser.error("--set-drive-dir cannot be combined with modes other than --export.")
 
@@ -1369,6 +1384,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             payload, rc = drive_res, 0
         elif args.import_zip is not None:
             payload, rc = import_bundle(args.import_zip, gravity_home=args.gravity_home, dry_run=args.dry_run), 0
+        elif args.update or args.check_updates:
+            payload, rc = run_update(
+                gravity_home=args.gravity_home,
+                plugins_dirs=args.plugins_dir,
+                check_only=args.check_updates,
+                force=args.force,
+                modules_csv=args.modules,
+                link_paths=args.link or (),
+                repos_root=args.repos_root,
+                offline=args.offline,
+                dry_run=args.dry_run,
+            )
         else:
             payload, rc = run_environment(
                 gravity_home=args.gravity_home, plugins_dirs=args.plugins_dir,

@@ -292,6 +292,97 @@ class TestEcosystemInstall(unittest.TestCase):
                 self.assertNotEqual(p_unk.returncode, 0)
                 self.assertFalse(json.loads(p_unk.stdout)["ok"])
 
+    def test_pull_rejects_check_uninstall_and_handles_clean_vs_dirty(self) -> None:
+        def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+            env = dict(os.environ)
+            env["GIT_TERMINAL_PROMPT"] = "0"
+            return subprocess.run(
+                ["git", "-C", str(cwd), *args],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=15,
+                check=True,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_home = tmp_path / "home"
+            fake_home.mkdir()
+            gravity_home = tmp_path / "gravity-home"
+            repos_root = tmp_path / "repos"
+            _create_stub_repos(repos_root)
+
+            # --pull incompatible with --check, default check, and --uninstall (exit 2)
+            for combo in (["--pull"], ["--check", "--pull"], ["--uninstall", "--pull"]):
+                p_bad = _run_orchestrator(
+                    [*combo, "--repos-root", str(repos_root), "--json"],
+                    _isolated_env(fake_home, gravity_home, tmp_path / "bad.log"),
+                )
+                self.assertEqual(p_bad.returncode, 2, msg=p_bad.stdout or p_bad.stderr)
+                self.assertFalse(json.loads(p_bad.stdout)["ok"])
+
+            # Create bare remotes + clones for gravity (behind by 1) and gravity-workflow (dirty)
+            remotes_dir = tmp_path / "remotes"
+            remotes_dir.mkdir()
+            for name in ("gravity", "gravity-workflow"):
+                repo_dir = repos_root / name
+                bare_dir = remotes_dir / f"{name}.git"
+                subprocess.run(["git", "init", "--bare", str(bare_dir)], check=True, capture_output=True, text=True)
+                _git(repo_dir, "init", "-b", "dev")
+                _git(repo_dir, "config", "user.email", "test@example.com")
+                _git(repo_dir, "config", "user.name", "Test")
+                _git(repo_dir, "add", ".")
+                _git(repo_dir, "commit", "-m", "init")
+                _git(repo_dir, "remote", "add", "origin", str(bare_dir))
+                _git(repo_dir, "push", "-u", "origin", "dev")
+
+            # Advance bare remote of gravity from a temp pusher clone
+            pusher = tmp_path / "pusher"
+            subprocess.run(
+                ["git", "clone", "-b", "dev", str(remotes_dir / "gravity.git"), str(pusher)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            _git(pusher, "config", "user.email", "test@example.com")
+            _git(pusher, "config", "user.name", "Test")
+            (pusher / "CHANGELOG.md").write_text("# updated\n", encoding="utf-8")
+            _git(pusher, "add", "CHANGELOG.md")
+            _git(pusher, "commit", "-m", "remote update")
+            _git(pusher, "push", "origin", "dev")
+
+            # Make gravity-workflow dirty
+            (repos_root / "gravity-workflow" / "dirty.txt").write_text("untracked\n", encoding="utf-8")
+
+            # --pull --update --dry-run must NOT pull CHANGELOG.md
+            dry_log = tmp_path / "pull_dry.log"
+            p_dry = _run_orchestrator(
+                ["--update", "--pull", "--dry-run", "--modules", "gravity,gravity-workflow", "--repos-root", str(repos_root), "--json"],
+                _isolated_env(fake_home, gravity_home, dry_log),
+            )
+            self.assertEqual(p_dry.returncode, 0, msg=p_dry.stderr or p_dry.stdout)
+            out_dry = json.loads(p_dry.stdout)
+            self.assertEqual([r["status"] for r in out_dry["pull_results"]], ["dry_run", "dry_run"])
+            self.assertFalse((repos_root / "gravity" / "CHANGELOG.md").exists())
+
+            # Real --update --pull pulls clean gravity and skips dirty gravity-workflow without failing
+            pull_log = tmp_path / "pull_real.log"
+            p_pull = _run_orchestrator(
+                ["--update", "--pull", "--modules", "gravity,gravity-workflow", "--repos-root", str(repos_root), "--json"],
+                _isolated_env(fake_home, gravity_home, pull_log),
+            )
+            self.assertEqual(p_pull.returncode, 0, msg=p_pull.stderr or p_pull.stdout)
+            out_pull = json.loads(p_pull.stdout)
+            self.assertTrue(out_pull["ok"])
+            by_repo = {item["repo"]: item for item in out_pull["pull_results"]}
+            self.assertEqual(by_repo["gravity"]["status"], "pulled")
+            self.assertEqual(by_repo["gravity-workflow"]["status"], "skipped")
+            self.assertEqual(by_repo["gravity-workflow"]["reason"], "dirty")
+            self.assertTrue((repos_root / "gravity" / "CHANGELOG.md").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
