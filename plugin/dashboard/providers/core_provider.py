@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+from _shared.path_safety import is_symlink_or_junction
 from core.registry import (
     detect_legacy_homes,
     discover_modules,  # noqa: F401 - exposed as part of core.registry contract reuse
@@ -14,10 +15,12 @@ from core.registry import (
 from dashboard.providers import (
     build_dashboard_tabs,
     load_modules_snapshot_ro,
+    read_json_ro,
     short_digest,
     stat_token,
     unchanged_response,
 )
+from dashboard.providers.spi import extract_module_spi_metadata
 
 
 def _find_duplicate_ids(modules: Sequence[dict[str, Any]]) -> list[str]:
@@ -53,8 +56,64 @@ def _enrich_modules_ro(
                 resolved_home = None
         item["resolved_home"] = str(resolved_home) if resolved_home is not None else None
         item["home_exists"] = bool(resolved_home is not None and resolved_home.is_dir())
+        item["spi"] = extract_module_spi_metadata(item)
         enriched.append(item)
     return enriched
+
+
+def _read_shared_status_ro() -> tuple[dict[str, Any], Path]:
+    """Inspect `<plugin_root>/.shared_manifest.json` and `_shared/` read-only."""
+    plugin_root = Path(__file__).resolve().parents[2]
+    manifest_path = plugin_root / ".shared_manifest.json"
+    shared_dir = plugin_root / "_shared"
+
+    manifest_exists = manifest_path.is_file() and not is_symlink_or_junction(manifest_path)
+    shared_exists = shared_dir.is_dir() and not is_symlink_or_junction(shared_dir)
+
+    actual_files: list[str] = []
+    if shared_exists:
+        try:
+            actual_files = sorted(
+                p.name
+                for p in shared_dir.iterdir()
+                if p.suffix == ".py" and p.is_file() and not is_symlink_or_junction(p)
+            )
+        except OSError:
+            actual_files = []
+
+    manifest_data: Optional[dict[str, Any]] = None
+    read_warn: Optional[str] = None
+    if manifest_exists:
+        raw, read_warn = read_json_ro(manifest_path)
+        if isinstance(raw, dict):
+            manifest_data = raw
+
+    raw_files = manifest_data.get("files") if manifest_data is not None else None
+    manifest_files = raw_files if isinstance(raw_files, dict) else {}
+    manifest_names = sorted(str(k) for k in manifest_files.keys())
+    in_sync = bool(
+        manifest_exists
+        and shared_exists
+        and read_warn is None
+        and manifest_names
+        and set(manifest_names).issubset(set(actual_files))
+    )
+    status = "ok" if in_sync else ("missing" if not manifest_exists and not shared_exists else "warn")
+
+    return (
+        {
+            "status": status,
+            "manifest_exists": manifest_exists,
+            "shared_dir_exists": shared_exists,
+            "manifest_path": str(manifest_path),
+            "source_repo": manifest_data.get("source_repo") if manifest_data else None,
+            "generated_at": manifest_data.get("generated_at") if manifest_data else None,
+            "manifest_file_count": len(manifest_names),
+            "actual_file_count": len(actual_files),
+            "files": actual_files,
+        },
+        manifest_path,
+    )
 
 
 def get_overview(
@@ -107,10 +166,14 @@ def get_overview(
         "warnings": doctor_warnings,
     }
     tabs = build_dashboard_tabs(modules)
+    shared_status, shared_manifest_path = _read_shared_status_ro()
 
     sig_parts: list[Any] = [
         str(resolved_gravity),
         stat_token(registry_path),
+        stat_token(shared_manifest_path),
+        shared_status.get("status"),
+        shared_status.get("actual_file_count"),
         registry_source,
         status,
         len(modules),
@@ -121,6 +184,8 @@ def get_overview(
                 bool(m.get("valid")),
                 m.get("resolved_home"),
                 bool(m.get("home_exists")),
+                bool((m.get("spi") or {}).get("enabled")),
+                (m.get("spi") or {}).get("provider_script") or "",
                 stat_token(Path(m["module_path"])) if m.get("module_path") else "none",
             )
             for m in modules
@@ -140,6 +205,7 @@ def get_overview(
         "registry_exists": registry_exists,
         "registry_source": registry_source,
         "registry_generated_at": generated_at,
+        "shared_status": shared_status,
         "modules": modules,
         "tabs": tabs,
         "doctor": doctor,

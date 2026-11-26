@@ -6,17 +6,17 @@ import hashlib
 import json
 from pathlib import Path
 import re
-import sqlite3
 from typing import Any, Optional, Sequence
 
-DEDICATED_PROVIDERS: tuple[str, ...] = ("core", "workflow", "metrics", "bridge", "architect")
+DEDICATED_PROVIDERS: tuple[str, ...] = ("core", "workflow", "metrics", "architect")
 
 _DEFAULT_LABELS: dict[str, str] = {
-    "core": "Overview",
-    "workflow": "Workflow Live",
-    "metrics": "Metrics",
-    "bridge": "Bridge",
-    "architect": "Architect",
+    "live": "Session",
+    "architect": "Projets",
+    "metrics": "Historique",
+    "core": "Système",
+    "overview": "Système",
+    "workflow": "Session",
 }
 
 _TITLE_RE = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)
@@ -59,14 +59,14 @@ def unchanged_response(sig: str) -> dict[str, Any]:
 
 
 def resolve_provider_kind(module_id: str) -> str:
-    """Return the provider kind (`core`, `workflow`, `metrics`, `bridge`, `architect`, or `generic`)."""
+    """Return the provider kind (`core`, `workflow`, `metrics`, `architect`, or `generic`)."""
     if module_id in DEDICATED_PROVIDERS:
         return module_id
     return "generic"
 
 
 def build_dashboard_tabs(modules: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Build ordered dashboard tabs: `overview`, detected dedicated tabs, then generic OCP modules."""
+    """Build ordered dashboard tabs: `live`, `architect`, `metrics`, `overview`, then generic OCP modules."""
     by_id: dict[str, dict[str, Any]] = {}
     ordered_others: list[dict[str, Any]] = []
 
@@ -85,23 +85,24 @@ def build_dashboard_tabs(modules: Sequence[dict[str, Any]]) -> list[dict[str, An
             ordered_others.append(raw)
 
     core_mod = by_id.get("core") or {}
+    wf_mod = by_id.get("workflow") or {}
     tabs: list[dict[str, Any]] = [
         {
-            "id": "overview",
-            "kind": "core",
-            "module_id": "core",
-            "label": _DEFAULT_LABELS["core"],
-            "display_name": core_mod.get("display_name") or "Gravity Core",
-            "plugin_name": core_mod.get("plugin_name") or "gravity",
-            "version": core_mod.get("version"),
-            "valid": bool(core_mod.get("valid", True)) if core_mod else True,
+            "id": "live",
+            "kind": "live",
+            "module_id": "workflow" if wf_mod else "core",
+            "label": _DEFAULT_LABELS["live"],
+            "display_name": wf_mod.get("display_name") or "Session (En direct & Workflow)",
+            "plugin_name": wf_mod.get("plugin_name") or core_mod.get("plugin_name") or "gravity",
+            "version": wf_mod.get("version") or core_mod.get("version"),
+            "valid": bool(wf_mod.get("valid", True)) if wf_mod else (bool(core_mod.get("valid", True)) if core_mod else True),
             "dedicated": True,
-            "commands": list(core_mod.get("commands") or ["/gravity"]),
-            "ui": dict(core_mod.get("ui") or {"mode": "core", "target": "gravity"}),
+            "commands": list(wf_mod.get("commands") or ["/gravity dashboard"]),
+            "ui": dict(wf_mod.get("ui") or core_mod.get("ui") or {"mode": "core", "target": "gravity"}),
         }
     ]
 
-    for mod_id in ("workflow", "metrics", "bridge", "architect"):
+    for mod_id in ("architect", "metrics"):
         mod = by_id.get(mod_id)
         if mod is None:
             continue
@@ -120,6 +121,22 @@ def build_dashboard_tabs(modules: Sequence[dict[str, Any]]) -> list[dict[str, An
                 "ui": dict(mod.get("ui") or {}),
             }
         )
+
+    tabs.append(
+        {
+            "id": "overview",
+            "kind": "core",
+            "module_id": "core",
+            "label": _DEFAULT_LABELS["overview"],
+            "display_name": core_mod.get("display_name") or "Gravity Core",
+            "plugin_name": core_mod.get("plugin_name") or "gravity",
+            "version": core_mod.get("version"),
+            "valid": bool(core_mod.get("valid", True)) if core_mod else True,
+            "dedicated": True,
+            "commands": list(core_mod.get("commands") or ["/gravity"]),
+            "ui": dict(core_mod.get("ui") or {"mode": "core", "target": "gravity"}),
+        }
+    )
 
     for mod in ordered_others:
         mod_id = str(mod["id"])
@@ -199,21 +216,6 @@ def load_modules_snapshot_ro(
 
     discovered = [dict(m) for m in discover_modules(plugin_roots)]
     return discovered, "discovered", registry_exists, None, warnings
-
-
-def open_sqlite_ro(db_path: Path, warnings: list[str]) -> Optional[sqlite3.Connection]:
-    """Open an existing SQLite database strictly read-only (`?mode=ro` + `PRAGMA query_only = ON`)."""
-    try:
-        if db_path.is_symlink() or not db_path.is_file():
-            return None
-        resolved = db_path.resolve()
-        conn = sqlite3.connect(f"{resolved.as_uri()}?mode=ro", uri=True, timeout=1.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA query_only = ON")
-        return conn
-    except (sqlite3.Error, OSError) as exc:
-        warnings.append(f"SQLite read-only open failed for {db_path.name}: {exc}")
-        return None
 
 
 def truncate_preview(text: str, max_chars: int = 160) -> str:
@@ -330,7 +332,6 @@ __all__ = [
     "extract_md_verdict",
     "file_uri_if_exists",
     "load_modules_snapshot_ro",
-    "open_sqlite_ro",
     "read_json_ro",
     "resolve_provider_kind",
     "short_digest",
