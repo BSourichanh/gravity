@@ -5,6 +5,14 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Added
+- **[TASK-SHARED-01] Socle partagé 100 % stdlib Python 3.10+ (`shared/gravity_shared/`) :**
+  - `atomic_io.py` (`is_lock_oserror`, `write_bytes_atomic`, `write_text_atomic`, `write_json_atomic`, `append_jsonl_atomic`) avec UTF-8 sans BOM, LF, `os.fsync` et retries bornés sur `WinError 5/32/33` / `EACCES`/`EPERM`/`EBUSY`.
+  - `file_lock.py` (`exclusive_file_lock`) fail-closed levant explicitement `TimeoutError` sous POSIX (`fcntl.flock` `LOCK_EX | LOCK_NB`) et Windows (`msvcrt.locking` `LK_NBLCK`).
+  - `path_safety.py` (`is_symlink_or_junction` avec repli Python 3.10/3.11 NTFS, `ensure_no_symlink_or_junction_under`, `ensure_safe_dir`, `is_within_root`, `validate_rel_member_path`, `safe_home_dir`, `unlink_or_rmdir_link`).
+  - `hook_runtime.py` (`configure_utf8_stdio`, `read_stdin_text`, `read_stdin_json`, `emit_json`, `emit_passthrough`/`emit_ok`, `emit_user_markdown`, `emit_handoff_markdown`, `first_not_none`, `first_str_arg`, `normalize_command`, `is_initial_invocation`, `resolve_workspace_root`, `resolve_brain_dir`, `resolve_conversation_id`).
+  - `__init__.py` et suites de tests unitaires isolées (`tests/test_shared_{atomic_io,locks,path_safety,hook_runtime}.py`).
+
 ## [0.3.0] - 2026-11-24
 
 ### Changed
