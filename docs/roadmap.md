@@ -2,8 +2,8 @@
 
 ## `v0.1.0` — Socle modulaire & unification des dépôts *(actuelle)*
 
-- Standardisation des 5 dépôts produits sur `plugin/` + `plugin/config/module.json` v1 (`gravity`, `gravity-architect`, `gravity-workflow`, `gravity-bridge`, `gravity-metrics`).
-- Séparation complète de l'atelier de conception dans `gravity-studio`.
+- Standardisation des 4 dépôts plugins sur `plugin/` + `plugin/config/module.json` v1 (`gravity`, `gravity-architect`, `gravity-workflow`, `gravity-metrics`).
+- Séparation complète de l'atelier de conception dans `gravity-workshop`.
 - Centralisation du stockage sous `$GRAVITY_HOME` (`~/.gemini/gravity/<module>/`) et registre atomique `core/modules.json`.
 - Commandes `/gravity [init|status|modules|doctor]` et détection legacy en lecture seule.
 
@@ -16,7 +16,7 @@
 - **Transition des interfaces existantes :**
   - `gravity-metrics` (`ui.mode: "transition-mcp"`) : vue lecture seule coûts/tokens/cache/audits agents intégrée dans `gravity` (`archive`/`remove` conservés sous `/gravity-metrics`).
   - `gravity-workflow` (`ui.mode: "transition-sidecar"`) : vue `Workflow Live` temps réel (`~1 500 ms`) intégrée dans `gravity` en lecture seule.
-  - `gravity-bridge` et `gravity-architect` : onglets dédiés lecture seule livrés au Lot 2 (**`Bridge`** sur `bridge.db` `?mode=ro` et **`Architect`** sur l'atelier Hot/Cold + `audits/code/`).
+  - `gravity-architect` : onglet dédié lecture seule (**`Architect`** sur l'atelier Hot/Cold + `audits/code/`).
 
 ### 2. Boucle d'optimisation `metrics -> workflow auto`
 - Exploitation des signaux `session-metrics` et `cost-telemetry` produits par `gravity-metrics` comme entrées du routage adaptatif dans `gravity-workflow`.

@@ -6,18 +6,17 @@ Il unifie l'environnement centralisé (`~/.gemini/gravity/`), la découverte et 
 > **Clarification importante :**
 > - **`gravity`** (`/gravity`) est le socle central et hôte du registre des modules.
 > - **`gravity-workflow`** (`/gravity-workflow`, `/caveman`) est l'ancien harnais renommé (multi-agents, workflows, garde-fous `PreToolUse`, evals).
-> - **`gravity-studio`** est l'espace séparé de conception, spécifications et suivi multi-projets (hors des dépôts produits).
+> - **`gravity-workshop`** est l'espace séparé de conception, spécifications et suivi multi-projets (hors des dépôts plugins).
 
 Tous les plugins de la suite reposent sur une pile **100 % bibliothèque standard Python 3.10+**, sans dépendance externe.
 
-## Écosystème des 5 plugins
+## Écosystème des 4 plugins
 
 | Module (`id`) | Plugin & Dépôt | Commande(s) | Stockage centralisé (`$GRAVITY_HOME/...`) | Rôle |
 |---|---|---|---|---|
-| `core` | [**Gravity**](https://github.com/BSourichanh/gravity) (`gravity` v0.2.0) | `/gravity` | `core/` (`$GRAVITY_CORE_HOME`) | Initialisation environnement, registre `core/modules.json` et futur hôte UI unifié |
+| `core` | [**Gravity**](https://github.com/BSourichanh/gravity) (`gravity` v0.3.0) | `/gravity` | `core/` (`$GRAVITY_CORE_HOME`) | Initialisation environnement, registre `core/modules.json` et hôte UI unifié (SPI) |
 | `architect` | [**Gravity Architect**](https://github.com/BSourichanh/gravity-architect) (`gravity-architect` v0.5.0) | `/gravity-architect` | `architect/` (`$GRAVITY_ARCHITECT_HOME`) | Conception, intégrité écosystème, stockage Hot/Cold, veille plateforme et mise à niveau |
 | `workflow` | [**Gravity Workflow**](https://github.com/BSourichanh/gravity-workflow) (`gravity-workflow` v0.3.0) | `/gravity-workflow`, `/caveman` | `workflow/` (`$GRAVITY_WORKFLOW_HOME`) | Harnais multi-agents, workflows orchestrateurs, garde-fous fail-closed, evals et routage adaptatif |
-| `bridge` | [**Gravity Bridge**](https://github.com/BSourichanh/gravity-bridge) (`gravity-bridge` v0.3.0) | `/gravity-bridge` | `bridge/` (`$GRAVITY_BRIDGE_HOME`) | Boîte aux lettres SQLite WAL inter-projets et conversations natives App via micro-sidecars `agentapi` |
 | `metrics` | [**Gravity Metrics**](https://github.com/BSourichanh/gravity-metrics) (`gravity-metrics` v0.5.0) | `/gravity-metrics` | `metrics/` (`$GRAVITY_METRICS_HOME`) | Collecte de métriques Antigravity, coûts/tokens et signaux pour le mode `auto` |
 
 ## Installation & prise en main
@@ -38,7 +37,7 @@ python install.py --scope workspace --workspace /chemin/vers/projet
 
 ### Orchestrateur multi-dépôts hors-ligne (`scripts/ecosystem_install.py`)
 
-Permet d'inspecter, installer, mettre à jour ou désinstaller localement la suite Gravity dans l'ordre topologique (`gravity` → `gravity-workflow` → `gravity-metrics` → `gravity-architect` → `gravity-bridge`, inversé lors de `--uninstall`), sans aucun appel réseau :
+Permet d'inspecter, installer, mettre à jour ou désinstaller localement la suite Gravity dans l'ordre topologique (`gravity` → `gravity-workflow` → `gravity-metrics` → `gravity-architect`, inversé lors de `--uninstall`), sans aucun appel réseau :
 
 ```powershell
 # Vérification en lecture seule par défaut (suite complète --tier 3)
@@ -57,7 +56,7 @@ python scripts/ecosystem_install.py --uninstall --dry-run
 
 ### Auditeur de dérive multi-dépôts (`scripts/audit_ecosystem.py`)
 
-Contrôle en **lecture seule stricte** (100 % stdlib Python 3.10+, inspection AST/statique) l'alignement des 5 dépôts (`--repos-root`, `--repos`, `--json`, `--strict`) : contrat CLI `install.py` (11 drapeaux), contrat `validate.py`, budgets `AGENTS.md` / D4, synchronisation `plugin.json` ↔ `CHANGELOG.md` + `suggestedPrompts` et dette monolithique `plugin/**/*.py` (avec exemption `plugin/mcp/ui/*.py`) :
+Contrôle en **lecture seule stricte** (100 % stdlib Python 3.10+, inspection AST/statique) l'alignement des 4 dépôts plugins (`--repos-root`, `--repos`, `--json`, `--strict`) : contrat CLI `install.py` (11 drapeaux), contrat `validate.py`, budgets `AGENTS.md` / D4, synchronisation `plugin.json` ↔ `CHANGELOG.md` + `suggestedPrompts` et dette monolithique `plugin/**/*.py` (avec exemption `plugin/mcp/ui/*.py`) :
 
 ```powershell
 # Audit synthétique de l'écosystème local
@@ -91,8 +90,8 @@ python plugin/scripts/init_env.py --guide
 python plugin/scripts/init_env.py --guide --json
 ```
 
-Dans Antigravity, utiliser le skill **`/gravity [init|status|modules|doctor|dashboard|help]`** ou ouvrir directement le tableau de bord depuis **Plugins -> Gravity** (`open_gravity_dashboard`, 0 token interactif).
-Les anciens répertoires éventuels (`~/.gemini/gravity-bridge`, `~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow`, `~/.gravity`) sont détectés en **lecture seule uniquement** : rien n'est jamais modifié ni supprimé automatiquement.
+Dans Antigravity, utiliser le skill **`/gravity [init|status|modules|doctor|dashboard|update|help]`** ou ouvrir directement le tableau de bord depuis **Plugins -> Gravity** (`open_gravity_dashboard`, 0 token interactif).
+Les anciens répertoires éventuels (`~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow`, `~/.gravity`) sont détectés en **lecture seule uniquement** : rien n'est jamais modifié ni supprimé automatiquement.
 
 ## Parcours utilisateur & Guides UX (`docs/`)
 

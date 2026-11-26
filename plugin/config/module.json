@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "core",
   "plugin_name": "gravity",
-  "role": "Initialisation environnement Gravity, registre modules et future UI/UX unifiee",
+  "role": "Initialisation environnement Gravity, registre modules et hote UI/UX unifie (SPI-1)",
   "storage": {
     "subdir": "core",
     "env_override": "GRAVITY_CORE_HOME"
@@ -13,7 +13,9 @@
   "capabilities": [
     "env-init",
     "module-registry",
-    "ui-host"
+    "ui-host",
+    "spi-host",
+    "dashboard-spi-v1"
   ],
   "ui": {
     "mode": "core",

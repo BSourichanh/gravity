@@ -6,6 +6,11 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 ## [Unreleased]
 
 ### Changed
+- **[TASK-CORE-04] `install.py` & `validate.py` minces sur `_shared`, `module.json`, `hooks.json` & assainissement documentaire (`SPEC-CORE-02`) :**
+  - `install.py` (`99` L, `< 150` L) : lanceur mince déléguant le contrat CLI 11 drapeaux à `_shared.installer_core` (`InstallSpec`, `run_installer`, `has_executable_manifest=True`, `record_sources=True`), ajoutant `hooks/pre_invocation_gravity.py` à `EXEC_SCRIPTS` et utilisant `_shared.path_safety.safe_home_dir()` (corrigeant le cas Windows sans `USERPROFILE`).
+  - `plugin/scripts/validate.py` (`323` L, `< 350` L) : validateur mince déléguant les contrôles socle à `_shared.validator_core` (`ValidatorConfig` avec `allowed_local_modules=ALLOWED_LOCAL_MODULES | frozenset({"hooks", "scripts"})` et détection `gravity-studio`), ne conservant que les sondes Core (`README.md`, `SKILL.md` avec `update`, `UX_GUIDE_FILES`, liens Markdown, dry-run `init_env.py` et dry-run MCP 10 outils sans `gravity_get_bridge_state` / `GRAVITY_BRIDGE_HOME` avec plafond `< 150 KiB`).
+  - `plugin/config/module.json` : déclaration des capacités hôte SPI-1 (`"spi-host"`, `"dashboard-spi-v1"`) et conservation de `signals` (`SPI-3`).
+  - Nettoyage des références actives `gravity-studio` et `gravity-bridge` dans `AGENTS.md`, `README.md`, `plugin/README.md`, `plugin/skills/gravity/SKILL.md` et `docs/*.md`, et mise à jour des suites `tests/test_install.py` et `tests/test_validate.py`.
 - **[TASK-CORE-03a] Scission `init_env.py` (`core/{doctor,overview}.py`), `registry.py` (`SPI-1/2`) & hook `PreInvocation` (`SPEC-CORE-02`) :**
   - `plugin/scripts/init_env.py` (`323` L, `< 500` L) : point d'entrée CLI conservant 100 % des drapeaux (`--status`, `--check`, `--migration-plan`, `--dashboard`, `--guide`, `--overview`, `--export`, `--import`, `--update`, `--check-updates`, `--set-drive-dir`, `--dry-run`, `--force`, `--modules`, `--link`, `--repos-root`, `--offline`, `--shell`, `--json`), `_shared.hook_runtime.configure_utf8_stdio()`, imports paresseux pré-W12 pour `core.bundle` / `core.updater` et ré-exportations de compatibilité.
   - `plugin/core/registry.py` (`279` L, `< 400` L) : retrait de `gravity-bridge` de `LEGACY_HOME_SPECS` (3 entrées conservées : `gravity-metrics`, `gravity-workflow`, `gravity`), délégation de `validate_module_contract` à `_shared.validator_core` (`SPI-1..3`), propagation des blocs `dashboard` (`SPI-1`) et `capture_policy` (`SPI-2`) dans `core/modules.json`, résolution via `safe_home_dir()` et écritures atomiques `_shared.atomic_io.write_json_atomic` avec garde-fous `is_symlink_or_junction`.
@@ -22,6 +27,8 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
   - Mise à jour `tests/test_mcp_server.py` (seuil `< 150 KiB`, assertions UI base & retrait `architect_provider`).
 
 ### Removed
+- **[TASK-CORE-04] Retrait définitif de `plugin/dashboard/providers/workflow_provider.py` (`SPEC-CORE-02`) :**
+  - Suppression complète du dernier fournisseur couplé legacy `plugin/dashboard/providers/workflow_provider.py` (`330` L), remplacé par `SPI-1` (`dashboard/providers/spi.py`) et `live_provider.py`.
 - **[TASK-CORE-02b] Retrait définitif de `plugin/dashboard/providers/metrics_provider.py` (`SPEC-CORE-01`) :**
   - Suppression complète du fournisseur couplé legacy `plugin/dashboard/providers/metrics_provider.py` (`755` L), remplacé par `SPI-1` (`dashboard/providers/spi.py`) et vérifié via `TestMetricsRetirementAndWorktreeHelpers` dans `tests/test_metrics_provider_pending.py`.
 - **[TASK-CORE-02a] Retrait définitif de `plugin/dashboard/providers/architect_provider.py` (`SPEC-CORE-01`) :**
@@ -30,6 +37,8 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
   - Suppression complète du fournisseur SQLite legacy `plugin/dashboard/providers/bridge_provider.py` (`450` L) et ajout de `TestBridgeRetirement` dans `tests/test_dashboard_providers.py` (vérification de l'absence du fichier, du `ModuleNotFoundError` à l'import et du retrait de `get_bridge_state` / `open_sqlite_ro` / paramètres `bridge*` de la façade).
 
 ### Added
+- **[TASK-CORE-04] Manifeste `plugin/hooks.json` (`SPEC-CORE-02`) :**
+  - Ajout de `plugin/hooks.json` (`enabled: true`) câblant le hook `PreInvocation` 0-token sur `python3 hooks/pre_invocation_gravity.py` (timeout `10` s), adapté à l'installation sous Windows via `validate.py --fix-python-cmd`.
 - **[TASK-CORE-03b] Portage `core/bundle.py` (`EC-4`) & `core/updater.py` (`_shared` sync check) (`SPEC-CORE-02`) :**
   - `plugin/core/bundle.py` (`644` L, `< 750` L) : export/import ZIP atomique (`--export`, `--import`, `--set-drive-dir`) adossé à `_shared.atomic_io.{write_bytes_atomic,write_json_atomic}` et `_shared.path_safety.{is_symlink_or_junction,ensure_no_symlink_or_junction_under,ensure_safe_dir,validate_rel_member_path,safe_home_dir}` ; validation `EC-4` 100 % en mémoire avant toute écriture disque (rejet symlinks `S_ISLNK`, traversées/`..`/lecteurs Windows/NUL, vérification taille + SHA-256, exclusion stricte `modules.json`, `sources.json`, `live_workspaces.json`, `session_meta.json`, `*.lock`, `*.db-wal`, `*.db-shm`).
   - `plugin/core/updater.py` (`662` L, `< 750` L) : moteur `--check-updates` / `--update` isolé par dépôt avec verrouillage `sources.lock` (`_shared.file_lock.exclusive_file_lock`), écritures atomiques `_shared.atomic_io.write_json_atomic`, `safe_home_dir()` / `is_symlink_or_junction` et vérification fail-closed d'intégrité `_shared/*.py` + `.shared_manifest.json` (`_verify_shared_sync_for_repo` + `sync_shared.py --check`) après réinstallation.

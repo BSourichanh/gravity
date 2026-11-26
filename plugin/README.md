@@ -10,18 +10,17 @@ Plugin maître de l'écosystème **Gravity** pour **Google Antigravity**, 100 % 
 
 - **Environnement centralisé (`$GRAVITY_HOME`) :** résout `~/.gemini/gravity/` (ou `$GRAVITY_HOME`) et le stockage dédié de chaque module (`$GRAVITY_<MODULE>_HOME` > `$GRAVITY_HOME/<subdir>`).
 - **Découverte & validation (`config/module.json` v1) :** inspecte les plugins installés, valide les contrats `module.json` + `plugin.json` et écrit de façon atomique `<gravity_home>/core/modules.json`.
-- **Détection legacy en lecture seule :** signale sans jamais les modifier ni les supprimer d'éventuels anciens dossiers (`~/.gemini/gravity-bridge`, `~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow`, `~/.gravity`).
-- **Dashboard MCP App unifié (`open_gravity_dashboard`) :** UI HTML5/SVG SEP-1865 lecture seule (`Overview/Doctor`, `Workflow Live`, `Metrics & Audits Agents`, `Bridge RO`, `Architect RO`, onglets génériques OCP) accessible via `/gravity dashboard` ou **Plugins -> Gravity** (`0` token interactif).
-- **Commandes `/gravity` :** `/gravity init`, `/gravity status`, `/gravity modules`, `/gravity doctor`, `/gravity dashboard`, `/gravity help` *(skill [`SKILL.md`](skills/gravity/SKILL.md))*.
+- **Détection legacy en lecture seule :** signale sans jamais les modifier ni les supprimer d'éventuels anciens dossiers (`~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow`, `~/.gravity`).
+- **Dashboard MCP App unifié (`open_gravity_dashboard`) :** UI HTML5/SVG SEP-1865 lecture seule (`En direct`, `Metrics & Audits Agents`, `Architect RO`, `Overview/Doctor`, onglets génériques OCP) accessible via `/gravity dashboard` ou **Plugins -> Gravity** (`0` token interactif).
+- **Commandes `/gravity` :** `/gravity init`, `/gravity status`, `/gravity modules`, `/gravity doctor`, `/gravity dashboard`, `/gravity update`, `/gravity export`, `/gravity import`, `/gravity help` *(skill [`SKILL.md`](skills/gravity/SKILL.md))*.
 
 ## Écosystème Gravity
 
 | Module (`id`) | Plugin | Commande(s) | Rôle |
 |---|---|---|---|
-| `core` | `gravity` (`v0.2.0`) | `/gravity` | Environnement unifié, registre modules et futur hôte UI unifié |
+| `core` | `gravity` (`v0.3.0`) | `/gravity` | Environnement unifié, registre modules et hôte UI unifié (SPI) |
 | `architect` | `gravity-architect` (`v0.5.0`) | `/gravity-architect` | Conception, intégrité écosystème, stockage Hot/Cold et veille |
 | `workflow` | `gravity-workflow` (`v0.3.0`) | `/gravity-workflow`, `/caveman` | Harnais multi-agents, workflows, garde-fous, evals et routage |
-| `bridge` | `gravity-bridge` (`v0.3.0`) | `/gravity-bridge` | Boîte aux lettres SQLite WAL inter-projets et sidecars `agentapi` |
 | `metrics` | `gravity-metrics` (`v0.5.0`) | `/gravity-metrics` | Métriques Antigravity, coûts/tokens et signaux d'optimisation |
 
 ## Utilisation CLI

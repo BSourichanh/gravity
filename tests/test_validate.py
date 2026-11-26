@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -13,10 +15,13 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_ROOT = REPO_ROOT / "plugin"
 SCRIPTS_DIR = PLUGIN_ROOT / "scripts"
+if str(PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT))
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import validate as plugin_validator  # noqa: E402
+from _shared import validator_core as vc  # noqa: E402
 
 
 class TestValidate(unittest.TestCase):
@@ -25,9 +30,25 @@ class TestValidate(unittest.TestCase):
         plugin_validator.validate_plugin(plugin_dir, report)
         return report
 
-    def test_repo_plugin_passes_strict(self) -> None:
+    def test_repo_plugin_passes_strict_and_json_cli(self) -> None:
         rc = plugin_validator.main(["--plugin-root", str(PLUGIN_ROOT), "--strict"])
         self.assertEqual(rc, 0)
+
+        buf = io.StringIO()
+        with mock.patch("sys.stdout", buf):
+            rc_json = plugin_validator.main(["--plugin-root", str(PLUGIN_ROOT), "--strict", "--json"])
+        self.assertEqual(rc_json, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["strict"])
+        self.assertEqual(payload["errors"], [])
+
+    def test_expected_mcp_tools_is_10_without_bridge(self) -> None:
+        self.assertEqual(len(plugin_validator.EXPECTED_MCP_TOOLS), 10)
+        self.assertNotIn("gravity_get_bridge_state", plugin_validator.EXPECTED_MCP_TOOLS)
+        self.assertIn("gravity_get_live_session", plugin_validator.EXPECTED_MCP_TOOLS)
+        self.assertIn("gravity_metrics_action", plugin_validator.EXPECTED_MCP_TOOLS)
+        self.assertIn("gravity_read_audit", plugin_validator.EXPECTED_MCP_TOOLS)
 
     def test_rejects_extra_manifest_field_and_bom_and_bad_prompts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -126,7 +147,7 @@ class TestValidate(unittest.TestCase):
             skill_path = copy_dir / "skills" / "gravity" / "SKILL.md"
             base = (
                 "---\nname: gravity\ndescription: \"Skill test\"\n---\n"
-                "init status modules doctor dashboard help\n"
+                "init status modules doctor dashboard update help\n"
             )
 
             skill_path.write_bytes((base + ("x" * 6000) + "\n").encode("utf-8"))
@@ -142,7 +163,7 @@ class TestValidate(unittest.TestCase):
             self.assertIn("CRLF", joined_enc)
 
             skill_path.write_text(
-                "---\nname: gravity\ndescription: \"Skill test\"\n---\ninit status modules doctor dashboard\n",
+                "---\nname: gravity\ndescription: \"Skill test\"\n---\ninit status modules doctor dashboard update\n",
                 encoding="utf-8",
             )
             report_no_help = self._validate_copy(copy_dir)
@@ -169,42 +190,55 @@ class TestValidate(unittest.TestCase):
             self.assertIn("CRLF", joined_bad)
             self.assertIn("2500", joined_bad)
 
-    def test_rejects_forbidden_jargon_and_personal_paths(self) -> None:
+    def test_rejects_forbidden_jargon_personal_paths_and_legacy_studio(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             copy_dir = Path(tmp) / "plugin"
             shutil.copytree(PLUGIN_ROOT, copy_dir, ignore=shutil.ignore_patterns("__pycache__"))
 
             (copy_dir / "README.md").write_text(
-                "Mod" + "ule 01 at C:\\Users\\alice\\repo\n", encoding="utf-8"
+                "Mod" + "ule 01 at C:\\Users\\alice\\repo and gravity-" + "studio\n",
+                encoding="utf-8",
             )
             report = self._validate_copy(copy_dir)
             self.assertFalse(report.ok(strict=True))
             joined = "\n".join(report.errors)
             self.assertIn("Jargon interdit", joined)
             self.assertIn("Chemin personnel", joined)
+            self.assertIn("atelier", joined)
 
-    def test_mcp_config_validation_and_fix_python_cmd(self) -> None:
+    def test_hooks_mcp_config_validation_and_fix_python_cmd(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             copy_dir = Path(tmp) / "plugin"
             shutil.copytree(PLUGIN_ROOT, copy_dir, ignore=shutil.ignore_patterns("__pycache__"))
 
-            # Windows portable python3 info (never warn)
+            # Windows portable python3 info on mcp_config.json (never warn)
+            class _FakeNtOs:
+                name = "nt"
+
+                def __getattr__(self, attr: str) -> object:
+                    return getattr(os, attr)
+
             with (
-                mock.patch("validate.os.name", "nt"),
-                mock.patch("validate.has_real_python3", return_value=False),
+                mock.patch("_shared.validator_core.os", _FakeNtOs()),
+                mock.patch("_shared.validator_core.has_real_python3", return_value=False),
             ):
                 rep_info = plugin_validator.Report()
-                plugin_validator._validate_mcp_config(copy_dir, rep_info)
-                self.assertTrue(rep_info.ok(strict=True))
+                vc.validate_mcp_config(copy_dir, rep_info)
+                self.assertTrue(rep_info.ok(strict=True), msg=rep_info.errors)
                 self.assertTrue(any("python3" in msg for msg in rep_info.infos))
 
-            # fix_python_cmd adapts python3 -> python on copy
+            # fix_python_cmd adapts BOTH hooks.json and mcp_config.json on copy
             with (
-                mock.patch("validate.has_real_python3", return_value=False),
-                mock.patch("validate._detect_portable_python_cmd", return_value="python"),
+                mock.patch("_shared.validator_core.has_real_python3", return_value=False),
+                mock.patch("_shared.validator_core._detect_portable_python_cmd", return_value="python"),
             ):
                 rc = plugin_validator.main(["--plugin-root", str(copy_dir), "--fix-python-cmd"])
                 self.assertEqual(rc, 0)
+            fixed_hooks = json.loads((copy_dir / "hooks.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                fixed_hooks["gravity-core-command"]["PreInvocation"][0]["command"],
+                "python hooks/pre_invocation_gravity.py",
+            )
             fixed = json.loads((copy_dir / "mcp_config.json").read_text(encoding="utf-8"))
             self.assertEqual(fixed["mcpServers"]["dashboard"]["command"], "python")
 
@@ -212,11 +246,22 @@ class TestValidate(unittest.TestCase):
             bad_cfg = {"mcpServers": {"dashboard": {"command": "python3", "args": ["${PLUGIN_ROOT}/mcp/missing.py"]}}}
             (copy_dir / "mcp_config.json").write_bytes(b"\xef\xbb\xbf" + json.dumps(bad_cfg).encode("utf-8"))
             rep_bad = plugin_validator.Report()
-            plugin_validator._validate_mcp_config(copy_dir, rep_bad)
+            vc.validate_mcp_config(copy_dir, rep_bad)
             self.assertFalse(rep_bad.ok(strict=True))
             joined = "\n".join(rep_bad.errors)
             self.assertIn("BOM UTF-8", joined)
             self.assertIn("introuvable", joined)
+
+            # Invalid hooks.json (CRLF + missing script) is rejected
+            (copy_dir / "hooks.json").write_bytes(
+                b'{"g": {"PreInvocation": [{"type": "command", "command": "python3 hooks/missing.py"}]}}\r\n'
+            )
+            rep_hooks = plugin_validator.Report()
+            vc.validate_hooks_config(copy_dir / "hooks.json", rep_hooks, plugin_root=copy_dir)
+            self.assertFalse(rep_hooks.ok(strict=True))
+            joined_hooks = "\n".join(rep_hooks.errors)
+            self.assertIn("CRLF", joined_hooks)
+            self.assertIn("hooks/missing.py", joined_hooks)
 
     def test_mcp_dry_run_rejects_innerhtml_and_external_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -248,7 +293,7 @@ class TestValidate(unittest.TestCase):
             ]
             manifest_path.write_text(json.dumps(data, ensure_ascii=False) + "\n", encoding="utf-8")
             rep_ok = plugin_validator.Report()
-            plugin_validator._validate_manifest(copy_dir, rep_ok)
+            vc.validate_plugin_manifest(copy_dir, rep_ok)
             self.assertTrue(rep_ok.ok(strict=True), msg=rep_ok.errors)
 
             # Invalid: >100 chars, missing separator, empty summary
@@ -259,7 +304,7 @@ class TestValidate(unittest.TestCase):
             ]
             manifest_path.write_text(json.dumps(data, ensure_ascii=False) + "\n", encoding="utf-8")
             rep_bad = plugin_validator.Report()
-            plugin_validator._validate_manifest(copy_dir, rep_bad)
+            vc.validate_plugin_manifest(copy_dir, rep_bad)
             self.assertFalse(rep_bad.ok(strict=True))
             self.assertEqual(len(rep_bad.errors), 3)
 
@@ -289,10 +334,10 @@ class TestValidate(unittest.TestCase):
             plugin_validator._validate_markdown_links(copy_dir, rep_ok)
             self.assertTrue(rep_ok.ok(strict=True), msg=rep_ok.errors)
 
-            # Broken relative links + missing guide + oversized guide
+            # Broken relative links + missing guide + oversized guide + personal path in docs
             (copy_dir / "README.md").write_text("[Broken](no-such-file.md)\n", encoding="utf-8")
             (docs_dir / "user-journey.md").unlink()
-            (docs_dir / "getting-started.md").write_bytes(b"# Guide\n" + (b"a" * 15400) + b"\n")
+            (docs_dir / "getting-started.md").write_bytes(b"# Guide\nC:\\Users\\alice\\secret\n" + (b"a" * 15400) + b"\n")
             (repo_dir / "README.md").write_text("[BrokenRoot](docs/absent.md)\n", encoding="utf-8")
 
             rep_bad = plugin_validator.Report()
@@ -302,6 +347,7 @@ class TestValidate(unittest.TestCase):
             self.assertIn("no-such-file.md", joined)
             self.assertIn("docs/user-journey.md", joined)
             self.assertIn("15360", joined)
+            self.assertIn("Chemin personnel", joined)
             self.assertIn("docs/absent.md", joined)
 
 

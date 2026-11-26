@@ -24,7 +24,7 @@ L'orchestrateur hors-ligne [`scripts/ecosystem_install.py`](../scripts/ecosystem
 |---|---|---|---|
 | **Palier 1 — *Essentiel*** | `--tier 1` | `gravity`, `gravity-workflow` | Exécution fiable sur un dépôt (garde-fous `PreToolUse`, profils `quick`/`standard`/`deep`, `/caveman`) |
 | **Palier 2 — *Pilotage*** | `--tier 2` | Palier 1 + `gravity-metrics` | Suivi des coûts, tokens, économies de cache, jalons et audits agents |
-| **Palier 3 — *Multi-projets*** | `--tier 3` *(défaut)* | Palier 2 + `gravity-architect`, `gravity-bridge` | Atelier de conception Hot/Cold (`specs/`, `handoffs/`, `audits/code/`) et relais inter-workspaces SQLite + `agentapi` |
+| **Palier 3 — *Multi-projets*** | `--tier 3` *(défaut)* | Palier 2 + `gravity-architect` | Atelier de conception Hot/Cold (`specs/`, `tasks/`, `audits/code/`) et pilotage multi-dépôts |
 
 ---
 
@@ -76,8 +76,6 @@ python3 plugin/scripts/init_env.py --guide
 1. **Depuis le chat :** lancez `/gravity dashboard` (appelle `open_gravity_dashboard` en panneau auxiliaire `aux_pane`).
 2. **Depuis l'interface Antigravity :** ouvrez **Plugins -> Gravity** (`0` token interactif).
 3. **Diagnostic CLI lecture seule :** `python plugin/scripts/init_env.py --dashboard` (vérifie `mcp_config.json`, `mcp/server.py`, `dashboard/api.py` et liste les onglets découverts).
-
-*(En Palier 3, seule la liaison optionnelle de sidecars Bridge pour la messagerie active utilise `/gravity-bridge link <slug>` ou `install.py --link`.)*
 
 ---
 

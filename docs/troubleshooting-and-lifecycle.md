@@ -6,7 +6,7 @@ Ce guide couvre la mise à jour, la migration des anciens dossiers, la résoluti
 
 ## 1. Mises à jour hors-ligne (`ecosystem_install.py --update`)
 
-L'orchestrateur met à jour les plugins dans l'ordre topologique (`gravity` → `gravity-workflow` → `gravity-metrics` → `gravity-architect` → `gravity-bridge`) en propageant `--force` et en rafraîchissant `core/modules.json` :
+L'orchestrateur met à jour les plugins dans l'ordre topologique (`gravity` → `gravity-workflow` → `gravity-metrics` → `gravity-architect`) en propageant `--force` et en rafraîchissant `core/modules.json` :
 
 ```powershell
 # Windows PowerShell : simuler puis mettre à jour la suite (ou un sous-ensemble)
@@ -25,7 +25,7 @@ python3 scripts/ecosystem_install.py --update --tier 3 --strict
 
 ## 2. Migration des anciens dossiers (`--migration-plan`, 4 étapes)
 
-Si vous aviez une ancienne installation (`~/.gemini/gravity-bridge`, `~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow` ou `~/.gravity`), `/gravity doctor` la signale en **lecture seule** sans jamais déplacer ni supprimer de fichier.
+Si vous aviez une ancienne installation (`~/.gemini/gravity-metrics`, `~/.gemini/gravity-workflow` ou `~/.gravity`), `/gravity doctor` la signale en **lecture seule** sans jamais déplacer ni supprimer de fichier.
 
 Pour obtenir un plan adapté à votre shell (**100 % lecture seule**, zéro écriture disque) :
 
@@ -51,7 +51,6 @@ Les **4 étapes** générées par le plan sont :
 | **Mise à jour `gravity-workflow` bloquée ou port `4789` occupé** | Le sidecar HTTP `gravity-workflow/live-widget` (`127.0.0.1:4789`) verrouille le dossier ou tourne encore | Fermez le processus sidecar ou l'app Antigravity puis relancez `python install.py --force` (repli *in-place* prévu sous Windows). Pour retirer complètement le sidecar : supprimez l'entrée `sidecars."gravity-workflow/live-widget"` dans `~/.gemini/config/config.json`. |
 | **Erreur `BOM UTF-8` ou `CRLF détecté` sous `validate.py --strict`** | Éditeur Windows ayant écrit un BOM ou `\r\n` | Respectez `.gitattributes` (`* text=auto eol=lf`) et réenregistrez en **UTF-8 sans BOM** + **LF** (`\n`). |
 | **Travail sans accès réseau / `sync_tracking.py` échoue en veille distante** | Fetch veille distante impossible hors-ligne | Utilisez `--offline` sur `gravity-architect` (`sync_tracking.py --offline --ack-editorial --print-delta`). `ecosystem_install.py` et `init_env.py` fonctionnent déjà 100 % hors-ligne. |
-| **Bridge refuse un envoi ou signale `depth >= 1` / `unlinked`** | Garde-fou anti-boucle (`GRAVITY_BRIDGE_DEPTH >= 1`) ou sidecar cible non lié | En `depth >= 1`, aucun sous-dispatch n'est autorisé : répondez via `reply_thread(..., dispatch=false, close=true)`. Si cible `unlinked`/`offline`, exécutez `/gravity-bridge link <slug>` (ou `install.py --link <chemin>`). |
 
 ---
 
@@ -68,6 +67,6 @@ python scripts/ecosystem_install.py --uninstall
 python install.py --uninstall
 ```
 
-Si vous aviez activé des sidecars manuels (`gravity-workflow/live-widget` sur le port `4789`, ou sidecars `gravity-bridge` liés par `--link`), pensez à les délier via `python install.py --unlink <slug>` (dans `gravity-bridge`) et à vérifier `~/.gemini/config/config.json`.
+Si vous aviez activé un sidecar manuel (`gravity-workflow/live-widget` sur le port `4789`), pensez à vérifier `~/.gemini/config/config.json`.
 
 **Voir aussi :** [Démarrage rapide](getting-started.md) · [Aide-mémoire des commandes](command-cheatsheet.md) · [Standard des dépôts](repo-standard.md)

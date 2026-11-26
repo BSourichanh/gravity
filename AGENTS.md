@@ -1,7 +1,7 @@
 # Gravity Core — Instructions Agents
 
 ## Périmètre & Architecture
-Socle central **Gravity** (`BSourichanh/gravity`, v0.2.0), distinct de **`gravity-workflow`** (`/gravity-workflow`) et **`gravity-studio`** :
+Socle central **Gravity** (`BSourichanh/gravity`, v0.2.0), distinct de **`gravity-workflow`** (`/gravity-workflow`) et **`gravity-workshop`** :
 - `plugin/` : manifeste 9 champs (`plugin.json`), contrat `config/module.json` (`id: "core"`), registre (`core/registry.py`), CLI (`scripts/init_env.py`), skill `/gravity`, `rules/AGENTS.md`, `scripts/validate.py`.
 - `install.py` (installeur cross-platform), `docs/` (architecture, contrat module, standard dépôts, roadmap), `tests/` (`unittest` isolée).
 

@@ -1,0 +1,12 @@
+{
+  "gravity-core-command": {
+    "enabled": true,
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "python3 hooks/pre_invocation_gravity.py",
+        "timeout": 10
+      }
+    ]
+  }
+}
