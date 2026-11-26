@@ -144,14 +144,19 @@ def resolve_dashboard_provider(
     *,
     gravity_home: Optional[Path] = None,
     plugin_roots: Optional[Sequence[Path]] = None,
+    home_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     """Resolve and validate a companion module's SPI-1 `dashboard.provider_script` read-only."""
     clean_id = module_id.strip() if isinstance(module_id, str) else ""
     if not clean_id or not MODULE_ID_RE.match(clean_id):
         return _resolve_error(clean_id, f"Invalid module_id {module_id!r}.")
 
-    resolved_gravity = resolve_gravity_home(gravity_home)
-    modules, _, _, _, warnings = load_modules_snapshot_ro(resolved_gravity, plugin_roots=plugin_roots)
+    resolved_gravity = resolve_gravity_home(gravity_home, home_dir=home_dir)
+    modules, _, _, _, warnings = load_modules_snapshot_ro(
+        resolved_gravity,
+        plugin_roots=plugin_roots,
+        home_dir=home_dir,
+    )
     target_mod = next((m for m in modules if isinstance(m, dict) and m.get("id") == clean_id), None)
     if target_mod is None:
         return _resolve_error(clean_id, f"Module {clean_id!r} is not installed or registered.", warnings)
@@ -258,6 +263,7 @@ def invoke_dashboard_provider(
     ctx: Optional[Mapping[str, Any]] = None,
     gravity_home: Optional[Path] = None,
     plugin_roots: Optional[Sequence[Path]] = None,
+    home_dir: Optional[Path] = None,
     timeout_s: float = SPI_TIMEOUT_S,
     list_keys: Sequence[str] = _DEFAULT_LIST_KEYS,
 ) -> dict[str, Any]:
@@ -282,6 +288,7 @@ def invoke_dashboard_provider(
         clean_mod,
         gravity_home=gravity_home,
         plugin_roots=plugin_roots,
+        home_dir=home_dir,
     )
     if not resolved.get("ok"):
         return _fallback_response(
@@ -329,6 +336,12 @@ def invoke_dashboard_provider(
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
+    if home_dir is not None:
+        resolved_user = str(Path(home_dir).expanduser().resolve())
+        env["HOME"] = resolved_user
+        env["USERPROFILE"] = resolved_user
+        if gravity_home is None and not os.environ.get("GRAVITY_HOME", "").strip():
+            env["GRAVITY_HOME"] = str(resolve_gravity_home(None, home_dir=home_dir))
     if gravity_home is not None:
         env["GRAVITY_HOME"] = str(Path(gravity_home).expanduser().resolve())
 

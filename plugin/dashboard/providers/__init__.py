@@ -191,9 +191,23 @@ def file_uri_if_exists(path: Path) -> str:
     return ""
 
 
+def normalize_plugin_roots(
+    plugin_roots: Optional[Any] = None,
+    plugins_dir: Optional[Any] = None,
+) -> Optional[list[Path]]:
+    """Normalize `plugin_roots` or singular `plugins_dir` alias into a list of Paths (or None)."""
+    raw = plugin_roots if plugin_roots is not None else plugins_dir
+    if raw is None:
+        return None
+    if isinstance(raw, (str, Path)):
+        return [Path(raw)] if str(raw).strip() else None
+    return [Path(p) for p in raw]
+
+
 def load_modules_snapshot_ro(
     gravity_home: Path,
     plugin_roots: Optional[Sequence[Path]] = None,
+    home_dir: Optional[Path] = None,
 ) -> tuple[list[dict[str, Any]], str, bool, Optional[str], list[str]]:
     """Load modules from `<gravity_home>/core/modules.json` or fallback read-only to `discover_modules`."""
     from core.registry import discover_modules
@@ -214,7 +228,7 @@ def load_modules_snapshot_ro(
         if data is not None:
             warnings.append("Invalid structure in core/modules.json; falling back to live module discovery.")
 
-    discovered = [dict(m) for m in discover_modules(plugin_roots)]
+    discovered = [dict(m) for m in discover_modules(plugin_roots, home_dir=home_dir)]
     return discovered, "discovered", registry_exists, None, warnings
 
 
@@ -332,6 +346,7 @@ __all__ = [
     "extract_md_verdict",
     "file_uri_if_exists",
     "load_modules_snapshot_ro",
+    "normalize_plugin_roots",
     "read_json_ro",
     "resolve_provider_kind",
     "short_digest",

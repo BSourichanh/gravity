@@ -118,7 +118,7 @@ def _read_sync_drive_dir(base: Path) -> Optional[str]:
 
 
 def _detect_gdrive_plugin(plugins_dirs: Optional[Sequence[Path]] = None) -> bool:
-    roots = [Path(p) for p in plugins_dirs] if plugins_dirs else default_plugin_roots()
+    roots = [Path(p) for p in plugins_dirs] if plugins_dirs is not None else default_plugin_roots()
     for root in roots:
         try:
             resolved_root = root.expanduser().resolve()

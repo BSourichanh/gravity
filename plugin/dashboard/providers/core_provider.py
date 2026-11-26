@@ -15,6 +15,7 @@ from core.registry import (
 from dashboard.providers import (
     build_dashboard_tabs,
     load_modules_snapshot_ro,
+    normalize_plugin_roots,
     read_json_ro,
     short_digest,
     stat_token,
@@ -121,16 +122,19 @@ def get_overview(
     *,
     gravity_home: Optional[Path] = None,
     plugin_roots: Optional[Sequence[Path]] = None,
+    plugins_dir: Optional[Any] = None,
     home_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     """Return read-only Gravity Core health, modules, tabs, and legacy notice."""
-    resolved_gravity = resolve_gravity_home(gravity_home)
+    eff_roots = normalize_plugin_roots(plugin_roots, plugins_dir)
+    resolved_gravity = resolve_gravity_home(gravity_home, home_dir=home_dir)
     core_dir = resolved_gravity / "core"
     registry_path = core_dir / "modules.json"
 
     raw_modules, registry_source, registry_exists, generated_at, warnings = load_modules_snapshot_ro(
         resolved_gravity,
-        plugin_roots=plugin_roots,
+        plugin_roots=eff_roots,
+        home_dir=home_dir,
     )
     modules = _enrich_modules_ro(raw_modules, resolved_gravity)
     legacy_homes = detect_legacy_homes(home_dir)

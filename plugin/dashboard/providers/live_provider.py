@@ -10,15 +10,15 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Optional, Sequence
 
-from _shared.path_safety import is_symlink_or_junction
+from _shared.path_safety import is_symlink_or_junction, safe_home_dir
 from _shared.signal_bus import list_topic_signals
 from _shared.transcript_reader import (
     extract_shell_nonzero_code, is_worktree_path, normalize_worktree_path,
     parse_iso_ts, read_jsonl_incremental, strip_file_uri,
 )
-from core.registry import resolve_module_home
+from core.registry import resolve_gravity_home, resolve_module_home
 from dashboard.providers import (
-    enforce_payload_budget, read_json_ro, short_digest, stat_token, truncate_preview, unchanged_response,
+    enforce_payload_budget, normalize_plugin_roots, read_json_ro, short_digest, stat_token, truncate_preview, unchanged_response,
 )
 from dashboard.providers.live_progress import (
     build_live_progress, collect_descendant_sig_tokens, collect_wf_refs_from_obj,
@@ -342,7 +342,8 @@ def _ingest_archived_item(out: dict[str, tuple[str, Optional[float]]], item: Any
 
 
 def _load_archived_status_ro(
-    *, gravity_home: Optional[Path], metrics_home: Optional[Path], plugin_roots: Optional[Sequence[Path]] = None
+    *, gravity_home: Optional[Path], metrics_home: Optional[Path],
+    plugin_roots: Optional[Sequence[Path]] = None, home_dir: Optional[Path] = None,
 ) -> tuple[dict[str, tuple[str, Optional[float]]], list[Any]]:
     """Load archived session status from `_shared.signal_bus` (`session-metrics`) and optional metrics SPI-1."""
     out: dict[str, tuple[str, Optional[float]]] = {}
@@ -368,8 +369,8 @@ def _load_archived_status_ro(
         if payload.get("conversation_id"):
             _ingest_archived_item(out, payload, emitted)
 
-    if resolve_dashboard_provider("metrics", gravity_home=gravity_home, plugin_roots=plugin_roots).get("ok"):
-        spi_res = invoke_dashboard_provider("metrics", view="metrics", params={"limit": 100}, ctx={"metrics_home": metrics_home}, gravity_home=gravity_home, plugin_roots=plugin_roots)
+    if resolve_dashboard_provider("metrics", gravity_home=gravity_home, plugin_roots=plugin_roots, home_dir=home_dir).get("ok"):
+        spi_res = invoke_dashboard_provider("metrics", view="metrics", params={"limit": 100}, ctx={"metrics_home": metrics_home}, gravity_home=gravity_home, plugin_roots=plugin_roots, home_dir=home_dir)
         if not spi_res.get("spi_fallback") and isinstance(spi_res.get("records"), list):
             sig_tokens.append(("spi", spi_res.get("signature", ""), len(spi_res["records"])))
             for rec in spi_res["records"]:
@@ -490,22 +491,24 @@ def get_live_session_state(
     ws: str = "", gravity_home: Optional[Path] = None, brain_dir: Optional[Path] = None,
     metrics_home: Optional[Path] = None, workflow_home: Optional[Path] = None,
     registry_path: Optional[Path] = None, home_dir: Optional[Path] = None,
-    plugin_roots: Optional[Sequence[Path]] = None, **_: Any,
+    plugin_roots: Optional[Sequence[Path]] = None, plugins_dir: Optional[Any] = None, **_: Any,
 ) -> dict[str, Any]:
     """Return incremental read-only live session state from brain/ and Gravity Workflow."""
+    eff_roots = normalize_plugin_roots(plugin_roots, plugins_dir)
+    eff_gravity = resolve_gravity_home(gravity_home, home_dir=home_dir) if (gravity_home is not None or home_dir is not None) else None
     if brain_dir is not None:
         b_dir = Path(brain_dir).expanduser().resolve()
     elif home_dir is not None:
         b_dir = (Path(home_dir).expanduser() / ".gemini" / "antigravity" / "brain").resolve()
     else:
         env_b = os.environ.get("GRAVITY_BRAIN_DIR", "").strip()
-        b_dir = Path(env_b).expanduser().resolve() if env_b else (Path.home() / ".gemini" / "antigravity" / "brain").resolve()
-    m_home = Path(metrics_home).expanduser().resolve() if metrics_home is not None else resolve_module_home("metrics", env_override="GRAVITY_METRICS_HOME", gravity_home=gravity_home)
+        b_dir = Path(env_b).expanduser().resolve() if env_b else (safe_home_dir() / ".gemini" / "antigravity" / "brain").resolve()
+    m_home = Path(metrics_home).expanduser().resolve() if metrics_home is not None else resolve_module_home("metrics", env_override="GRAVITY_METRICS_HOME", gravity_home=eff_gravity, home_dir=home_dir)
     cap_path, meta_path = m_home / "active_captures.json", m_home / "session_meta.json"
     cap_raw, meta_raw = _read_json_cached(cap_path), _read_json_cached(meta_path)
     active_captures = cap_raw.get("captures") if isinstance(cap_raw, dict) and isinstance(cap_raw.get("captures"), dict) else {}
     session_meta = meta_raw.get("sessions") if isinstance(meta_raw, dict) and isinstance(meta_raw.get("sessions"), dict) else {}
-    archived_map, archived_sig_tokens = _load_archived_status_ro(gravity_home=gravity_home, metrics_home=m_home, plugin_roots=plugin_roots)
+    archived_map, archived_sig_tokens = _load_archived_status_ro(gravity_home=eff_gravity, metrics_home=m_home, plugin_roots=eff_roots, home_dir=home_dir)
     q_cid = session_id.strip().lower()
     roots = _discover_brain_sessions(b_dir, active_captures, session_meta, archived_map, explicit_cid=q_cid)
     selected = roots[0] if roots else None
@@ -516,12 +519,12 @@ def get_live_session_state(
     effective_ws = ws.strip() or (root_cwd or (root_ws if root_ws and root_ws != "workspace" else ""))
 
     wf_state: Optional[dict[str, Any]] = None
-    if resolve_dashboard_provider("workflow", gravity_home=gravity_home, plugin_roots=plugin_roots).get("ok"):
-        cand_wf = invoke_dashboard_provider("workflow", view="workflow", params={"ws": effective_ws}, ctx={"workflow_home": workflow_home}, gravity_home=gravity_home, plugin_roots=plugin_roots)
+    if resolve_dashboard_provider("workflow", gravity_home=eff_gravity, plugin_roots=eff_roots, home_dir=home_dir).get("ok"):
+        cand_wf = invoke_dashboard_provider("workflow", view="workflow", params={"ws": effective_ws}, ctx={"workflow_home": workflow_home}, gravity_home=eff_gravity, plugin_roots=eff_roots, home_dir=home_dir)
         if not cand_wf.get("spi_fallback"):
             wf_state = cand_wf
     if wf_state is None:
-        wf_state = read_workflow_live_c8_ro(ws=effective_ws, gravity_home=gravity_home, workflow_home=workflow_home, registry_path=registry_path)
+        wf_state = read_workflow_live_c8_ro(ws=effective_ws, gravity_home=eff_gravity, workflow_home=workflow_home, registry_path=registry_path, home_dir=home_dir)
 
     progress_info = build_live_progress(wf_state)
     wf_slim = {k: wf_state.get(k) for k in ("available", "stage", "progress", "mode", "level", "preset_profile", "suggested_profile", "guard_status", "nodes", "selected_workspace")}

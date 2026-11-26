@@ -393,7 +393,14 @@ class TestSharedValidator(unittest.TestCase):
                 mod = node.module.split(".")[0]
                 self.assertNotEqual(mod, "tomllib")
                 self.assertIn(mod, sys.stdlib_module_names)
-        rep = vc.validate_plugin_tree(vc.ValidatorConfig(plugin_root=REPO_ROOT / "plugin", expected_plugin_name="gravity", expected_module_id="core"))
+        rep = vc.validate_plugin_tree(
+            vc.ValidatorConfig(
+                plugin_root=REPO_ROOT / "plugin",
+                expected_plugin_name="gravity",
+                expected_module_id="core",
+                allowed_local_modules=vc.ALLOWED_LOCAL_MODULES | frozenset({"hooks", "scripts"}),
+            )
+        )
         self.assertTrue(rep.ok(strict=True), msg=f"errors={rep.errors}, warnings={rep.warnings}")
 
 

@@ -523,7 +523,7 @@ def run_update(
 ) -> tuple[dict[str, Any], int]:
     """Inspect linked Git repos, pull fast-forward updates fail-isolated, and reinstall targets."""
     resolved_home = resolve_gravity_home(gravity_home)
-    roots = [Path(p).expanduser().resolve() for p in (plugins_dirs if plugins_dirs else default_plugin_roots())]
+    roots = [Path(p).expanduser().resolve() for p in (plugins_dirs if plugins_dirs is not None else default_plugin_roots())]
     discovered = discover_modules(roots)
 
     sources_path, sources_reg = load_sources_registry(resolved_home)

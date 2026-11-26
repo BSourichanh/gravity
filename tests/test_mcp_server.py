@@ -10,13 +10,16 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_ROOT = REPO_ROOT / "plugin"
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
+from core import registry  # noqa: E402
 from core.registry import write_modules_registry  # noqa: E402
+from dashboard.providers import live_provider  # noqa: E402
 from mcp import server as mcp_server  # noqa: E402
 from mcp.widget_html import render_dashboard_html  # noqa: E402
 
@@ -937,6 +940,84 @@ class TestMcpServer(unittest.TestCase):
         self.assertFalse((PLUGIN_ROOT / "dashboard" / "providers" / "architect_provider.py").exists())
         with self.assertRaises(ModuleNotFoundError):
             importlib.import_module("dashboard.providers.architect_provider")
+
+    def test_live_tools_forward_plugin_roots_and_never_leak_to_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            host_home = tmp_path / "host-home"
+            host_sentinel = tmp_path / "mcp_host_leak.flag"
+            _write_fake_plugin(
+                host_home / ".gemini" / "config" / "plugins",
+                mod_id="metrics",
+                plugin_name="gravity-metrics",
+                dashboard_cfg={"provider_script": "scripts/dashboard_provider.py", "views": ["metrics"], "actions": []},
+                provider_script_body=(
+                    f"import json, pathlib\n"
+                    f"pathlib.Path({str(host_sentinel)!r}).write_text('LEAK', encoding='utf-8')\n"
+                    f"print(json.dumps({{'available': True, 'changed': True, 'unchanged': False, 'signature': 'leak', 'records': []}}))\n"
+                ),
+            )
+            fake_user = tmp_path / "fake-user"
+            fake_user.mkdir()
+            g_home = tmp_path / "gravity-home"
+            bd = tmp_path / "brain"
+            bd.mkdir()
+
+            iso_plugins = tmp_path / "iso-plugins"
+            _write_fake_plugin(
+                iso_plugins,
+                mod_id="workflow",
+                plugin_name="gravity-workflow",
+                dashboard_cfg={"provider_script": "scripts/dashboard_provider.py", "views": ["workflow"], "actions": []},
+                provider_script_body=(
+                    "import json\n"
+                    "print(json.dumps({'available': True, 'changed': True, 'unchanged': False, 'signature': 'iso', 'stage': 'mcp-iso', 'progress': '1/1'}))\n"
+                ),
+            )
+
+            clean_env = {k: v for k, v in os.environ.items() if k not in ("GRAVITY_HOME", "GRAVITY_PLUGINS_DIR", "GRAVITY_BRAIN_DIR")}
+            calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+            orig_discover = registry.discover_modules
+
+            def _spy_discover(*args: object, **kwargs: object) -> list[dict[str, object]]:
+                calls.append((args, kwargs))
+                return orig_discover(*args, **kwargs)  # type: ignore[arg-type]
+
+            with (
+                mock.patch.dict(os.environ, clean_env, clear=True),
+                mock.patch.object(registry, "safe_home_dir", return_value=host_home),
+                mock.patch.object(live_provider, "safe_home_dir", return_value=host_home),
+                mock.patch.object(registry, "discover_modules", side_effect=_spy_discover),
+            ):
+                empty_ctx = {"gravity_home": g_home, "plugin_roots": [], "home_dir": fake_user, "brain_dir": bd}
+                open_res = mcp_server.handle_jsonrpc_message(
+                    {"jsonrpc": "2.0", "id": 201, "method": "tools/call", "params": {"name": "open_gravity_dashboard", "arguments": {"view": "live"}}},
+                    ctx=empty_ctx,
+                )
+                assert open_res is not None
+                self.assertFalse(open_res["result"]["isError"])
+                self.assertNotIn("tok. utiles", open_res["result"]["content"][0]["text"])
+
+                live_res = mcp_server.handle_jsonrpc_message(
+                    {"jsonrpc": "2.0", "id": 202, "method": "tools/call", "params": {"name": "gravity_get_live_session", "arguments": {}}},
+                    ctx=empty_ctx,
+                )
+                assert live_res is not None
+                self.assertFalse(live_res["result"]["isError"])
+                self.assertFalse(host_sentinel.exists())
+                self.assertTrue(calls)
+                self.assertTrue(all(a and a[0] == [] for a, _ in calls), msg=f"Unexpected discover_modules calls: {calls}")
+
+                calls.clear()
+                iso_ctx = {"gravity_home": g_home, "plugin_roots": [iso_plugins], "home_dir": fake_user, "brain_dir": bd}
+                live_iso = mcp_server.handle_jsonrpc_message(
+                    {"jsonrpc": "2.0", "id": 203, "method": "tools/call", "params": {"name": "gravity_get_live_session", "arguments": {}}},
+                    ctx=iso_ctx,
+                )
+                assert live_iso is not None
+                self.assertEqual(live_iso["result"]["structuredContent"]["workflow"]["stage"], "mcp-iso")
+                self.assertFalse(host_sentinel.exists())
+                self.assertTrue(all(a and a[0] == [iso_plugins] for a, _ in calls), msg=f"Unexpected discover_modules calls: {calls}")
 
 
 if __name__ == "__main__":

@@ -55,10 +55,11 @@ def run_guide_mode(
     *,
     gravity_home: Optional[Path] = None,
     plugins_dirs: Optional[Sequence[Path]] = None,
+    home_dir: Optional[Path] = None,
 ) -> tuple[dict[str, Any], int]:
     """Return a strictly read-only interactive quick-guide payload based on discovered modules."""
-    resolved_home = resolve_gravity_home(gravity_home)
-    roots = list(plugins_dirs) if plugins_dirs else default_plugin_roots()
+    resolved_home = resolve_gravity_home(gravity_home, home_dir=home_dir)
+    roots = [Path(p) for p in plugins_dirs] if plugins_dirs is not None else default_plugin_roots(home_dir=home_dir)
     modules = discover_modules(roots)
 
     installed_modules: list[dict[str, Any]] = []
@@ -155,8 +156,8 @@ def run_overview_mode(
     plugin_root: Path = PLUGIN_ROOT,
 ) -> tuple[dict[str, Any], int]:
     """Build strictly read-only --overview payload combining environment, health, MCP, and 5-journey help."""
-    resolved_home = resolve_gravity_home(gravity_home)
-    roots = list(plugins_dirs) if plugins_dirs else default_plugin_roots()
+    resolved_home = resolve_gravity_home(gravity_home, home_dir=home_dir)
+    roots = [Path(p) for p in plugins_dirs] if plugins_dirs is not None else default_plugin_roots(home_dir=home_dir)
     modules = enrich_module_homes(discover_modules(roots), resolved_home)
     legacy_homes = detect_legacy_homes(home_dir)
     core_dir = resolved_home / "core"

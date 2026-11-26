@@ -20,6 +20,7 @@ from _shared.validator_core import Report, validate_module_contract as _vc_valid
 
 MODULE_SCHEMA_VERSION = 1
 GRAVITY_HOME_ENV = "GRAVITY_HOME"
+GRAVITY_PLUGINS_DIR_ENV = "GRAVITY_PLUGINS_DIR"
 MODULE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 LEGACY_HOME_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
@@ -29,14 +30,15 @@ LEGACY_HOME_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 )
 
 
-def resolve_gravity_home(home: Optional[Path] = None) -> Path:
-    """Resolve the Gravity unified home directory (arg > $GRAVITY_HOME > ~/.gemini/gravity)."""
+def resolve_gravity_home(home: Optional[Path] = None, *, home_dir: Optional[Path] = None) -> Path:
+    """Resolve the Gravity unified home directory (arg > $GRAVITY_HOME > <home_dir>/.gemini/gravity)."""
     if home is not None:
         return Path(home).expanduser().resolve()
     env_home = os.environ.get(GRAVITY_HOME_ENV, "").strip()
     if env_home:
         return Path(env_home).expanduser().resolve()
-    return (safe_home_dir() / ".gemini" / "gravity").resolve()
+    base_home = Path(home_dir).expanduser() if home_dir is not None else safe_home_dir()
+    return (base_home / ".gemini" / "gravity").resolve()
 
 
 def resolve_module_home(
@@ -44,6 +46,7 @@ def resolve_module_home(
     *,
     env_override: Optional[str] = None,
     gravity_home: Optional[Path] = None,
+    home_dir: Optional[Path] = None,
 ) -> Path:
     """Resolve a module storage directory ($env_override > <gravity_home>/<module_id>)."""
     if not isinstance(module_id, str) or not MODULE_ID_RE.match(module_id):
@@ -52,7 +55,7 @@ def resolve_module_home(
         override_val = os.environ.get(env_override, "").strip()
         if override_val:
             return Path(override_val).expanduser().resolve()
-    return (resolve_gravity_home(gravity_home) / module_id).resolve()
+    return (resolve_gravity_home(gravity_home, home_dir=home_dir) / module_id).resolve()
 
 
 def _is_non_empty_str(value: Any) -> bool:
@@ -68,9 +71,15 @@ def validate_module_contract(data: Any) -> list[str]:
     return list(report.errors)
 
 
-def default_plugin_roots() -> list[Path]:
-    """Return the default Antigravity plugin search roots."""
-    return [(safe_home_dir() / ".gemini" / "config" / "plugins").resolve()]
+def default_plugin_roots(home_dir: Optional[Path] = None) -> list[Path]:
+    """Return Antigravity plugin search roots ($GRAVITY_PLUGINS_DIR > <home_dir>/.gemini/config/plugins)."""
+    env_dirs = os.environ.get(GRAVITY_PLUGINS_DIR_ENV, "").strip()
+    if env_dirs:
+        roots = [Path(p.strip()).expanduser().resolve() for p in env_dirs.split(os.pathsep) if p.strip()]
+        if roots:
+            return roots
+    base_home = Path(home_dir).expanduser() if home_dir is not None else safe_home_dir()
+    return [(base_home / ".gemini" / "config" / "plugins").resolve()]
 
 
 def _read_json_object(path: Path, label: str) -> tuple[Optional[dict[str, Any]], list[str]]:
@@ -195,10 +204,14 @@ def enrich_module_homes(
     return enriched
 
 
-def discover_modules(plugin_roots: Optional[Sequence[Path]] = None) -> list[dict[str, Any]]:
+def discover_modules(
+    plugin_roots: Optional[Sequence[Path]] = None,
+    *,
+    home_dir: Optional[Path] = None,
+) -> list[dict[str, Any]]:
     """Scan plugin directories for config/module.json + plugin.json, sorted by id."""
     if plugin_roots is None:
-        roots = default_plugin_roots()
+        roots = default_plugin_roots(home_dir=home_dir)
     elif isinstance(plugin_roots, (str, Path)):
         roots = [Path(plugin_roots)]
     else:

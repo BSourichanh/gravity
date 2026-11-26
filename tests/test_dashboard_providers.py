@@ -40,6 +40,8 @@ def _clean_env() -> dict[str, str]:
         "GRAVITY_ARCHITECT_HOME",
         "GRAVITY_ARCHITECT_WORKSPACE",
         "GRAVITY_AUDITS_DIR",
+        "GRAVITY_PLUGINS_DIR",
+        "GRAVITY_BRAIN_DIR",
     ):
         env.pop(key, None)
     return env
@@ -550,6 +552,231 @@ class TestDashboardFacade(unittest.TestCase):
             self.assertIn("Architect:", summary)
             self.assertNotIn("Bridge:", summary)
             self.assertNotIn("0/8", summary)
+
+
+class TestIsolationT1F1004(unittest.TestCase):
+    def test_live_summary_plugin_roots_empty_never_leaks_to_host_plugins(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            from core import registry
+            from dashboard.providers import live_provider
+
+            tmp_path = Path(tmp)
+            host_home = tmp_path / "host-home"
+            host_plugins = host_home / ".gemini" / "config" / "plugins"
+            sentinel = tmp_path / "host_invoked.flag"
+            _write_module_plugin(
+                host_plugins,
+                mod_id="metrics",
+                plugin_name="gravity-metrics",
+                dashboard_cfg={"provider_script": "scripts/dashboard_provider.py", "views": ["metrics"], "actions": []},
+                provider_script_body=(
+                    f"import json, pathlib\n"
+                    f"pathlib.Path({str(sentinel)!r}).write_text('LEAK', encoding='utf-8')\n"
+                    f"print(json.dumps({{'available': True, 'changed': True, 'unchanged': False, 'signature': 'leak', 'records': [], 'kpis': {{'sessions_count': 99, 'useful_tokens': 99999}}}}))\n"
+                ),
+            )
+            fake_user = tmp_path / "fake-user"
+            fake_user.mkdir()
+            g_home = tmp_path / "gravity-home"
+            bd = tmp_path / "brain"
+            bd.mkdir()
+
+            calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+            orig_discover = registry.discover_modules
+
+            def _spy_discover(*args: object, **kwargs: object) -> list[dict[str, object]]:
+                calls.append((args, kwargs))
+                return orig_discover(*args, **kwargs)  # type: ignore[arg-type]
+
+            with (
+                mock.patch.object(registry, "safe_home_dir", return_value=host_home),
+                mock.patch.object(live_provider, "safe_home_dir", return_value=host_home),
+                mock.patch.object(registry, "discover_modules", side_effect=_spy_discover),
+            ):
+                summary = api.build_initial_summary(
+                    view="live",
+                    gravity_home=g_home,
+                    plugin_roots=[],
+                    home_dir=fake_user,
+                    brain_dir=bd,
+                )
+                lv = api.get_live_session_state(
+                    gravity_home=g_home,
+                    plugin_roots=[],
+                    home_dir=fake_user,
+                    brain_dir=bd,
+                )
+
+            self.assertIn("0 module(s)", summary)
+            self.assertNotIn("tok. utiles", summary)
+            self.assertFalse(sentinel.exists())
+            self.assertFalse(lv["available"])
+            self.assertTrue(calls)
+            self.assertTrue(all(a and a[0] == [] for a, _ in calls), msg=f"Unexpected discover_modules calls: {calls}")
+
+    def test_live_summary_home_dir_isolates_discovery_and_spi_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            from core import registry
+            from dashboard.providers import live_provider
+
+            tmp_path = Path(tmp)
+            host_home = tmp_path / "host-home"
+            host_sentinel = tmp_path / "host_called.flag"
+            _write_module_plugin(
+                host_home / ".gemini" / "config" / "plugins",
+                mod_id="metrics",
+                plugin_name="gravity-metrics",
+                dashboard_cfg={"provider_script": "scripts/dashboard_provider.py", "views": ["metrics"], "actions": []},
+                provider_script_body=(
+                    f"import json, pathlib\n"
+                    f"pathlib.Path({str(host_sentinel)!r}).write_text('LEAK', encoding='utf-8')\n"
+                    f"print(json.dumps({{'available': True, 'changed': True, 'unchanged': False, 'signature': 'host', 'records': []}}))\n"
+                ),
+            )
+
+            fake_user = tmp_path / "fake-user"
+            user_plugins = fake_user / ".gemini" / "config" / "plugins"
+            bd = tmp_path / "brain"
+            bd.mkdir()
+            _write_module_plugin(
+                user_plugins,
+                mod_id="workflow",
+                plugin_name="gravity-workflow",
+                dashboard_cfg={"provider_script": "scripts/dashboard_provider.py", "views": ["workflow"], "actions": []},
+                provider_script_body=(
+                    "import json, os\n"
+                    "print(json.dumps({"
+                    "'available': True, 'changed': True, 'unchanged': False, 'signature': 'iso-wf', "
+                    "'stage': 'isolated-stage', 'progress': '1/2', 'preset_profile': 'standard', "
+                    "'env_home': os.environ.get('HOME'), 'env_userprofile': os.environ.get('USERPROFILE'), "
+                    "'env_gravity_home': os.environ.get('GRAVITY_HOME')"
+                    "}))\n"
+                ),
+            )
+
+            with (
+                mock.patch.object(registry, "safe_home_dir", return_value=host_home),
+                mock.patch.object(live_provider, "safe_home_dir", return_value=host_home),
+            ):
+                summary = api.build_initial_summary(
+                    view="live",
+                    gravity_home=None,
+                    home_dir=fake_user,
+                    brain_dir=bd,
+                )
+                lv = api.get_live_session_state(
+                    gravity_home=None,
+                    home_dir=fake_user,
+                    brain_dir=bd,
+                )
+                wf_summary = api.build_initial_summary(
+                    view="workflow",
+                    gravity_home=None,
+                    home_dir=fake_user,
+                    brain_dir=bd,
+                )
+                wf = api.get_workflow_state(home_dir=fake_user)
+
+            self.assertFalse(host_sentinel.exists())
+            self.assertIn("1 module(s)", summary)
+            self.assertEqual(lv["workflow"]["stage"], "isolated-stage")
+            self.assertIn("isolated-stage", wf_summary)
+            self.assertEqual(wf.get("env_home"), str(fake_user.resolve()))
+            self.assertEqual(wf.get("env_userprofile"), str(fake_user.resolve()))
+            self.assertEqual(wf.get("env_gravity_home"), str((fake_user / ".gemini" / "gravity").resolve()))
+
+    def test_gravity_plugins_dir_env_and_plugins_dir_singular_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            from core import registry
+            from dashboard.providers import live_provider
+
+            tmp_path = Path(tmp)
+            host_home = tmp_path / "host-home"
+            host_sentinel = tmp_path / "host_env_leak.flag"
+            _write_module_plugin(
+                host_home / ".gemini" / "config" / "plugins",
+                mod_id="metrics",
+                plugin_name="gravity-metrics",
+                dashboard_cfg={"provider_script": "scripts/dashboard_provider.py", "views": ["metrics"], "actions": []},
+                provider_script_body=(
+                    f"import json, pathlib\n"
+                    f"pathlib.Path({str(host_sentinel)!r}).write_text('LEAK', encoding='utf-8')\n"
+                    f"print(json.dumps({{'available': True, 'changed': True, 'unchanged': False, 'signature': 'host', 'records': []}}))\n"
+                ),
+            )
+
+            iso_a = tmp_path / "iso-a"
+            iso_b = tmp_path / "iso-b"
+            iso_a.mkdir()
+            _write_module_plugin(iso_b, mod_id="custom", plugin_name="gravity-custom")
+            g_home = tmp_path / "gravity-home"
+            bd = tmp_path / "brain"
+            bd.mkdir()
+
+            with (
+                mock.patch.object(registry, "safe_home_dir", return_value=host_home),
+                mock.patch.object(live_provider, "safe_home_dir", return_value=host_home),
+                mock.patch.dict(os.environ, {"GRAVITY_PLUGINS_DIR": f"{iso_a}{os.pathsep}{iso_b}"}),
+            ):
+                roots = registry.default_plugin_roots()
+                self.assertEqual(roots, [iso_a.resolve(), iso_b.resolve()])
+                summary = api.build_initial_summary(view="live", gravity_home=g_home, brain_dir=bd)
+                self.assertIn("1 module(s)", summary)
+                self.assertFalse(host_sentinel.exists())
+
+            with (
+                mock.patch.object(registry, "safe_home_dir", return_value=host_home),
+                mock.patch.object(live_provider, "safe_home_dir", return_value=host_home),
+            ):
+                summary_empty = api.build_initial_summary(view="live", gravity_home=g_home, plugins_dir=[], brain_dir=bd)
+                self.assertIn("0 module(s)", summary_empty)
+                lv = api.get_live_session_state(gravity_home=g_home, plugins_dir=[], brain_dir=bd)
+                self.assertFalse(lv["available"])
+                self.assertFalse(host_sentinel.exists())
+
+                ov_single = api.get_overview(gravity_home=g_home, plugins_dir=iso_b)
+                self.assertEqual([m["id"] for m in ov_single["modules"]], ["custom"])
+                self.assertFalse(host_sentinel.exists())
+
+    def test_core_cli_helpers_honor_explicit_empty_plugins_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            from core import bundle, doctor, overview, registry, updater
+            from scripts import init_env
+
+            tmp_path = Path(tmp)
+            g_home = tmp_path / "gravity-home"
+            fake_user = tmp_path / "fake-user"
+            fake_user.mkdir()
+
+            with mock.patch.object(registry, "default_plugin_roots", side_effect=AssertionError("host fallback!")):
+                with mock.patch.object(overview, "default_plugin_roots", side_effect=AssertionError("host fallback!")):
+                    ov_payload, ov_rc = overview.run_overview_mode(
+                        gravity_home=g_home, plugins_dirs=[], home_dir=fake_user,
+                        app_version_detector=lambda: {"version": "2.35.0", "source": "test", "meets_mcp_app_min": True},
+                    )
+                    self.assertEqual(ov_rc, 0)
+                    self.assertEqual(ov_payload["module_count"], 0)
+                    guide_payload, guide_rc = overview.run_guide_mode(gravity_home=g_home, plugins_dirs=[], home_dir=fake_user)
+                    self.assertEqual(guide_rc, 0)
+                    self.assertEqual(guide_payload["installed_modules"], [])
+                with mock.patch.object(doctor, "default_plugin_roots", side_effect=AssertionError("host fallback!")):
+                    diag_payload, _ = doctor.run_dashboard_diagnostic(
+                        gravity_home=g_home, plugins_dirs=[], home_dir=fake_user,
+                        app_version_detector=lambda: {"version": "2.35.0", "source": "test", "meets_mcp_app_min": True},
+                    )
+                    self.assertEqual(diag_payload["modules"], [])
+                with mock.patch.object(bundle, "default_plugin_roots", side_effect=AssertionError("host fallback!")):
+                    self.assertFalse(bundle._detect_gdrive_plugin(plugins_dirs=[]))
+                with mock.patch.object(updater, "default_plugin_roots", side_effect=AssertionError("host fallback!")):
+                    up_payload, up_rc = updater.run_update(gravity_home=g_home, plugins_dirs=[], check_only=True)
+                    self.assertEqual(up_rc, 0)
+                    self.assertEqual(up_payload["module_count"], 0)
+                with mock.patch.object(init_env, "default_plugin_roots", side_effect=AssertionError("host fallback!")):
+                    env_payload, env_rc = init_env.run_environment(
+                        gravity_home=g_home, plugins_dirs=[], home_dir=fake_user, status_only=True,
+                    )
+                    self.assertEqual(env_rc, 0)
+                    self.assertEqual(env_payload["module_count"], 0)
 
 
 if __name__ == "__main__":

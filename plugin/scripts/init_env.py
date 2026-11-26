@@ -74,6 +74,7 @@ def run_environment(
         return run_guide_mode(
             gravity_home=gravity_home,
             plugins_dirs=plugins_dirs,
+            home_dir=home_dir,
         )
     if dashboard:
         return run_dashboard_diagnostic(
@@ -83,8 +84,8 @@ def run_environment(
             app_version_detector=app_version_detector,
         )
 
-    resolved_home = resolve_gravity_home(gravity_home)
-    roots = list(plugins_dirs) if plugins_dirs else default_plugin_roots()
+    resolved_home = resolve_gravity_home(gravity_home, home_dir=home_dir)
+    roots = [Path(p) for p in plugins_dirs] if plugins_dirs is not None else default_plugin_roots(home_dir=home_dir)
     raw_modules = discover_modules(roots)
     modules = enrich_module_homes(raw_modules, resolved_home)
     legacy_homes = detect_legacy_homes(home_dir)

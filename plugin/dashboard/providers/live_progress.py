@@ -474,10 +474,10 @@ def _select_c8_workspace(ws: str, workspaces: list[dict[str, Any]], wf_home: Pat
 
 def read_workflow_live_c8_ro(
     ws: str = "", *, gravity_home: Optional[Path] = None,
-    workflow_home: Optional[Path] = None, registry_path: Optional[Path] = None,
+    workflow_home: Optional[Path] = None, registry_path: Optional[Path] = None, home_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     """Read C8 (`live_workspaces.json` + `live_state.json`) read-only with `"0/0"` default."""
-    wf_home = Path(workflow_home).expanduser().resolve() if workflow_home is not None else resolve_module_home("workflow", env_override="GRAVITY_WORKFLOW_HOME", gravity_home=gravity_home)
+    wf_home = Path(workflow_home).expanduser().resolve() if workflow_home is not None else resolve_module_home("workflow", env_override="GRAVITY_WORKFLOW_HOME", gravity_home=gravity_home, home_dir=home_dir)
     reg_file = Path(registry_path).expanduser().resolve() if registry_path is not None else (wf_home / "live_workspaces.json").resolve()
     out: dict[str, Any] = {
         "available": False, "stage": "idle", "progress": "0/0", "mode": "evo", "level": "standard",

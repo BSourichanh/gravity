@@ -7,6 +7,7 @@ import re
 from typing import Any, Optional, Sequence
 
 from _shared.path_safety import validate_rel_member_path
+from dashboard.providers import normalize_plugin_roots
 from dashboard.providers.core_provider import get_overview
 from dashboard.providers.generic_provider import get_module_info
 from dashboard.providers.spi import invoke_dashboard_provider
@@ -29,9 +30,12 @@ def get_workflow_state(
     gravity_home: Optional[Path] = None,
     workflow_home: Optional[Path] = None,
     plugin_roots: Optional[Sequence[Path]] = None,
+    plugins_dir: Optional[Any] = None,
+    home_dir: Optional[Path] = None,
     **_: Any,
 ) -> dict[str, Any]:
     """Return read-only Gravity Workflow state via companion SPI-1 provider."""
+    eff_roots = normalize_plugin_roots(plugin_roots, plugins_dir)
     res = invoke_dashboard_provider(
         "workflow",
         view="workflow",
@@ -39,7 +43,8 @@ def get_workflow_state(
         params={"ws": ws},
         ctx={"workflow_home": workflow_home},
         gravity_home=gravity_home,
-        plugin_roots=plugin_roots,
+        plugin_roots=eff_roots,
+        home_dir=home_dir,
     )
     if res.get("spi_fallback"):
         res.setdefault("stage", "idle")
@@ -60,9 +65,12 @@ def get_metrics_state(
     metrics_home: Optional[Path] = None,
     audits_dirs: Optional[Sequence[Path]] = None,
     plugin_roots: Optional[Sequence[Path]] = None,
+    plugins_dir: Optional[Any] = None,
+    home_dir: Optional[Path] = None,
     **_: Any,
 ) -> dict[str, Any]:
     """Return read-only Gravity Metrics state via companion SPI-1 provider."""
+    eff_roots = normalize_plugin_roots(plugin_roots, plugins_dir)
     res = invoke_dashboard_provider(
         "metrics",
         view="metrics",
@@ -70,7 +78,8 @@ def get_metrics_state(
         params={"project": project, "limit": limit, "q": q},
         ctx={"metrics_home": metrics_home, "audits_dirs": audits_dirs},
         gravity_home=gravity_home,
-        plugin_roots=plugin_roots,
+        plugin_roots=eff_roots,
+        home_dir=home_dir,
     )
     if res.get("spi_fallback"):
         res.setdefault("kpis", {"sessions_count": 0, "useful_tokens": 0, "cost_usd": 0.0})
@@ -87,6 +96,8 @@ def get_session_detail(
     gravity_home: Optional[Path] = None,
     metrics_home: Optional[Path] = None,
     plugin_roots: Optional[Sequence[Path]] = None,
+    plugins_dir: Optional[Any] = None,
+    home_dir: Optional[Path] = None,
     **_: Any,
 ) -> dict[str, Any]:
     """Return read-only session detail via Gravity Metrics SPI-1 provider."""
@@ -104,13 +115,15 @@ def get_session_detail(
             "error": "Invalid session target identifier.",
             "spi_fallback": True,
         }
+    eff_roots = normalize_plugin_roots(plugin_roots, plugins_dir)
     res = invoke_dashboard_provider(
         "metrics",
         view="session-detail",
         params={"target": clean_target},
         ctx={"metrics_home": metrics_home},
         gravity_home=gravity_home,
-        plugin_roots=plugin_roots,
+        plugin_roots=eff_roots,
+        home_dir=home_dir,
     )
     if res.get("spi_fallback"):
         res.setdefault("found", False)
@@ -135,6 +148,8 @@ def run_metrics_cli_action(
     metrics_home: Optional[Path] = None,
     brain_dir: Optional[Path] = None,
     plugin_roots: Optional[Sequence[Path]] = None,
+    plugins_dir: Optional[Any] = None,
+    home_dir: Optional[Path] = None,
     **_: Any,
 ) -> dict[str, Any]:
     """Dispatch a validated Gravity Metrics lifecycle action via SPI-1."""
@@ -153,6 +168,7 @@ def run_metrics_cli_action(
         msg = f"Invalid metrics target identifier: {clean_target!r}."
         return {"ok": False, "action": clean_action, "error": msg, "message": msg}
 
+    eff_roots = normalize_plugin_roots(plugin_roots, plugins_dir)
     return invoke_dashboard_provider(
         "metrics",
         action=clean_action,
@@ -170,7 +186,8 @@ def run_metrics_cli_action(
         },
         ctx={"metrics_home": metrics_home, "brain_dir": brain_dir},
         gravity_home=gravity_home,
-        plugin_roots=plugin_roots,
+        plugin_roots=eff_roots,
+        home_dir=home_dir,
     )
 
 
@@ -181,6 +198,8 @@ def read_metrics_audit(
     metrics_home: Optional[Path] = None,
     audits_dirs: Optional[Sequence[Path]] = None,
     plugin_roots: Optional[Sequence[Path]] = None,
+    plugins_dir: Optional[Any] = None,
+    home_dir: Optional[Path] = None,
     **_: Any,
 ) -> dict[str, Any]:
     """Read an agent audit report via Gravity Metrics SPI-1 (rejects traversal and audits/code)."""
@@ -199,13 +218,15 @@ def read_metrics_audit(
             "spi_fallback": True,
         }
 
+    eff_roots = normalize_plugin_roots(plugin_roots, plugins_dir)
     res = invoke_dashboard_provider(
         "metrics",
         view="audit-detail",
         params={"path": rel_path},
         ctx={"metrics_home": metrics_home, "audits_dirs": audits_dirs},
         gravity_home=gravity_home,
-        plugin_roots=plugin_roots,
+        plugin_roots=eff_roots,
+        home_dir=home_dir,
     )
     if res.get("spi_fallback"):
         res.setdefault("found", False)
@@ -222,9 +243,12 @@ def get_architect_state(
     architect_home: Optional[Path] = None,
     architect_workspace: Optional[Path] = None,
     plugin_roots: Optional[Sequence[Path]] = None,
+    plugins_dir: Optional[Any] = None,
+    home_dir: Optional[Path] = None,
     **_: Any,
 ) -> dict[str, Any]:
     """Return read-only Gravity Architect state via companion SPI-1 provider."""
+    eff_roots = normalize_plugin_roots(plugin_roots, plugins_dir)
     res = invoke_dashboard_provider(
         "architect",
         view="architect",
@@ -232,7 +256,8 @@ def get_architect_state(
         params={"atelier": atelier, "ws": ws},
         ctx={"architect_home": architect_home, "architect_workspace": architect_workspace},
         gravity_home=gravity_home,
-        plugin_roots=plugin_roots,
+        plugin_roots=eff_roots,
+        home_dir=home_dir,
     )
     if res.get("spi_fallback"):
         res.setdefault("projects", [])
@@ -255,6 +280,8 @@ def get_live_session_state(
     workflow_home: Optional[Path] = None,
     registry_path: Optional[Path] = None,
     home_dir: Optional[Path] = None,
+    plugin_roots: Optional[Sequence[Path]] = None,
+    plugins_dir: Optional[Any] = None,
     **_: Any,
 ) -> dict[str, Any]:
     """Return live session state via lazy import of `dashboard.providers.live_provider`."""
@@ -271,6 +298,7 @@ def get_live_session_state(
             "summary": {"total_agents": 0, "active_agents": 0},
             "warnings": ["live_provider is not available."],
         }
+    eff_roots = normalize_plugin_roots(plugin_roots, plugins_dir)
     return _impl(
         session_id=session_id,
         since_signature=since_signature,
@@ -282,6 +310,7 @@ def get_live_session_state(
         workflow_home=workflow_home,
         registry_path=registry_path,
         home_dir=home_dir,
+        plugin_roots=eff_roots,
     )
 
 
@@ -301,6 +330,7 @@ def build_initial_summary(
     module_info: Optional[dict[str, Any]] = None,
     gravity_home: Optional[Path] = None,
     plugin_roots: Optional[Sequence[Path]] = None,
+    plugins_dir: Optional[Any] = None,
     home_dir: Optional[Path] = None,
     brain_dir: Optional[Path] = None,
     workflow_home: Optional[Path] = None,
@@ -310,10 +340,11 @@ def build_initial_summary(
     architect_workspace: Optional[Path] = None,
 ) -> str:
     """Build a concise plain-text summary for `open_gravity_dashboard` responses."""
+    eff_roots = normalize_plugin_roots(plugin_roots, plugins_dir)
     req_view = (view or "overview").strip().lower() or "overview"
     ov = overview if overview is not None else get_overview(
         gravity_home=gravity_home,
-        plugin_roots=plugin_roots,
+        plugin_roots=eff_roots,
         home_dir=home_dir,
     )
     doctor = ov.get("doctor") or {}
@@ -331,7 +362,8 @@ def build_initial_summary(
         minfo = module_info if module_info is not None else get_module_info(
             module_id.strip(),
             gravity_home=gravity_home,
-            plugin_roots=plugin_roots,
+            plugin_roots=eff_roots,
+            home_dir=home_dir,
         )
         if minfo.get("found"):
             parts.append(
@@ -350,6 +382,7 @@ def build_initial_summary(
             metrics_home=metrics_home,
             workflow_home=workflow_home,
             home_dir=home_dir,
+            plugin_roots=eff_roots,
         )
         lv_sum = lv.get("summary") or {}
         if lv.get("available"):
@@ -365,7 +398,8 @@ def build_initial_summary(
             ws=ws,
             gravity_home=gravity_home,
             workflow_home=workflow_home,
-            plugin_roots=plugin_roots,
+            plugin_roots=eff_roots,
+            home_dir=home_dir,
         )
         if wf.get("available"):
             parts.append(
@@ -381,7 +415,8 @@ def build_initial_summary(
             gravity_home=gravity_home,
             metrics_home=metrics_home,
             audits_dirs=audits_dirs,
-            plugin_roots=plugin_roots,
+            plugin_roots=eff_roots,
+            home_dir=home_dir,
         )
         kpis = met.get("kpis") or {}
         scope_lbl = f"projet '{project.strip()}'" if project.strip() else "global"
@@ -398,7 +433,8 @@ def build_initial_summary(
             gravity_home=gravity_home,
             architect_home=architect_home,
             architect_workspace=architect_workspace,
-            plugin_roots=plugin_roots,
+            plugin_roots=eff_roots,
+            home_dir=home_dir,
         )
         if arch.get("available"):
             parts.append(

@@ -5,6 +5,14 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Fixed
+- **[FIX T1-F10-04] Isolation stricte `plugin_roots` / `home_dir` / `GRAVITY_PLUGINS_DIR` & test `test_shared_validator.py:396` :**
+  - `plugin/core/registry.py` (`292` L, `< 400` L) : ajout de `GRAVITY_PLUGINS_DIR_ENV = "GRAVITY_PLUGINS_DIR"` dans `default_plugin_roots(home_dir=...)` (découpage `os.pathsep`) et propagation de `home_dir` dans `resolve_gravity_home`, `resolve_module_home` et `discover_modules`.
+  - `plugin/dashboard/providers/{__init__,core_provider,spi,generic_provider,live_progress,live_provider}.py` (`live_provider.py` `598` L `< 600` L, `live_progress.py` `590` L `< 600` L) : ajout de `normalize_plugin_roots`, propagation de `home_dir` / `plugin_roots` dans `load_modules_snapshot_ro`, `get_overview`, `resolve_dashboard_provider` / `invoke_dashboard_provider` (avec `HOME` / `USERPROFILE` / `GRAVITY_HOME` dans l'environnement sous-processus SPI), `get_module_info` / `get_generic_view`, `read_workflow_live_c8_ro`, `_load_archived_status_ro` et `get_live_session_state` (remplacement de `Path.home()` par `safe_home_dir()` et normalisation `plugins_dir`).
+  - `plugin/dashboard/api.py` (`465` L) & `plugin/mcp/server.py` (`549` L) : transmission de `plugin_roots` / `plugins_dir` et `home_dir` sur toutes les fonctions `api.*` (dont `get_live_session_state` et `build_initial_summary`) ainsi que dans `_handle_open_gravity_dashboard` et `_handle_get_live_session`.
+  - `plugin/core/{overview,doctor,bundle,updater}.py` & `plugin/scripts/init_env.py` : remplacement de `if plugins_dirs else default_plugin_roots()` par `if plugins_dirs is not None else default_plugin_roots(...)` pour honorer `plugins_dirs=[]` sans repli hôte.
+  - `tests/test_shared_validator.py` (`allowed_local_modules=vc.ALLOWED_LOCAL_MODULES | frozenset({"hooks", "scripts"})`) et ajout des tests de non-régression `T1-F10-04` dans `tests/test_dashboard_providers.py` et `tests/test_mcp_server.py`.
+
 ### Changed
 - **[TASK-CORE-04] `install.py` & `validate.py` minces sur `_shared`, `module.json`, `hooks.json` & assainissement documentaire (`SPEC-CORE-02`) :**
   - `install.py` (`99` L, `< 150` L) : lanceur mince déléguant le contrat CLI 11 drapeaux à `_shared.installer_core` (`InstallSpec`, `run_installer`, `has_executable_manifest=True`, `record_sources=True`), ajoutant `hooks/pre_invocation_gravity.py` à `EXEC_SCRIPTS` et utilisant `_shared.path_safety.safe_home_dir()` (corrigeant le cas Windows sans `USERPROFILE`).

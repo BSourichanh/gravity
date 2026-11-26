@@ -190,6 +190,7 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
             metrics_home=ctx.get("metrics_home"),
             workflow_home=ctx.get("workflow_home"),
             home_dir=ctx.get("home_dir"),
+            plugin_roots=ctx.get("plugin_roots"),
         )
 
     workflow: Optional[dict[str, Any]] = None
@@ -199,6 +200,7 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
             gravity_home=ctx.get("gravity_home"),
             workflow_home=ctx.get("workflow_home"),
             plugin_roots=ctx.get("plugin_roots"),
+            home_dir=ctx.get("home_dir"),
         )
 
     metrics: Optional[dict[str, Any]] = None
@@ -209,6 +211,7 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
             metrics_home=ctx.get("metrics_home"),
             audits_dirs=ctx.get("audits_dirs"),
             plugin_roots=ctx.get("plugin_roots"),
+            home_dir=ctx.get("home_dir"),
         )
 
     architect: Optional[dict[str, Any]] = None
@@ -220,6 +223,7 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
             architect_home=ctx.get("architect_home"),
             architect_workspace=ctx.get("architect_workspace"),
             plugin_roots=ctx.get("plugin_roots"),
+            home_dir=ctx.get("home_dir"),
         )
 
     module_info: Optional[dict[str, Any]] = None
@@ -228,6 +232,7 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
             initial_module_id,
             gravity_home=ctx.get("gravity_home"),
             plugin_roots=ctx.get("plugin_roots"),
+            home_dir=ctx.get("home_dir"),
         )
 
     summary = api.build_initial_summary(
@@ -285,6 +290,7 @@ def _handle_get_workflow_state(args: dict[str, Any], ctx: dict[str, Any]) -> dic
         gravity_home=ctx.get("gravity_home"),
         workflow_home=ctx.get("workflow_home"),
         plugin_roots=ctx.get("plugin_roots"),
+        home_dir=ctx.get("home_dir"),
     )
     if data.get("unchanged"):
         return _tool_ok("Inchangé.", data)
@@ -307,6 +313,7 @@ def _handle_get_metrics_state(args: dict[str, Any], ctx: dict[str, Any]) -> dict
         metrics_home=ctx.get("metrics_home"),
         audits_dirs=ctx.get("audits_dirs"),
         plugin_roots=ctx.get("plugin_roots"),
+        home_dir=ctx.get("home_dir"),
     )
     if data.get("unchanged"):
         return _tool_ok("Inchangé.", data)
@@ -327,6 +334,7 @@ def _handle_get_session_detail(args: dict[str, Any], ctx: dict[str, Any]) -> dic
         gravity_home=ctx.get("gravity_home"),
         metrics_home=ctx.get("metrics_home"),
         plugin_roots=ctx.get("plugin_roots"),
+        home_dir=ctx.get("home_dir"),
     )
     if not data.get("found"):
         return _tool_err(str(data.get("error") or f"Session introuvable : {target!r}."), structured=data)
@@ -342,6 +350,7 @@ def _handle_get_architect_state(args: dict[str, Any], ctx: dict[str, Any]) -> di
         architect_home=ctx.get("architect_home"),
         architect_workspace=ctx.get("architect_workspace"),
         plugin_roots=ctx.get("plugin_roots"),
+        home_dir=ctx.get("home_dir"),
     )
     if data.get("unchanged"):
         return _tool_ok("Inchangé.", data)
@@ -358,7 +367,7 @@ def _handle_get_module_info(args: dict[str, Any], ctx: dict[str, Any]) -> dict[s
     module_id = str(args.get("module_id") or "").strip()
     if not module_id:
         return _tool_err("Le paramètre 'module_id' est requis.")
-    data = api.get_module_info(module_id, gravity_home=ctx.get("gravity_home"), plugin_roots=ctx.get("plugin_roots"))
+    data = api.get_module_info(module_id, gravity_home=ctx.get("gravity_home"), plugin_roots=ctx.get("plugin_roots"), home_dir=ctx.get("home_dir"))
     if not data.get("found"):
         return _tool_err(str(data.get("error") or f"Module introuvable : {module_id!r}."), structured=data)
     return _tool_ok(f"Module '{data.get('module_id')}' ({data.get('plugin_name')}) chargé.", data)
@@ -375,6 +384,7 @@ def _handle_get_live_session(args: dict[str, Any], ctx: dict[str, Any]) -> dict[
         metrics_home=ctx.get("metrics_home"),
         workflow_home=ctx.get("workflow_home"),
         home_dir=ctx.get("home_dir"),
+        plugin_roots=ctx.get("plugin_roots"),
     )
     if data.get("unchanged"):
         return _tool_ok("Inchangé.", data)
@@ -404,6 +414,7 @@ def _handle_metrics_action(args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
         purge_reports=bool(args.get("purge_reports", True)),
         gravity_home=ctx.get("gravity_home"),
         plugin_roots=ctx.get("plugin_roots"),
+        home_dir=ctx.get("home_dir"),
         metrics_home=ctx.get("metrics_home"),
         brain_dir=ctx.get("brain_dir"),
     )
@@ -422,6 +433,7 @@ def _handle_read_audit(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, A
         metrics_home=ctx.get("metrics_home"),
         audits_dirs=ctx.get("audits_dirs"),
         plugin_roots=ctx.get("plugin_roots"),
+        home_dir=ctx.get("home_dir"),
     )
     if not data.get("found"):
         return _tool_err(str(data.get("error") or f"Audit introuvable : {target!r}."), structured=data)

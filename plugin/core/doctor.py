@@ -492,8 +492,8 @@ def run_dashboard_diagnostic(
     """Run strictly read-only diagnostics for the Gravity MCP App dashboard."""
     from dashboard import api as dashboard_api
 
-    resolved_home = resolve_gravity_home(gravity_home)
-    roots = list(plugins_dirs) if plugins_dirs else default_plugin_roots()
+    resolved_home = resolve_gravity_home(gravity_home, home_dir=home_dir)
+    roots = [Path(p) for p in plugins_dirs] if plugins_dirs is not None else default_plugin_roots(home_dir=home_dir)
     diag, app_info = diagnose_mcp_dashboard(plugin_root), (app_version_detector or _detect_antigravity_app_version)()
     overview = dashboard_api.get_overview(gravity_home=resolved_home, plugin_roots=roots, home_dir=home_dir)
     ok = bool(diag["mcp_config_ok"]) and bool(diag["server_exists"]) and bool(diag["api_exists"]) and not diag["errors"]
