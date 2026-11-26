@@ -5,6 +5,10 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Removed
+- **[TASK-CORE-01c] Retrait définitif de `plugin/dashboard/providers/bridge_provider.py` (`SPEC-CORE-01`) :**
+  - Suppression complète du fournisseur SQLite legacy `plugin/dashboard/providers/bridge_provider.py` (`450` L) et ajout de `TestBridgeRetirement` dans `tests/test_dashboard_providers.py` (vérification de l'absence du fichier, du `ModuleNotFoundError` à l'import et du retrait de `get_bridge_state` / `open_sqlite_ro` / paramètres `bridge*` de la façade).
+
 ### Added
 - **[TASK-CORE-01b] Provider `Live`, `live_progress`, schémas MCP & `server.py` (`SPEC-CORE-01`) :**
   - `plugin/dashboard/providers/generic_provider.py` (`176` L) : détection `_shared.path_safety.is_symlink_or_junction`, exposition des capacités `spi` dans `get_module_info` et ajout de `get_generic_view` relayant via `spi.invoke_dashboard_provider` avec repli propre.

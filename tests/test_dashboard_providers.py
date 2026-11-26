@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 from pathlib import Path
@@ -196,7 +197,7 @@ class TestCoreAndGenericProviders(unittest.TestCase):
                     "version": "0.3.0",
                     "valid": True,
                     "errors": [],
-                    "storage": {"subdir": "bridge", "env_override": "GRAVITY_BRIDGE_HOME"},
+                    "storage": {"subdir": "bridge", "env_override": "GRAVITY_GENERIC_HOME"},
                     "commands": ["/gravity-bridge"],
                     "capabilities": ["bridge"],
                     "ui": {"mode": "none", "target": "gravity"},
@@ -298,14 +299,19 @@ class TestCoreAndGenericProviders(unittest.TestCase):
             self.assertTrue(metrics_info["dedicated_provider"])
 
 
-class TestBridgeNotInCoreApi(unittest.TestCase):
-    def test_bridge_symbols_and_sqlite_removed_from_core_api(self) -> None:
+class TestBridgeRetirement(unittest.TestCase):
+    def test_bridge_provider_retired_and_symbols_removed(self) -> None:
+        self.assertFalse((PLUGIN_ROOT / "dashboard" / "providers" / "bridge_provider.py").exists())
         self.assertFalse(hasattr(api, "get_bridge_state"))
         self.assertFalse(hasattr(dashboard, "get_bridge_state"))
         self.assertNotIn("get_bridge_state", dashboard.__all__)
         self.assertNotIn("get_bridge_state", api.__all__)
         self.assertFalse(hasattr(dashboard_providers, "open_sqlite_ro"))
         self.assertNotIn("open_sqlite_ro", dashboard_providers.__all__)
+        with self.assertRaises(ModuleNotFoundError):
+            importlib.import_module("dashboard.providers.bridge_provider")
+        with self.assertRaises(TypeError):
+            api.build_initial_summary(bridge={}, bridge_home=Path("."), db_path=Path("x"))  # type: ignore[call-arg]
 
 
 class TestWorkflowProvider(unittest.TestCase):
