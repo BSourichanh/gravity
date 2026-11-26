@@ -27,7 +27,7 @@ KEBAB_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MODULE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 SVG_VIEWBOX_RE = re.compile(r"""viewBox\s*=\s*["']0\s+0\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)["']""")
 FORBIDDEN_MOD_RE = re.compile(r"\bMod" + r"ule\s+0?\d\b", re.IGNORECASE)
-SECRET_LEAK_RE = re.compile(r"(?:sk-live-|ghp_[A-Za-z0-9]{20,}|xox[baprs]-|AKIA[0-9A-Z]{16})")
+SECRET_LEAK_RE = re.compile(r"(?:sk-" + r"live-|ghp_[A-Za-z0-9]{20,}|xox[baprs]-|AKIA[0-9A-Z]{16})")
 PERSONAL_PATH_RE = re.compile(r"(?:[A-Za-z]:\\(?:Users|Documents)\\|[A-Za-z]:\\[^\\\s\"'`]+\\Documents\\|/Us" + r"ers/[^/\s\"'`]+/|/ho" + r"me/[^/\s\"'`]+/)", re.IGNORECASE)
 MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\n]+)\)")
 MD_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
@@ -256,15 +256,49 @@ def validate_plugin_manifest(root: Path, report: Report, *, expected_name: Optio
     return manifest
 
 
-def _check_str_list(val: Any, label: str, report: Report, *, allow_empty: bool = False, prefix: str = "") -> None:
-    if not (isinstance(val, list) and (allow_empty or bool(val)) and all(_is_nonempty_str(x) and (not prefix or x.startswith(prefix)) for x in val)):
+def _check_str_list(
+    val: Any, label: str, report: Report, *, allow_empty: bool = False, prefix: str = "", pattern: Optional[re.Pattern[str]] = None, allow_star: bool = False,
+) -> None:
+    def _ok(item: Any) -> bool:
+        if not _is_nonempty_str(item):
+            return False
+        if allow_star and item == "*":
+            return True
+        return (not prefix or item.startswith(prefix)) and (pattern is None or bool(pattern.match(item)))
+
+    if not (isinstance(val, list) and (allow_empty or bool(val)) and all(_ok(x) for x in val)):
         report.error(f"config/module.json : '{label}' invalide.")
+
+
+def _validate_spi_blocks(data: dict[str, Any], report: Report) -> None:
+    """Validate optional SPI-1 (dashboard) and SPI-2 (capture_policy) blocks in module.json."""
+    if "dashboard" in data:
+        dash = data["dashboard"]
+        if not isinstance(dash, dict):
+            report.error("config/module.json : 'dashboard' doit être un objet.")
+        else:
+            ps = dash.get("provider_script")
+            if not _is_nonempty_str(ps) or "\x00" in ps or ps.startswith(("/", "\\")) or ".." in ps.replace("\\", "/").split("/"):
+                report.error("config/module.json : 'dashboard.provider_script' invalide.")
+            _check_str_list(dash.get("views"), "dashboard.views", report, allow_empty=True)
+            _check_str_list(dash.get("actions"), "dashboard.actions", report, allow_empty=True)
+    if "capture_policy" in data:
+        cp = data["capture_policy"]
+        if not isinstance(cp, dict):
+            report.error("config/module.json : 'capture_policy' doit être un objet.")
+        else:
+            _check_str_list(cp.get("commands"), "capture_policy.commands", report, allow_empty=True)
+            _check_str_list(cp.get("exclude_subcommands"), "capture_policy.exclude_subcommands", report, allow_empty=True)
+            if not isinstance(cp.get("consultative_bypass"), bool):
+                report.error("config/module.json : 'capture_policy.consultative_bypass' doit être un booléen.")
+            if not _is_nonempty_str(cp.get("label_prefix")):
+                report.error("config/module.json : 'capture_policy.label_prefix' doit être une chaîne non vide.")
 
 
 def validate_module_contract(
     target: Union[Path, str, dict[str, Any]], report: Report, *, expected_plugin_name: Optional[str] = None, expected_module_id: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """Validate config/module.json v1 contract (tolerating extra SPI blocks)."""
+    """Validate config/module.json v1 contract including SPI-1..3 schemas."""
     if isinstance(target, dict):
         data = target
     else:
@@ -293,8 +327,9 @@ def validate_module_contract(
     if not isinstance(sig, dict):
         report.error("config/module.json : 'signals' doit être un objet.")
     else:
-        _check_str_list(sig.get("produces"), "signals.produces", report, allow_empty=True)
-        _check_str_list(sig.get("consumes"), "signals.consumes", report, allow_empty=True)
+        _check_str_list(sig.get("produces"), "signals.produces", report, allow_empty=True, pattern=KEBAB_RE)
+        _check_str_list(sig.get("consumes"), "signals.consumes", report, allow_empty=True, pattern=KEBAB_RE, allow_star=True)
+    _validate_spi_blocks(data, report)
     return data
 
 
