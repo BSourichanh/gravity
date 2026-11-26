@@ -6,6 +6,10 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 ## [Unreleased]
 
 ### Changed
+- **[TASK-CORE-03a] Scission `init_env.py` (`core/{doctor,overview}.py`), `registry.py` (`SPI-1/2`) & hook `PreInvocation` (`SPEC-CORE-02`) :**
+  - `plugin/scripts/init_env.py` (`323` L, `< 500` L) : point d'entrée CLI conservant 100 % des drapeaux (`--status`, `--check`, `--migration-plan`, `--dashboard`, `--guide`, `--overview`, `--export`, `--import`, `--update`, `--check-updates`, `--set-drive-dir`, `--dry-run`, `--force`, `--modules`, `--link`, `--repos-root`, `--offline`, `--shell`, `--json`), `_shared.hook_runtime.configure_utf8_stdio()`, imports paresseux pré-W12 pour `core.bundle` / `core.updater` et ré-exportations de compatibilité.
+  - `plugin/core/registry.py` (`279` L, `< 400` L) : retrait de `gravity-bridge` de `LEGACY_HOME_SPECS` (3 entrées conservées : `gravity-metrics`, `gravity-workflow`, `gravity`), délégation de `validate_module_contract` à `_shared.validator_core` (`SPI-1..3`), propagation des blocs `dashboard` (`SPI-1`) et `capture_policy` (`SPI-2`) dans `core/modules.json`, résolution via `safe_home_dir()` et écritures atomiques `_shared.atomic_io.write_json_atomic` avec garde-fous `is_symlink_or_junction`.
+  - Mise à jour des suites `tests/test_registry.py`, `tests/test_migration_plan.py` et `tests/test_init_env.py` (`SPI-1`/`SPI-2`, repli sans `gravity-bridge`, `--overview`, sondes version Antigravity, avertissements docteur non bloquants).
 - **[TASK-CORE-02b] Vues UI modulaires (`charts`, `live`, `metrics` < 800 L) (`SPEC-CORE-01`) :**
   - `plugin/mcp/ui/__init__.py` (`19` L) : exportation complète des 6 fragments dans `__all__` (`APP_JS`, `CHARTS_JS`, `LIVE_VIEWS_JS`, `METRICS_VIEWS_JS`, `VIEWS_JS`, `WIDGET_CSS`).
   - `plugin/mcp/ui/charts_js.py` (`161` L) : portage des composants SVG/DOM pure-DOM, formatters français, hiérarchie d'agents et barre chronologique (`0` `innerHTML`, `0` `"gravity-studio"`).
@@ -26,6 +30,10 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
   - Suppression complète du fournisseur SQLite legacy `plugin/dashboard/providers/bridge_provider.py` (`450` L) et ajout de `TestBridgeRetirement` dans `tests/test_dashboard_providers.py` (vérification de l'absence du fichier, du `ModuleNotFoundError` à l'import et du retrait de `get_bridge_state` / `open_sqlite_ro` / paramètres `bridge*` de la façade).
 
 ### Added
+- **[TASK-CORE-03a] Modules `core/doctor.py`, `core/overview.py` & hook `hooks/pre_invocation_gravity.py` (`SPEC-CORE-02`) :**
+  - `plugin/core/doctor.py` (`535` L, `< 550` L) : extraction strictement lecture seule du plan de migration 4 étapes (`build_migration_plan`), des sondes de version Antigravity (`winreg`/`snap`/`dpkg-query`) et du diagnostic santé modules/MCP (`diagnose_mcp_dashboard`, `run_dashboard_diagnostic`) appuyés sur `_shared.path_safety`.
+  - `plugin/core/overview.py` (`244` L, `< 400` L) : extraction strictement lecture seule de `--guide` (`run_guide_mode`, `print_guide_report`) et `--overview` (`build_overview_help` 5 parcours sans `bridge`, `run_overview_mode`, `format_overview_markdown`).
+  - `plugin/hooks/pre_invocation_gravity.py` (`49` L, `< 120` L) & `tests/test_hooks.py` : portage du hook `PreInvocation` 0-token `/gravity` sur `_shared.hook_runtime`.
 - **[TASK-CORE-01b] Provider `Live`, `live_progress`, schémas MCP & `server.py` (`SPEC-CORE-01`) :**
   - `plugin/dashboard/providers/generic_provider.py` (`176` L) : détection `_shared.path_safety.is_symlink_or_junction`, exposition des capacités `spi` dans `get_module_info` et ajout de `get_generic_view` relayant via `spi.invoke_dashboard_provider` avec repli propre.
   - `plugin/dashboard/providers/live_progress.py` (`590` L) & `plugin/dashboard/providers/live_provider.py` (`595` L) : consolidation de l'arbre récursif multi-agents, terminaison propre, détection anti-cycle (Tarjan SCC), lecteur C8 lecture seule (`read_workflow_live_c8_ro`) et agrégation `build_live_progress` (`"0/0"` par défaut) ; portage incrémental appuyé sur `_shared.transcript_reader`, `_shared.path_safety` et `_shared.signal_bus` (`session-metrics`) sans `_BRIDGE_SNIFF_CACHE`, sans `workflow_provider` ni lecture directe `history.jsonl`, et classification `gravity-workshop`.

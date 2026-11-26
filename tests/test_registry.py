@@ -16,6 +16,7 @@ if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
 from core.registry import (  # noqa: E402
+    LEGACY_HOME_SPECS,
     detect_legacy_homes,
     discover_modules,
     resolve_gravity_home,
@@ -106,9 +107,8 @@ class TestRegistry(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     resolve_module_home(bad_id, gravity_home=g_home)
 
-    def test_validate_module_contract(self) -> None:
+    def test_validate_module_contract_and_spi_blocks(self) -> None:
         self.assertEqual(validate_module_contract(_valid_contract()), [])
-
         self.assertTrue(validate_module_contract("not-a-dict"))
 
         bad_sv = _valid_contract()
@@ -126,7 +126,33 @@ class TestRegistry(unittest.TestCase):
         errs = validate_module_contract(bad_fields)
         self.assertGreaterEqual(len(errs), 5)
 
-    def test_discover_modules_sorted_and_resilient(self) -> None:
+        spi_ok = _valid_contract("metrics", "gravity-metrics")
+        spi_ok["dashboard"] = {
+            "provider_script": "scripts/dashboard_provider.py",
+            "views": ["metrics"],
+            "actions": ["record"],
+        }
+        spi_ok["capture_policy"] = {
+            "commands": ["/gravity-architect"],
+            "exclude_subcommands": ["status"],
+            "consultative_bypass": True,
+            "label_prefix": "Architect",
+        }
+        spi_ok["signals"] = {"produces": ["session-metrics"], "consumes": ["*"]}
+        self.assertEqual(validate_module_contract(spi_ok), [])
+
+        spi_bad = _valid_contract("metrics", "gravity-metrics")
+        spi_bad["dashboard"] = {"provider_script": "../escape.py", "views": [123], "actions": "bad"}
+        spi_bad["capture_policy"] = {
+            "commands": [],
+            "exclude_subcommands": [],
+            "consultative_bypass": "yes",
+            "label_prefix": "",
+        }
+        spi_bad["signals"] = {"produces": ["Not_Kebab"], "consumes": ["bad slug"]}
+        self.assertGreaterEqual(len(validate_module_contract(spi_bad)), 6)
+
+    def test_discover_modules_propagates_spi_blocks_and_is_resilient(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             plugins_root = Path(tmp) / "plugins"
             plugins_root.mkdir(parents=True)
@@ -137,14 +163,29 @@ class TestRegistry(unittest.TestCase):
             (third_party / "plugin.json").write_text('{"name": "other"}', encoding="utf-8")
 
             # Valid module 'zeta' and 'alpha' (created out of alphabetical order)
-            for mod_id, pname in (("zeta", "gravity-zeta"), ("alpha", "gravity-alpha")):
+            alpha_contract = _valid_contract("alpha", "gravity-alpha")
+            alpha_contract["dashboard"] = {
+                "provider_script": "scripts/dashboard_provider.py",
+                "views": ["alpha"],
+                "actions": [],
+            }
+            alpha_contract["capture_policy"] = {
+                "commands": ["/gravity-alpha"],
+                "exclude_subcommands": ["status"],
+                "consultative_bypass": True,
+                "label_prefix": "Alpha",
+            }
+            for mod_id, pname, contract in (
+                ("zeta", "gravity-zeta", _valid_contract("zeta", "gravity-zeta")),
+                ("alpha", "gravity-alpha", alpha_contract),
+            ):
                 mod_dir = plugins_root / pname
                 (mod_dir / "config").mkdir(parents=True)
                 (mod_dir / "plugin.json").write_text(
                     json.dumps(_valid_manifest(pname)), encoding="utf-8"
                 )
                 (mod_dir / "config" / "module.json").write_text(
-                    json.dumps(_valid_contract(mod_id, pname)), encoding="utf-8"
+                    json.dumps(contract), encoding="utf-8"
                 )
 
             # Malformed JSON module
@@ -175,20 +216,33 @@ class TestRegistry(unittest.TestCase):
             by_id = {m["id"]: m for m in found}
             self.assertTrue(by_id["alpha"]["valid"])
             self.assertEqual(by_id["alpha"]["errors"], [])
+            self.assertEqual(by_id["alpha"]["dashboard"], alpha_contract["dashboard"])
+            self.assertEqual(by_id["alpha"]["capture_policy"], alpha_contract["capture_policy"])
+            self.assertNotIn("dashboard", by_id["zeta"])
+            self.assertNotIn("capture_policy", by_id["zeta"])
             self.assertTrue(by_id["zeta"]["valid"])
             self.assertFalse(by_id["broken-json"]["valid"])
             self.assertFalse(by_id["binary-mod"]["valid"])
             self.assertFalse(by_id["beta"]["valid"])
             self.assertTrue(any("does not match" in e for e in by_id["beta"]["errors"]))
 
-    def test_detect_legacy_homes_read_only(self) -> None:
+            # Persisted modules.json preserves SPI-1 and SPI-2 blocks
+            g_home = Path(tmp) / "g-home"
+            reg_path = write_modules_registry(g_home, [by_id["alpha"], by_id["zeta"]])
+            persisted = json.loads(reg_path.read_text(encoding="utf-8"))
+            persisted_alpha = persisted["modules"][0]
+            self.assertEqual(persisted_alpha["dashboard"], alpha_contract["dashboard"])
+            self.assertEqual(persisted_alpha["capture_policy"], alpha_contract["capture_policy"])
+
+    def test_detect_legacy_homes_read_only_and_ignores_residual_bridge(self) -> None:
+        self.assertEqual(len(LEGACY_HOME_SPECS), 3)
+        self.assertNotIn("gravity-bridge", {spec[0] for spec in LEGACY_HOME_SPECS})
         with tempfile.TemporaryDirectory() as tmp:
             fake_home = Path(tmp) / "home"
             fake_home.mkdir()
             self.assertEqual(detect_legacy_homes(fake_home), [])
 
             legacy_targets = (
-                fake_home / ".gemini" / "gravity-bridge",
                 fake_home / ".gemini" / "gravity-metrics",
                 fake_home / ".gemini" / "gravity-workflow",
                 fake_home / ".gravity",
@@ -200,12 +254,18 @@ class TestRegistry(unittest.TestCase):
                 sentinel.write_text(f"data-{idx}", encoding="utf-8")
                 sentinels.append(sentinel)
 
+            # Residual retired gravity-bridge directory must be ignored cleanly
+            residual_bridge = fake_home / ".gemini" / "gravity-bridge"
+            residual_bridge.mkdir(parents=True)
+            (residual_bridge / "bridge.db").write_text("residual", encoding="utf-8")
+
             detected = detect_legacy_homes(fake_home)
-            self.assertEqual(len(detected), 4)
+            self.assertEqual(len(detected), 3)
             self.assertEqual(
                 {item["name"] for item in detected},
-                {"gravity-bridge", "gravity-metrics", "gravity-workflow", "gravity"},
+                {"gravity-metrics", "gravity-workflow", "gravity"},
             )
+            self.assertEqual((residual_bridge / "bridge.db").read_text(encoding="utf-8"), "residual")
             # Ensure strictly read-only: sentinels intact
             for idx, sentinel in enumerate(sentinels):
                 self.assertTrue(sentinel.is_file())

@@ -7,15 +7,22 @@ import json
 import os
 from pathlib import Path
 import re
-import tempfile
+import sys
 from typing import Any, Optional, Sequence
+
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+if str(PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT))
+
+from _shared.atomic_io import write_json_atomic  # noqa: E402
+from _shared.path_safety import ensure_safe_dir, is_symlink_or_junction, safe_home_dir  # noqa: E402
+from _shared.validator_core import Report, validate_module_contract as _vc_validate_module_contract  # noqa: E402
 
 MODULE_SCHEMA_VERSION = 1
 GRAVITY_HOME_ENV = "GRAVITY_HOME"
 MODULE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 LEGACY_HOME_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    ("gravity-bridge", "bridge", (".gemini", "gravity-bridge")),
     ("gravity-metrics", "metrics", (".gemini", "gravity-metrics")),
     ("gravity-workflow", "workflow", (".gemini", "gravity-workflow")),
     ("gravity", "workflow", (".gravity",)),
@@ -29,7 +36,7 @@ def resolve_gravity_home(home: Optional[Path] = None) -> Path:
     env_home = os.environ.get(GRAVITY_HOME_ENV, "").strip()
     if env_home:
         return Path(env_home).expanduser().resolve()
-    return (Path.home() / ".gemini" / "gravity").resolve()
+    return (safe_home_dir() / ".gemini" / "gravity").resolve()
 
 
 def resolve_module_home(
@@ -52,68 +59,18 @@ def _is_non_empty_str(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _validate_str_list(value: Any, field_name: str, errors: list[str]) -> None:
-    if not isinstance(value, list):
-        errors.append(f"'{field_name}' must be a list of non-empty strings.")
-        return
-    for idx, item in enumerate(value):
-        if not _is_non_empty_str(item):
-            errors.append(f"'{field_name}[{idx}]' must be a non-empty string.")
-
-
 def validate_module_contract(data: Any) -> list[str]:
-    """Validate a config/module.json payload against module contract v1."""
+    """Validate a config/module.json payload against module contract v1 (including SPI-1..3)."""
     if not isinstance(data, dict):
         return ["module.json must be a JSON object."]
-
-    errors: list[str] = []
-    schema_version = data.get("schema_version")
-    if type(schema_version) is not int or schema_version != MODULE_SCHEMA_VERSION:
-        errors.append(f"'schema_version' must equal {MODULE_SCHEMA_VERSION}.")
-
-    mod_id = data.get("id")
-    if not isinstance(mod_id, str) or not MODULE_ID_RE.match(mod_id):
-        errors.append(f"'id' must be a valid slug matching {MODULE_ID_RE.pattern}.")
-
-    for field in ("plugin_name", "role"):
-        if not _is_non_empty_str(data.get(field)):
-            errors.append(f"'{field}' must be a non-empty string.")
-
-    storage = data.get("storage")
-    if not isinstance(storage, dict):
-        errors.append("'storage' must be a JSON object.")
-    else:
-        subdir = storage.get("subdir")
-        if not isinstance(subdir, str) or not MODULE_ID_RE.match(subdir):
-            errors.append(f"'storage.subdir' must match {MODULE_ID_RE.pattern}.")
-        if not _is_non_empty_str(storage.get("env_override")):
-            errors.append("'storage.env_override' must be a non-empty string.")
-
-    _validate_str_list(data.get("commands"), "commands", errors)
-    _validate_str_list(data.get("capabilities"), "capabilities", errors)
-
-    ui = data.get("ui")
-    if not isinstance(ui, dict):
-        errors.append("'ui' must be a JSON object.")
-    else:
-        if not _is_non_empty_str(ui.get("mode")):
-            errors.append("'ui.mode' must be a non-empty string.")
-        if not _is_non_empty_str(ui.get("target")):
-            errors.append("'ui.target' must be a non-empty string.")
-
-    signals = data.get("signals")
-    if not isinstance(signals, dict):
-        errors.append("'signals' must be a JSON object.")
-    else:
-        _validate_str_list(signals.get("produces"), "signals.produces", errors)
-        _validate_str_list(signals.get("consumes"), "signals.consumes", errors)
-
-    return errors
+    report = Report()
+    _vc_validate_module_contract(data, report)
+    return list(report.errors)
 
 
 def default_plugin_roots() -> list[Path]:
     """Return the default Antigravity plugin search roots."""
-    return [(Path.home() / ".gemini" / "config" / "plugins").resolve()]
+    return [(safe_home_dir() / ".gemini" / "config" / "plugins").resolve()]
 
 
 def _read_json_object(path: Path, label: str) -> tuple[Optional[dict[str, Any]], list[str]]:
@@ -179,7 +136,7 @@ def _inspect_plugin_module(entry: Path) -> dict[str, Any]:
         )
     )
 
-    return {
+    record: dict[str, Any] = {
         "id": mod_id,
         "plugin_name": plugin_name,
         "display_name": manifest_data.get("displayName") if manifest_data else None,
@@ -201,6 +158,41 @@ def _inspect_plugin_module(entry: Path) -> dict[str, Any]:
         "valid": len(errors) == 0,
         "errors": errors,
     }
+    if mod_data is not None:
+        if isinstance(mod_data.get("dashboard"), dict):
+            record["dashboard"] = mod_data["dashboard"]
+        if isinstance(mod_data.get("capture_policy"), dict):
+            record["capture_policy"] = mod_data["capture_policy"]
+    return record
+
+
+def enrich_module_homes(
+    modules: Sequence[dict[str, Any]],
+    gravity_home: Path,
+) -> list[dict[str, Any]]:
+    """Attach resolved_home to each valid module record without writing to disk."""
+    enriched: list[dict[str, Any]] = []
+    for mod in modules:
+        item = dict(mod)
+        storage = mod.get("storage") or {}
+        subdir = storage.get("subdir")
+        env_override = storage.get("env_override")
+        if mod.get("valid") and isinstance(subdir, str) and subdir:
+            try:
+                resolved = resolve_module_home(
+                    subdir,
+                    env_override=env_override if isinstance(env_override, str) else None,
+                    gravity_home=gravity_home,
+                )
+                item["resolved_home"] = str(resolved)
+            except ValueError as exc:
+                item["valid"] = False
+                item["errors"] = [*item.get("errors", []), str(exc)]
+                item["resolved_home"] = None
+        else:
+            item["resolved_home"] = None
+        enriched.append(item)
+    return enriched
 
 
 def discover_modules(plugin_roots: Optional[Sequence[Path]] = None) -> list[dict[str, Any]]:
@@ -243,7 +235,7 @@ def discover_modules(plugin_roots: Optional[Sequence[Path]] = None) -> list[dict
 def detect_legacy_homes(home_dir: Optional[Path] = None) -> list[dict[str, Any]]:
     """Detect legacy Gravity home directories read-only without modifying or deleting anything."""
     base_home = (
-        Path.home().expanduser().resolve()
+        safe_home_dir().expanduser().resolve()
         if home_dir is None
         else Path(home_dir).expanduser().resolve()
     )
@@ -265,10 +257,17 @@ def detect_legacy_homes(home_dir: Optional[Path] = None) -> list[dict[str, Any]]
 
 def write_modules_registry(gravity_home: Path, modules: Sequence[dict[str, Any]]) -> Path:
     """Atomically write <gravity_home>/core/modules.json as UTF-8 without BOM and LF endings."""
-    base = Path(gravity_home).expanduser().resolve()
+    raw_base = Path(gravity_home).expanduser()
+    if is_symlink_or_junction(raw_base):
+        raise ValueError(f"Refusing symlink or junction gravity_home: {raw_base}")
+    base = raw_base.resolve()
     core_dir = base / "core"
-    core_dir.mkdir(parents=True, exist_ok=True)
+    if is_symlink_or_junction(core_dir):
+        raise ValueError(f"Refusing symlink or junction core directory: {core_dir}")
+    ensure_safe_dir(core_dir)
     registry_path = core_dir / "modules.json"
+    if is_symlink_or_junction(registry_path):
+        raise ValueError(f"Refusing symlink or junction registry file: {registry_path}")
 
     payload = {
         "schema_version": MODULE_SCHEMA_VERSION,
@@ -277,27 +276,4 @@ def write_modules_registry(gravity_home: Path, modules: Sequence[dict[str, Any]]
         "module_count": len(modules),
         "modules": list(modules),
     }
-    serialized = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
-
-    tmp_path: Optional[Path] = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            newline="\n",
-            dir=str(core_dir),
-            prefix=".modules-",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            tmp_path = Path(handle.name)
-            handle.write(serialized)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(str(tmp_path), str(registry_path))
-    except Exception:
-        if tmp_path is not None and tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
-        raise
-
-    return registry_path
+    return write_json_atomic(registry_path, payload, indent=2, ensure_ascii=False)
