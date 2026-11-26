@@ -44,11 +44,21 @@ PERSONAL_PATH_RE = re.compile(
 )
 LEGACY_STUDIO_RE = re.compile(r"\bgravity-" + r"studio\b", re.IGNORECASE)
 
-_NEG_RE = re.compile(r"(?:0\s+appel|aucun|jamais|interdit|ne\s+pas|proscrit|refus|exclut|pas\s+d[e']|pas\s+m[ée]lang|hors\b|sauf\b|avant\b)", re.IGNORECASE)
+_NEG_RE = re.compile(
+    r"(?:0\s+(?:appel|calls?)|aucun|jamais|interdit|ne\s+pas|proscrit|refus|exclut|pas\s+d[e']|pas\s+m[ée]lang|hors\b|sauf\b|avant\b"
+    r"|\bnever\b|\bdo\s+not\b|\bdon['’]t\b|\bforbid(?:den|ding)?\b|\bprohibit(?:ed|ing)?\b|\bnot\s+allowed\b|\bmust\s+not\b"
+    r"|\bshould\s+not\b|\bcannot\b|\bcan['’]t\b|\bno\s+(?!human|user|approval|confirmation|guard|check|verification|review|feu|accord|validation))",
+    re.IGNORECASE,
+)
 _BRIDGE_PROACTIVE_RE = re.compile(r"(?:\bappel(?:er|s)?\s+proactif|\bdispatch\w*\s+proacti\w*|\bproactive\s+(?:call|dispatch)|dispatch\s*=\s*true[^.\n]*sans\s+(?:feu\s+vert|accord|validation))", re.IGNORECASE)
 _DEV_ON_MAIN_RE = re.compile(r"\b(?:dev(?:eloppement)?|travailler|commit(?:ter|s)?|push(?:er)?)\s+(?:direct(?:ement)?\s+)?sur\s+[`'\"]?main[`'\"]?", re.IGNORECASE)
-_AUDIT_SEPARATION_NEG_RE = re.compile(r"(?:s[ée]par|isol[ée]|exclusi|hors\b|jamais|ne\s+pas|distinct|pas\s+m[ée]lang|sans\s+m[ée]lang|interdit|\bvs\b)", re.IGNORECASE)
-_AUDIT_MIX_RE = re.compile(r"(?:m[ée]lang|fusionn|combin)\w*[^.\n]*audits/(?:code|agents)", re.IGNORECASE)
+_AUDIT_SEPARATION_NEG_RE = re.compile(
+    r"(?:s[ée]par|separat|isol(?:[ée]|at)|exclusi|\bexclud|distinct|hors\b|jamais|ne\s+pas|pas\s+m[ée]lang|sans\s+m[ée]lang|interdit|\bvs\b"
+    r"|\bnever\b|\bdo\s+not\b|\bdon['’]t\b|\bwithout\s+(?:mix|combin|merg)|\bnot\s+(?:mix|combin|merg|together)"
+    r"|\bno\s+(?:mix|combin|merg)|\bforbid|\bprohibit|\bnot\s+allowed\b|\bavoid\s+(?:mix|combin|merg))",
+    re.IGNORECASE,
+)
+_AUDIT_MIX_RE = re.compile(r"(?:m[ée]lang|fusionn|combin|\bmix)\w*[^.\n]*audits/(?:code|agents)", re.IGNORECASE)
 _TASK_STATUS_RE = re.compile(r"^\s*-\s*\*\*(?:Date\s*/\s*)?(?:Statut|Status)\s*:\*\*.*?\b(draft|ready|in_progress|done|archived|blocked)\b", re.MULTILINE | re.IGNORECASE)
 _TASK_SPEC_SRC_RE = re.compile(r"^\s*-\s*\*\*Spec\s+source\s*:\*\*\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
 _SPEC_ID_RE = re.compile(r"^\s*-\s*\*\*Spec\s+ID\s*:\*\*\s*`?([A-Za-z0-9_-]+)`?", re.MULTILINE | re.IGNORECASE)

@@ -475,6 +475,42 @@ class TestAuditEcosystem(unittest.TestCase):
             empty_bin.mkdir()
             self.assertEqual(_run_auditor(["--repos-root", str(root), "--verify-parallel", "--repos", "gravity", "--json"], env_overrides={"PATH": str(empty_bin)}).returncode, 1)
 
+    def test_cross_repo_en_separation_and_negation_rules_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = _create_compliant_repo(root, "gravity-architect")
+            _write_lf(
+                repo / "plugin" / "skills" / "gravity-architect" / "SKILL.md",
+                (
+                    "---\nname: gravity-architect\ndescription: \"Skill gravity-architect\"\n---\n\n"
+                    "# gravity-architect\n\nUse `/gravity-architect`.\n\n"
+                    "- **`audit`:** write `audits/code/report.md` *(isolated from `audits/agents/`)*. \n"
+                    "- Keep `audits/code/` separate from `audits/agents/`.\n"
+                    "- Never mix `audits/code/` and `audits/agents/`, do not mix them, don't combine them.\n"
+                    "- Read `audits/code/` without mixing `audits/agents/`; mixing them is forbidden and prohibited.\n"
+                    "- Never enable proactive dispatch; proactive call is forbidden; no proactive dispatch by default.\n"
+                ),
+            )
+            p_ok = _run_auditor(["--repos-root", str(root), "--repos", "gravity-architect", "--strict", "--json"])
+            self.assertEqual(p_ok.returncode, 0, msg=p_ok.stdout + p_ok.stderr)
+            self.assertEqual(json.loads(p_ok.stdout)["cross_repo"]["contradictions"], [])
+
+            # Genuine unnegated EN mixing and unguarded proactive dispatch must STILL fail
+            _write_lf(
+                repo / "plugin" / "skills" / "gravity-architect" / "SKILL.md",
+                (
+                    "---\nname: gravity-architect\ndescription: \"Skill gravity-architect\"\n---\n\n"
+                    "# gravity-architect\n\nUse `/gravity-architect`.\n\n"
+                    "- Always write `audits/code/` and `audits/agents/` together.\n"
+                    "- Enable proactive dispatch with no human approval.\n"
+                ),
+            )
+            p_bad = _run_auditor(["--repos-root", str(root), "--repos", "gravity-architect", "--strict", "--json"])
+            self.assertEqual(p_bad.returncode, 1)
+            contradictions = json.loads(p_bad.stdout)["cross_repo"]["contradictions"]
+            self.assertTrue(any("audits/code/" in c and "audits/agents/" in c for c in contradictions), msg=contradictions)
+            self.assertTrue(any("Bridge proactive" in c for c in contradictions), msg=contradictions)
+
 
 if __name__ == "__main__":
     unittest.main()

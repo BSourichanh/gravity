@@ -6,6 +6,9 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 ## [Unreleased]
 
 ### Fixed
+- **[TASK-CORE-05] Détection EN/FR des négations et séparations dans `scripts/audit_checks.py` (`704` L, `< 750` L) :**
+  - Extension de `_AUDIT_SEPARATION_NEG_RE` (`separat`, `isol(?:[ée]|at)`, `exclud`, `never`, `do not`, `don't`, `without mix/combin/merg`, `not mix/combin/merg/together`, `no mix/combin/merg`, `forbid`, `prohibit`, `not allowed`, `avoid mix/combin/merg`), `_NEG_RE` et `_AUDIT_MIX_RE` (`\bmix`) pour éviter le faux positif sur `isolated from audits/agents/` dans `SKILL.md` sans affaiblir la détection des mélanges non niés ni des appels Bridge proactifs sans garde-fou humain.
+  - Ajout de `test_cross_repo_en_separation_and_negation_rules_regression` dans `tests/test_audit_ecosystem.py`.
 - **[FIX T1-F10-04] Isolation stricte `plugin_roots` / `home_dir` / `GRAVITY_PLUGINS_DIR` & test `test_shared_validator.py:396` :**
   - `plugin/core/registry.py` (`292` L, `< 400` L) : ajout de `GRAVITY_PLUGINS_DIR_ENV = "GRAVITY_PLUGINS_DIR"` dans `default_plugin_roots(home_dir=...)` (découpage `os.pathsep`) et propagation de `home_dir` dans `resolve_gravity_home`, `resolve_module_home` et `discover_modules`.
   - `plugin/dashboard/providers/{__init__,core_provider,spi,generic_provider,live_progress,live_provider}.py` (`live_provider.py` `598` L `< 600` L, `live_progress.py` `590` L `< 600` L) : ajout de `normalize_plugin_roots`, propagation de `home_dir` / `plugin_roots` dans `load_modules_snapshot_ro`, `get_overview`, `resolve_dashboard_provider` / `invoke_dashboard_provider` (avec `HOME` / `USERPROFILE` / `GRAVITY_HOME` dans l'environnement sous-processus SPI), `get_module_info` / `get_generic_view`, `read_workflow_live_c8_ro`, `_load_archived_status_ro` et `get_live_session_state` (remplacement de `Path.home()` par `safe_home_dir()` et normalisation `plugins_dir`).
