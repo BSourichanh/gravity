@@ -5,6 +5,19 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Changed
+- **Refonte UI/UX v2 du Dashboard Unifié (`plugin/mcp/ui/styles.py`, `plugin/mcp/ui/charts_js.py`, `plugin/mcp/ui/live_views_js.py`, `plugin/mcp/ui/app_js.py`, `plugin/mcp/ui/views_js.py`, `plugin/mcp/ui/metrics_views_js.py`, `plugin/dashboard/providers/__init__.py`, `tests/`) :**
+  - Navigation à `4` vues liées (`Session`, `Projets`, `Historique`, `Système` discret + modules OCP) avec design system adaptatif `data-layout="compact|wide"` (`aux_pane` vs `global`), topbar 1 ligne et navigation croisée `Projets ↔ Historique ↔ Session`.
+  - Contrôleur `app_js.py` : verrous async indépendants (`inflight[channel]`, `reqSeq[channel]`), patch DOM ciblé sans perte de scroll/sélection, horloge `[data-freshness]` 1 s, tiroir **slide-over** (`#g-slideover`, `Esc`), `ResizeObserver` et `navigateTo()`.
+  - Composant partagé `buildAgentHierarchy` / `renderAgentTree` / `renderTimelineBar` (`charts_js.py`) + **Inspecteur d'agent** déployé dans `Session` (`live_views_js.py`, multi-sessions `sessions[]`, workflow conditionnel sur `wf.is_active`) et dans le **slide-over** `Détail session` d'`Historique` (`metrics_views_js.py`, lecteur `Audits Agents` intégré, hiérarchie à 2 niveaux `Sessions` | `Synthèse & Audits`, filtre par dépôt `workspaces`, cartes enrichies `agents`/`max_depth`/`workspace_share_pct`/`current_phase`).
+  - Vue `Projets` (`views_js.py`) : suppression du code mort (`renderWorkflowView`, `renderArchitectSvgChart`, doublon `fmtPct`), grille `.proj-grid` avec état Git/WIP/compteurs et lien `Voir sessions`, plus sous-onglet `Vagues & Tasks` groupé par `wave` (`waves_summary`).
+
+### Fixed
+- **Providers Dashboard Live, Architect & Metrics (`plugin/dashboard/providers/live_provider.py`, `plugin/dashboard/providers/architect_provider.py`, `plugin/dashboard/providers/metrics_provider.py`, `tests/`) :**
+  - `live_provider.py` : découverte multi-sessions actives/récentes (`<= 25`), normalisation de chemins Windows insensible à la casse (`casefold()`), classification stricte `atelier` vs `code`, résolution du workflow sur le workspace réel de la session (`wf.is_active`) et exposition de `started_at`, `session_started_at`, `session_last_ts` (`MAX_RECENT_EVENTS = 80`).
+  - `architect_provider.py` : lecture de `default_dev_branch`, enrichissement depuis la table `ECOSYSTEM.md` (`release_main`, `dev_status`, `installed_version`, `wip_status`), compteurs `specs`/`tasks`/`audits` par projet (y compris cibles parenthésées) et métadonnées `Vague` / `Dépendances` / `Profil workflow` / `Spec source` (`waves_summary`).
+  - `metrics_provider.py` : exposition de `workspaces` et extension du filtre `project` aux dépôts présents dans `workspace_share_pct`.
+
 ### Added
 - **Exposition `/gravity update` & documentation (W2 — `plugin/scripts/validate.py`, `plugin/skills/gravity/SKILL.md`, `plugin/rules/AGENTS.md`, `docs/command-cheatsheet.md`, `docs/troubleshooting-and-lifecycle.md`, `tests/test_validate.py`) :**
   - `plugin/scripts/validate.py` & `tests/test_validate.py` : ajout de `"update"` aux sous-commandes requises dans `skills/gravity/SKILL.md` et vérification stricte du budget éditorial `plugin/rules/AGENTS.md <= 600` octets.

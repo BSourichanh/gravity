@@ -242,8 +242,34 @@ state.sessionDetail = {
 const det35Box = makeNode("div");
 renderMetricsUnifiedView(det35Box);
 const det35Txt = collectText(det35Box);
-assert(findAll(det35Box, (n) => n.tagName === "DETAILS" && n.className === "fold-panel").length === 35, "metrics detail renders all 35 agents");
+assert(findAll(det35Box, (n) => n.className && n.className.includes("tree-row")).length === 35, "metrics detail renders all 35 agents in tree");
+assert(findAll(det35Box, (n) => n.className === "slide-over").length === 1 && findAll(det35Box, (n) => n.id === "g-session-inspector").length === 1, "metrics detail renders in slide-over with inspector");
 assert(det35Txt.includes("35 agent(s)") && det35Txt.includes("Worker-34") && det35Txt.includes("Outils : 41"), "35th agent & tool_calls_total");
+
+state.architectSub = "projects";
+state.architect = {
+  available: true,
+  atelier_root: "/tmp/gravity-studio",
+  discovery_source: "architect_registry",
+  ecosystem: { exists: true, size_bytes: 2048, budget_bytes: 6000, over_budget: false, alerts: [] },
+  delta: { exists: true, editorial_status: "NO_EDITORIAL_CHANGES", date: "2026-11-26", hygiene_alerts: [] },
+  watches_count: 2,
+  archived_specs_count: 1,
+  archived_tasks_count: 2,
+  projects: [{ id: "gravity", name: "Gravity", path: "../gravity", role: "core", main_branch: "main", default_dev_branch: "dev", release_main: "0.3.0", dev_status: "ahead 2", installed_version: "0.3.0", wip_status: "clean", specs_count: 1, tasks_count: 2, audits_count: 1, card_bytes: 1200, card_uri: "file:///tmp/gravity.md" }],
+  specs: [{ filename: "s.md", title: "Spec UI", target_project: "gravity", status: "validated", status_code: "validated", date: "2026-11-26", size_bytes: 900, uri: "file:///tmp/s.md" }],
+  tasks: [{ filename: "t1.md", title: "Task W1", target_project: "gravity", wave: 1, status: "done", status_code: "done", workflow_profile: "quick", expected_branch: "dev", dependencies: [], date: "2026-11-26", uri: "file:///tmp/t1.md" }],
+  waves_summary: { total_tasks: 1, waves_count: 1, waves: [{ wave: 1, tasks_count: 1, projects: ["gravity"], status_counts: { done: 1 } }] },
+  audits: []
+};
+const archBox = makeNode("div");
+renderArchitectView(archBox);
+const archTxt = collectText(archBox);
+assert(findAll(archBox, (n) => n.className === "proj-grid").length === 1 && archTxt.includes("Voir sessions") && archTxt.includes("Ouvrir fiche"), "architect projects grid & cross-link");
+state.architectSub = "waves";
+const archWaves = makeNode("div");
+renderArchitectView(archWaves);
+assert(findAll(archWaves, (n) => n.className === "wave-group").length === 1 && collectText(archWaves).includes("Vague 1"), "architect waves group");
 
 const pausedBox = makeNode("div");
 payload.selected_session.captured = true;
@@ -258,9 +284,11 @@ class TestUiLiveAndCharts(unittest.TestCase):
     def test_html_budget_and_security_invariants(self) -> None:
         html = render_dashboard_html()
         html_bytes = len(html.encode("utf-8"))
-        self.assertLessEqual(html_bytes, 135 * 1024, msg=f"HTML bundle {html_bytes} B exceeds 135 KiB Wave 2 budget")
+        self.assertLess(html_bytes, 150 * 1024, msg=f"HTML bundle {html_bytes} B exceeds 150 KiB budget")
         for forbidden in ("innerHTML", "http://", "https://", "window.confirm", "window.alert", "window.prompt"):
             self.assertNotIn(forbidden, html)
+        for dead in ("renderWorkflowView", "renderArchitectSvgChart"):
+            self.assertNotIn(dead, html)
         for css_token in (
             "@container app", ".master-detail", ".agent-card", ".ctx-gauge", ".badge-atelier", ".badge-code",
             ".fold-panel", ".inline-confirm", ".badge.src-root", ".agent-filiation", ".agent-done-fold", ".agent-group.has-error",

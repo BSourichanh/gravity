@@ -1,4 +1,4 @@
-"""Pure DOM renderer for the Gravity unified 'Métriques' views (100% stdlib, zero innerHTML)."""
+"""Pure DOM renderer for the Gravity unified 'Historique' views & slide-over (100% stdlib, zero innerHTML)."""
 
 from __future__ import annotations
 
@@ -40,6 +40,32 @@ METRICS_VIEWS_JS = r"""
     const kv = el("div", "kv-grid");
     pairs.forEach(([k, v]) => { kv.appendChild(el("div", "kv-k", k)); kv.appendChild(el("div", "mono", v)); });
     return kv;
+  }
+
+  function _hasSlideOverHost() {
+    return typeof renderSlideOver === "function" && typeof document.getElementById === "function" && Boolean(document.getElementById("g-slideover"));
+  }
+
+  function _refreshSessionSlideOver() {
+    if (_hasSlideOverHost() && state.slideOver) {
+      const prev = document.querySelector ? document.querySelector(".slide-over") : null;
+      const top = prev ? prev.scrollTop : 0;
+      renderSlideOver();
+      const next = document.querySelector ? document.querySelector(".slide-over") : null;
+      if (next && top > 0) next.scrollTop = top;
+    } else if (typeof renderMetricsBodyOrFull === "function") {
+      renderMetricsBodyOrFull();
+    }
+  }
+
+  function _clearMetricsSlideState() {
+    state.sessionTarget = "";
+    state.sessionDetail = null;
+    state.sessionEditOpen = false;
+    state.sessionDeleteConfirm = false;
+    state.pendingDeleteTarget = "";
+    state.auditTarget = "";
+    state.auditData = null;
   }
 
   function _aggregateModels(records) {
@@ -225,10 +251,7 @@ METRICS_VIEWS_JS = r"""
     });
     panel.appendChild(pickRow);
 
-    const wrap = el("div", "table-wrap");
-    const tbl = el("table");
-    const thead = el("thead");
-    const htr = el("tr");
+    const wrap = el("div", "table-wrap"), tbl = el("table"), thead = el("thead"), htr = el("tr");
     ["Indicateur", "A", "B", "Delta (B - A)"].forEach((h, i) => htr.appendChild(el("th", i > 0 ? "num" : null, h)));
     thead.appendChild(htr);
     tbl.appendChild(thead);
@@ -257,25 +280,94 @@ METRICS_VIEWS_JS = r"""
     return panel;
   }
 
-  function _renderSessionDetailDrawer(met) {
-    const drawer = el("aside", "drawer");
+  function _renderSessionInspector(agents, ag, idMap) {
+    const pane = el("aside", "inspector-pane", null, { id: "g-session-inspector" });
+    if (!ag) {
+      const head = el("div", "panel-head");
+      head.appendChild(el("div", "panel-title", "Synthèse agents (" + agents.length + ")"));
+      pane.appendChild(head);
+      const wsMap = new Map();
+      agents.forEach((a) => {
+        if (!a) return;
+        const ws = String(a.workspace || "workspace");
+        const kind = String(a.workspace_kind || (ws.toLowerCase().endsWith("-studio") ? "atelier" : "code")).toLowerCase();
+        const k = ws + "::" + kind;
+        const cur = wsMap.get(k) || { workspace: ws, kind, useful_tokens: 0, agents_count: 0 };
+        cur.useful_tokens += (Number(a.input_tokens || 0) + Number(a.output_tokens || 0)) || Number(a.useful_tokens || 0);
+        cur.agents_count += 1;
+        wsMap.set(k, cur);
+      });
+      pane.appendChild(renderWorkspaceBreakdown(Array.from(wsMap.values()).sort((a, b) => b.useful_tokens - a.useful_tokens)));
+      return pane;
+    }
+
+    const errSteps = Number(ag.error_steps != null ? ag.error_steps : (ag.error_count || 0)) || 0;
+    const anomalies = Number(ag.total_anomalies != null ? ag.total_anomalies : errSteps) || 0;
+    const agStatus = (String(ag.status || "").toLowerCase() === "error" || (ag.clean_termination === false && errSteps > 0) || ag.transcript_missing)
+      ? "error" : (ag.clean_termination === false ? "interrupted" : "done");
+
+    const head = el("div", "panel-head"), tw = el("div", "actions-row");
+    tw.appendChild(el("div", "panel-title", String(ag.role || ag.name || ag.id || "Agent")));
+    tw.appendChild(renderStatusBadge(agStatus));
+    const srcB = renderSourceBadge(ag.source || (Number(ag.depth) === 0 ? "root" : ""));
+    if (srcB) tw.appendChild(srcB);
+    tw.appendChild(renderWorkspaceKindBadge(ag.workspace_kind || (String(ag.workspace || "").toLowerCase().endsWith("-studio") ? "atelier" : "code")));
+    head.appendChild(tw);
+    const gBtn = el("button", "btn btn-sm", "Vue globale", { type: "button", "data-action": "clear-session-agent" });
+    gBtn.addEventListener("click", () => { state.sessionAgentId = "__all__"; _refreshSessionSlideOver(); });
+    head.appendChild(gBtn);
+    pane.appendChild(head);
+
+    const fil = renderFiliationLabel(ag, idMap);
+    if (fil) pane.appendChild(fil);
+    pane.appendChild(renderContextGauge(ag.max_context_tokens || 0, ag.max_context_tokens || 0, { label: "Pic contexte" }));
+
+    const agModel = resolveAgentModel(ag) || "inconnu";
+    const agUseful = (Number(ag.input_tokens || 0) + Number(ag.output_tokens || 0)) || Number(ag.useful_tokens || 0);
+    const dur = ag.active_s != null ? ag.active_s : (ag.lifespan_s != null ? ag.lifespan_s : ag.duration_s);
+    const agCostObj = typeof ag.cost_usd === "object" && ag.cost_usd ? ag.cost_usd : null;
+    const agCost = agCostObj ? (agCostObj.total_usd != null ? agCostObj.total_usd : agCostObj.total) : ag.cost_usd;
+
+    const rows = [
+      ["Modèle", agModel],
+      ["Dépôt", String(ag.workspace || "—")],
+      ["Catégorie", ag.category ? (ROLE_LABELS_FR[String(ag.category).toLowerCase()] || String(ag.category)) : "—"],
+      ["LLM / Outils", fmtInt(ag.llm_calls || 0) + " LLM · Outils : " + fmtInt(resolveAgentToolCalls(ag))],
+      ["Tokens utiles / Cache", fmtTokens(agUseful) + " · Cache : " + fmtTokens(ag.cache_read_tokens || 0)],
+      ["Durée", fmtDuration(dur)]
+    ];
+    if (anomalies > 0 || errSteps > 0) rows.push(["Anomalies / Erreurs", "Anomalies : " + fmtInt(anomalies) + " (" + fmtInt(errSteps) + " err)"]);
+    if (agCost != null && Number(agCost) > 0) rows.push(["Repère $", fmtUsd(agCost)]);
+    if (ag.conversation_id) rows.push(["ID", String(ag.conversation_id)]);
+    pane.appendChild(_kvList(rows));
+    return pane;
+  }
+
+  function _populateSessionSlideOver(drawer, met, includeHeader) {
+    if (state._lastDetailTarget !== state.sessionTarget) {
+      state._lastDetailTarget = state.sessionTarget;
+      state.sessionAgentId = "";
+      state.sessionCollapsed = {};
+    }
     const sd = state.sessionDetail;
     const det = (sd && sd.detail) || {};
     const rec = (sd && sd.record) || (met.records || []).find((r) => _recKey(r) === state.sessionTarget) || {};
     const cid = String((sd && sd.conversation_id) || rec.conversation_id || "");
     const slug = String((sd && sd.slug) || rec.detail_slug || state.sessionTarget || "");
 
-    const dHead = el("div", "panel-head");
-    dHead.appendChild(el("div", "panel-title", String((sd && sd.label) || rec.label || "Détail session")));
-    const dBtns = el("div", "actions-row");
-    if (sd && sd.report_md_uri) dBtns.appendChild(_actBtn("Ouvrir .md", "open-file", { "data-uri": sd.report_md_uri }));
-    dBtns.appendChild(_actBtn("Fermer", "close-session-detail"));
-    dHead.appendChild(dBtns);
-    drawer.appendChild(dHead);
+    if (includeHeader) {
+      const dHead = el("div", "panel-head");
+      dHead.appendChild(el("div", "panel-title", String((sd && sd.label) || rec.label || "Détail session")));
+      const dBtns = el("div", "actions-row");
+      if (sd && sd.report_md_uri) dBtns.appendChild(_actBtn("Ouvrir .md", "open-file", { "data-uri": sd.report_md_uri }));
+      dBtns.appendChild(_actBtn("Fermer", "close-session-detail"));
+      dHead.appendChild(dBtns);
+      drawer.appendChild(dHead);
+    }
 
     if (state.sessionDetailLoading) {
       drawer.appendChild(el("div", "empty", "Chargement du détail technique..."));
-      return drawer;
+      return;
     }
 
     const actRow = el("div", "actions-row");
@@ -287,6 +379,7 @@ METRICS_VIEWS_JS = r"""
     actRow.appendChild(_actBtn("Éditer", "toggle-session-edit", {}, state.sessionEditOpen ? "active" : ""));
     actRow.appendChild(_actBtn("Ignorer", "metrics-cli-action", { "data-cli-action": "ignore", "data-cid": cid, "data-target": cid }));
     actRow.appendChild(_actBtn("Supprimer", "ask-remove-session", { "data-target": slug || cid }, "btn-danger"));
+    if (!includeHeader && sd && sd.report_md_uri) actRow.appendChild(_actBtn("Ouvrir .md", "open-file", { "data-uri": sd.report_md_uri }));
     drawer.appendChild(actRow);
 
     if (state.sessionDeleteConfirm && state.pendingDeleteTarget === (slug || cid)) {
@@ -342,54 +435,27 @@ METRICS_VIEWS_JS = r"""
           if (a.conversation_id && lbl) idMap[String(a.conversation_id)] = lbl;
           if (a.id && lbl) idMap[String(a.id)] = lbl;
         });
-        agents.forEach((ag) => {
-          const fold = el("details", "fold-panel");
-          const sum = el("summary", "fold-summary");
-          const left = el("div", "actions-row");
-          left.appendChild(el("span", null, String(ag.role || ag.name || "Agent")));
-          left.appendChild(renderWorkspaceKindBadge(ag.workspace_kind || (String(ag.workspace || "").toLowerCase().endsWith("-studio") ? "atelier" : "code")));
-          const srcBadge = renderSourceBadge(ag.source || (Number(ag.depth) === 0 ? "root" : ""));
-          if (srcBadge) left.appendChild(srcBadge);
-          sum.appendChild(left);
-
-          const errSteps = Number(ag.error_steps != null ? ag.error_steps : (ag.error_count || 0)) || 0;
-          const anomalies = Number(ag.total_anomalies != null ? ag.total_anomalies : errSteps) || 0;
-          const agStatus = (String(ag.status || "").toLowerCase() === "error" || (ag.clean_termination === false && errSteps > 0) || ag.transcript_missing)
-            ? "error"
-            : (ag.clean_termination === false ? "interrupted" : "done");
-          sum.appendChild(renderStatusBadge(agStatus));
-          fold.appendChild(sum);
-
-          const body = el("div", "fold-body");
-          const fil = renderFiliationLabel(ag, idMap);
-          if (fil) body.appendChild(fil);
-          const pills = el("div", "pill-list");
-          const agModel = resolveAgentModel(ag);
-          if (agModel) pills.appendChild(el("span", "pill", agModel));
-          if (ag.workspace) pills.appendChild(el("span", "pill", String(ag.workspace)));
-          if (ag.category) pills.appendChild(el("span", "pill", ROLE_LABELS_FR[String(ag.category).toLowerCase()] || String(ag.category)));
-          if (anomalies > 0 || errSteps > 0) {
-            pills.appendChild(makeBadge(
-              (errSteps > 0 ? fmtInt(errSteps) + " err" : fmtInt(anomalies) + " anom.") + (anomalies > errSteps && errSteps > 0 ? " · " + fmtInt(anomalies) + " anom." : ""),
-              errSteps > 0 ? "error" : "warn"
-            ));
+        let selAgent = null, selKey = "";
+        if (state.sessionAgentId !== "__all__") {
+          const tid = String(state.sessionAgentId || "");
+          selAgent = agents.find((a) => a && (String(a.id || "") === tid || String(a.conversation_id || "") === tid)) || agents[0];
+          if (selAgent) selKey = String(selAgent.id || selAgent.conversation_id || "");
+        }
+        drawer.appendChild(renderAgentTree(agents, {
+          selectedId: selKey,
+          collapsedIds: state.sessionCollapsed || {},
+          sessionStartedAt: det.started_at || summary.started_at || rec.started_at || "",
+          sessionLastTs: det.ended_at || summary.ended_at || rec.ended_at || "",
+          selectAction: "select-session-agent",
+          toggleAction: "toggle-session-tree",
+          onSelect: (_ag, key) => { state.sessionAgentId = key; _refreshSessionSlideOver(); },
+          onToggle: (key) => {
+            state.sessionCollapsed = state.sessionCollapsed || {};
+            state.sessionCollapsed[key] = !state.sessionCollapsed[key];
+            _refreshSessionSlideOver();
           }
-          body.appendChild(pills);
-
-          const agUseful = (Number(ag.input_tokens || 0) + Number(ag.output_tokens || 0)) || Number(ag.useful_tokens || 0);
-          body.appendChild(renderContextGauge(ag.max_context_tokens || 0, ag.max_context_tokens || 0, { label: "Pic contexte" }));
-          body.appendChild(el("div", "mono", "Utiles : " + fmtTokens(agUseful) + " · Cache : " + fmtTokens(ag.cache_read_tokens || 0) + " · Appels : " + fmtInt(ag.llm_calls || 0) + " · Outils : " + fmtInt(resolveAgentToolCalls(ag))));
-          const dur = ag.active_s != null ? ag.active_s : (ag.lifespan_s != null ? ag.lifespan_s : ag.duration_s);
-          const agCostObj = typeof ag.cost_usd === "object" && ag.cost_usd ? ag.cost_usd : null;
-          const agCost = agCostObj ? (agCostObj.total_usd != null ? agCostObj.total_usd : agCostObj.total) : ag.cost_usd;
-          const metaParts = ["Durée : " + fmtDuration(dur)];
-          if (anomalies > 0 || errSteps > 0) metaParts.push("Anomalies : " + fmtInt(anomalies));
-          if (agCost != null && Number(agCost) > 0) metaParts.push("Repère $ : " + fmtUsd(agCost));
-          body.appendChild(el("div", "kpi-sub mono", metaParts.join(" · ")));
-          if (ag.conversation_id) body.appendChild(el("div", "mono", "ID : " + String(ag.conversation_id)));
-          fold.appendChild(body);
-          drawer.appendChild(fold);
-        });
+        }));
+        drawer.appendChild(_renderSessionInspector(agents, selAgent, idMap));
       }
       const byTool = (det.tool_usage && det.tool_usage.by_tool) || {};
       const toolRows = Object.entries(byTool).map(([n, c]) => ({
@@ -435,7 +501,76 @@ METRICS_VIEWS_JS = r"""
       const savVal = costObj.cache_savings_usd != null ? costObj.cache_savings_usd : (rec.cache_savings_usd || 0);
       drawer.appendChild(el("div", "kpi-sub mono", "Repère secondaire ($) : " + fmtUsd(costVal) + " · économie cache " + fmtUsd(savVal)));
     }
-    return drawer;
+  }
+
+  function _populateAuditSlideOver(reader, includeHeader) {
+    const ad = state.auditData;
+    if (includeHeader) {
+      const rHead = el("div", "panel-head");
+      rHead.appendChild(el("div", "panel-title", (ad && ad.title) ? ad.title : "Lecture de l'audit"));
+      const rBtns = el("div", "actions-row");
+      if (ad && ad.uri) rBtns.appendChild(_actBtn("Ouvrir .md", "open-file", { "data-uri": ad.uri }));
+      rBtns.appendChild(_actBtn("Fermer", "close-audit-reader"));
+      rHead.appendChild(rBtns);
+      reader.appendChild(rHead);
+    } else if (ad && ad.uri) {
+      const bar = el("div", "actions-row");
+      bar.appendChild(_actBtn("Ouvrir .md", "open-file", { "data-uri": ad.uri }));
+      reader.appendChild(bar);
+    }
+    if (state.auditLoading) {
+      reader.appendChild(el("div", "empty", "Chargement du contenu de l'audit..."));
+    } else if (!ad || !ad.found) {
+      reader.appendChild(el("div", "notice warn", (ad && ad.error) || "Audit introuvable."));
+    } else {
+      const meta = el("div", "actions-row");
+      if (ad.verdict) meta.appendChild(makeBadge(ad.verdict, ad.verdict_tone || ""));
+      if (ad.workspace) meta.appendChild(el("span", "pill", ad.workspace));
+      if (ad.date) meta.appendChild(el("span", "mono", ad.date));
+      reader.appendChild(meta);
+      const pre = el("pre", "mono", String(ad.content || ""));
+      pre.style.whiteSpace = "pre-wrap";
+      pre.style.overflowWrap = "anywhere";
+      pre.style.margin = "0";
+      pre.style.padding = "8px";
+      pre.style.background = "var(--g-muted)";
+      pre.style.borderRadius = "8px";
+      reader.appendChild(pre);
+    }
+  }
+
+  function _syncMetricsSlideOver(container, met) {
+    const hasHost = _hasSlideOverHost();
+    if (state.auditTarget || state.auditLoading) {
+      const ad = state.auditData;
+      if (hasHost) {
+        state.slideOver = { title: (ad && ad.title) ? ad.title : "Lecture de l'audit", render: (p) => _populateAuditSlideOver(p, false) };
+        renderSlideOver();
+      } else {
+        const box = el("aside", "slide-over");
+        _populateAuditSlideOver(box, true);
+        container.appendChild(box);
+      }
+      return;
+    }
+    if (state.sessionTarget) {
+      const sd = state.sessionDetail;
+      const rec = (sd && sd.record) || (met.records || []).find((r) => _recKey(r) === state.sessionTarget) || {};
+      const title = String((sd && sd.label) || rec.label || "Détail session");
+      if (hasHost) {
+        state.slideOver = { title, render: (p) => _populateSessionSlideOver(p, met, false) };
+        renderSlideOver();
+      } else {
+        const box = el("aside", "slide-over");
+        _populateSessionSlideOver(box, met, true);
+        container.appendChild(box);
+      }
+      return;
+    }
+    if (hasHost && state.slideOver) {
+      state.slideOver = null;
+      renderSlideOver();
+    }
   }
 
   function _renderSessionCard(r) {
@@ -453,16 +588,27 @@ METRICS_VIEWS_JS = r"""
     else head.appendChild(makeBadge(r.status === "active" ? "Active" : "Enregistrée", r.status === "active" ? "ok" : ""));
     card.appendChild(head);
 
+    if (r.current_phase) card.appendChild(el("div", "preview-text", "Phase : " + String(r.current_phase)));
+
     const pills = el("div", "pill-list");
     if (r.primary_model) pills.appendChild(el("span", "pill", String(r.primary_model)));
     if (r.execution_mode) pills.appendChild(el("span", "pill", String(r.execution_mode)));
+    if (r.agents != null) pills.appendChild(el("span", "pill", fmtInt(r.agents) + " ag."));
+    if (r.max_depth != null && Number(r.max_depth) > 0) pills.appendChild(el("span", "pill", "prof. N" + r.max_depth));
     if ((Number(r.error_steps) || 0) > 0) pills.appendChild(makeBadge(r.error_steps + " err", "error"));
+    const shares = r.workspace_share_pct && typeof r.workspace_share_pct === "object" ? Object.entries(r.workspace_share_pct) : [];
+    const kinds = r.workspace_kinds && typeof r.workspace_kinds === "object" ? r.workspace_kinds : {};
+    shares.sort((a, b) => (Number(b[1]) || 0) - (Number(a[1]) || 0)).slice(0, 3).forEach(([wsName, pct]) => {
+      const k = String(kinds[wsName] || (String(wsName).toLowerCase().endsWith("-studio") ? "atelier" : "code")).toLowerCase();
+      pills.appendChild(makeBadge(wsName + " " + Math.round(Number(pct) || 0) + "%", k === "atelier" ? "atelier" : "code"));
+    });
     card.appendChild(pills);
 
     const stats = el("div", "agent-stats");
     stats.appendChild(el("span", "num", "Utiles : " + fmtTokens(_recUseful(r))));
     stats.appendChild(el("span", "num", "Cache : " + fmtPct(r.cache_hit_rate_pct || 0)));
     stats.appendChild(el("span", "num", "Ctx max : " + fmtTokens(maxCtx)));
+    if (Number(r.wall_clock_s || 0) > 0) stats.appendChild(el("span", "num", "Durée : " + fmtDuration(r.wall_clock_s)));
     if (Number(r.latency_p95_ms || 0) > 0) stats.appendChild(el("span", "num", "p95 : " + fmtLatency(r.latency_p95_ms)));
     card.appendChild(stats);
 
@@ -499,18 +645,28 @@ METRICS_VIEWS_JS = r"""
     return card;
   }
 
+  function _renderPendingBanner(pending, fromSynthesis) {
+    const banner = el("div", "notice warn");
+    const bRow = el("div", "panel-head");
+    bRow.appendChild(el("span", null, pending.length + " session(s) détectée(s) à enregistrer."));
+    if (fromSynthesis) {
+      const btn = _actBtn("Voir À enregistrer (" + pending.length + ")", "metrics-sub", { "data-sub": "sessions" });
+      btn.addEventListener("click", () => { state.metricsFilter = "pending"; });
+      bRow.appendChild(btn);
+    } else {
+      bRow.appendChild(_actBtn("Voir À enregistrer (" + pending.length + ")", "metrics-filter", { "data-filter": "pending" }));
+    }
+    banner.appendChild(bRow);
+    return banner;
+  }
+
   function _renderMetricsSessions(container, met) {
     const recs = met.records || [];
     const pending = met.pending_sessions || [];
     const ignored = met.ignored_sessions || [];
 
     if (pending.length > 0 && state.metricsFilter !== "pending") {
-      const banner = el("div", "notice warn");
-      const bRow = el("div", "panel-head");
-      bRow.appendChild(el("span", null, pending.length + " session(s) détectée(s) à enregistrer."));
-      bRow.appendChild(_actBtn("Voir À enregistrer (" + pending.length + ")", "metrics-filter", { "data-filter": "pending" }));
-      banner.appendChild(bRow);
-      container.appendChild(banner);
+      container.appendChild(_renderPendingBanner(pending, false));
     }
 
     const ctrlPanel = el("section", "panel");
@@ -548,18 +704,16 @@ METRICS_VIEWS_JS = r"""
       container.appendChild(el("div", "empty", "Aucune session dans cette vue."));
       return;
     }
-    if (state.sessionTarget) {
-      const layout = el("div", "master-detail");
-      layout.appendChild(listWrap);
-      layout.appendChild(_renderSessionDetailDrawer(met));
-      container.appendChild(layout);
-    } else {
-      container.appendChild(listWrap);
-    }
+    container.appendChild(listWrap);
   }
 
   function _renderMetricsAudits(container, met) {
+    const audPanel = el("section", "panel");
+    const aHead = el("div", "panel-head");
     const audits = met.audits || [];
+    aHead.appendChild(el("div", "panel-title", "Audits Agents (" + audits.length + ")"));
+    audPanel.appendChild(aHead);
+
     if (met.index_audit) {
       const idxCard = el("div", "notice");
       const row = el("div", "panel-head");
@@ -569,43 +723,12 @@ METRICS_VIEWS_JS = r"""
       if (met.index_audit.uri) btns.appendChild(_actBtn("Ouvrir .md", "open-file", { "data-uri": met.index_audit.uri }));
       row.appendChild(btns);
       idxCard.appendChild(row);
-      container.appendChild(idxCard);
-    }
-
-    if (state.auditTarget || state.auditLoading) {
-      const reader = el("section", "panel");
-      const rHead = el("div", "panel-head");
-      const ad = state.auditData;
-      rHead.appendChild(el("div", "panel-title", (ad && ad.title) ? ad.title : "Lecture de l'audit"));
-      const rBtns = el("div", "actions-row");
-      if (ad && ad.uri) rBtns.appendChild(_actBtn("Ouvrir .md", "open-file", { "data-uri": ad.uri }));
-      rBtns.appendChild(_actBtn("Fermer", "close-audit-reader"));
-      rHead.appendChild(rBtns);
-      reader.appendChild(rHead);
-      if (state.auditLoading) {
-        reader.appendChild(el("div", "empty", "Chargement du contenu de l'audit..."));
-      } else if (!ad || !ad.found) {
-        reader.appendChild(el("div", "notice warn", (ad && ad.error) || "Audit introuvable."));
-      } else {
-        const meta = el("div", "actions-row");
-        if (ad.verdict) meta.appendChild(makeBadge(ad.verdict, ad.verdict_tone || ""));
-        if (ad.workspace) meta.appendChild(el("span", "pill", ad.workspace));
-        if (ad.date) meta.appendChild(el("span", "mono", ad.date));
-        reader.appendChild(meta);
-        const pre = el("pre", "mono", String(ad.content || ""));
-        pre.style.whiteSpace = "pre-wrap";
-        pre.style.overflowWrap = "anywhere";
-        pre.style.margin = "0";
-        pre.style.padding = "8px";
-        pre.style.background = "var(--g-muted)";
-        pre.style.borderRadius = "8px";
-        reader.appendChild(pre);
-      }
-      container.appendChild(reader);
+      audPanel.appendChild(idxCard);
     }
 
     if (!audits.length) {
-      container.appendChild(el("div", "empty", "Aucun audit agent Markdown découvert dans audits/agents/."));
+      audPanel.appendChild(el("div", "empty", "Aucun audit agent Markdown découvert dans audits/agents/."));
+      container.appendChild(audPanel);
       return;
     }
     const grid = el("div", "grid-cards");
@@ -627,13 +750,14 @@ METRICS_VIEWS_JS = r"""
       card.appendChild(acts);
       grid.appendChild(card);
     });
-    container.appendChild(grid);
+    audPanel.appendChild(grid);
+    container.appendChild(audPanel);
   }
 
   function renderMetricsContent(container) {
     const met = state.metrics;
     if (!met) {
-      container.appendChild(el("div", "empty", "Chargement des métriques..."));
+      container.appendChild(el("div", "empty", "Chargement de l'historique..."));
       return;
     }
     const subPanel = el("section", "panel");
@@ -642,12 +766,12 @@ METRICS_VIEWS_JS = r"""
     const recs = met.records || [];
     const pend = met.pending_sessions || [];
     const auds = met.audits || [];
+    const isSessions = state.metricsSub === "sessions";
     [
-      ["overview", "Vue d'ensemble technique"],
-      ["sessions", "Sessions (" + recs.length + (pend.length ? " + " + pend.length + " à enr." : "") + ")"],
-      ["audits", "Audits Agents (" + auds.length + ")"]
-    ].forEach(([id, lbl]) => {
-      subTabs.appendChild(el("button", "btn" + (state.metricsSub === id ? " active" : ""), lbl, {
+      ["sessions", "Sessions (" + recs.length + (pend.length ? " + " + pend.length + " à enr." : "") + ")", isSessions],
+      ["overview", "Synthèse & Audits" + (auds.length ? " (" + auds.length + ")" : ""), !isSessions]
+    ].forEach(([id, lbl, active]) => {
+      subTabs.appendChild(el("button", "btn" + (active ? " active" : ""), lbl, {
         type: "button", "data-action": "metrics-sub", "data-sub": id
       }));
     });
@@ -655,24 +779,40 @@ METRICS_VIEWS_JS = r"""
     if (met.metrics_md_uri) sHead.appendChild(_actBtn("Ouvrir METRICS.md", "open-file", { "data-uri": met.metrics_md_uri }));
     subPanel.appendChild(sHead);
 
-    if (state.metricsSub === "sessions") _renderMetricsSessions(subPanel, met);
-    else if (state.metricsSub === "audits") _renderMetricsAudits(subPanel, met);
-    else _renderMetricsOverview(subPanel, met);
+    if (isSessions) {
+      _renderMetricsSessions(subPanel, met);
+    } else {
+      if (pend.length > 0) subPanel.appendChild(_renderPendingBanner(pend, true));
+      if (state.metricsSub === "audits") {
+        _renderMetricsAudits(subPanel, met);
+        _renderMetricsOverview(subPanel, met);
+      } else {
+        _renderMetricsOverview(subPanel, met);
+        _renderMetricsAudits(subPanel, met);
+      }
+    }
     container.appendChild(subPanel);
+    _syncMetricsSlideOver(container, met);
   }
 
   function renderMetricsUnifiedView(container) {
     const met = state.metrics;
     const bar = el("section", "panel");
     const head = el("div", "panel-head");
-    head.appendChild(el("div", "panel-title", "Métriques techniques & Audits Agents"));
+    head.appendChild(el("div", "panel-title", "Historique — Sessions & Audits Agents"));
 
     const ctrls = el("div", "actions-row");
-    const projSel = el("select", "select", null, { id: "g-metrics-project", "aria-label": "Filtrer par projet" });
-    projSel.appendChild(el("option", null, "Tous les projets", { value: "" }));
-    ((met && met.projects) || []).forEach((p) => {
+    const projSel = el("select", "select", null, { id: "g-metrics-project", "aria-label": "Filtrer par dépôt" });
+    projSel.appendChild(el("option", null, "Tous les dépôts", { value: "" }));
+    const wsList = (met && Array.isArray(met.workspaces) && met.workspaces.length)
+      ? met.workspaces.slice()
+      : ((met && met.projects) ? met.projects.slice() : []);
+    if (state.metricsProject && !wsList.some((w) => String(w).toLowerCase() === String(state.metricsProject).toLowerCase())) {
+      wsList.push(state.metricsProject);
+    }
+    wsList.forEach((p) => {
       const opt = el("option", null, p, { value: p });
-      if (p === state.metricsProject) opt.selected = true;
+      if (String(p).toLowerCase() === String(state.metricsProject || "").toLowerCase() && state.metricsProject) opt.selected = true;
       projSel.appendChild(opt);
     });
     ctrls.appendChild(projSel);
@@ -692,5 +832,35 @@ METRICS_VIEWS_JS = r"""
     body.style.gap = "10px";
     renderMetricsContent(body);
     container.appendChild(body);
+  }
+
+  if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+    document.addEventListener("click", (ev) => {
+      const t = ev.target && ev.target.closest ? ev.target.closest("[data-action]") : null;
+      if (!t) return;
+      const act = t.getAttribute("data-action");
+      if (act === "close-slideover") {
+        if (t.classList && t.classList.contains("slide-over-backdrop") && ev.target !== t) return;
+        _clearMetricsSlideState();
+        setTimeout(() => {
+          if (!state.slideOver && typeof renderMetricsBodyOrFull === "function" && document.getElementById("g-metrics-content")) {
+            renderMetricsBodyOrFull();
+          }
+        }, 0);
+      } else if (act === "select-tab" && t.getAttribute("data-tab") !== "metrics" && (state.slideOver || state.sessionTarget || state.auditTarget)) {
+        _clearMetricsSlideState();
+        state.slideOver = null;
+      }
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && state.slideOver && (state.sessionTarget || state.auditTarget)) {
+        _clearMetricsSlideState();
+        setTimeout(() => {
+          if (!state.slideOver && typeof renderMetricsBodyOrFull === "function" && document.getElementById("g-metrics-content")) {
+            renderMetricsBodyOrFull();
+          }
+        }, 0);
+      }
+    });
   }
 """

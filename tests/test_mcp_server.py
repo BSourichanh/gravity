@@ -138,7 +138,7 @@ class TestMcpServer(unittest.TestCase):
         self.assertEqual(c0["mimeType"], mcp_server.APP_MIME)
         html_txt = c0["text"]
         self.assertEqual(html_txt, render_dashboard_html())
-        self.assertLess(len(html_txt.encode("utf-8")), 200 * 1024)
+        self.assertLess(len(html_txt.encode("utf-8")), 150 * 1024)
         for forbidden in ("innerHTML", "http://", "https://", "window.confirm", "window.alert", "window.prompt"):
             self.assertNotIn(forbidden, html_txt)
         for required in (
@@ -157,11 +157,18 @@ class TestMcpServer(unittest.TestCase):
             "since_signature",
             "captureFocusAndScroll",
             "g-arch-ws",
+            "g-slideover",
+            "g-metrics-project",
+            "proj-grid",
+            "wave-group",
+            "nav-history",
         ):
             self.assertIn(required, html_txt)
         for absent in (
             "renderBridgeView",
             "renderBridgeSvgChart",
+            "renderWorkflowView",
+            "renderArchitectSvgChart",
             "gravity_get_bridge_state",
             "loadBridgeState",
             "Tarif 2026",
@@ -909,7 +916,7 @@ class TestMcpServer(unittest.TestCase):
         from mcp.ui.views_js import VIEWS_JS
 
         html = render_dashboard_html()
-        self.assertLess(len(html.encode("utf-8")), 200 * 1024)
+        self.assertLess(len(html.encode("utf-8")), 150 * 1024)
         node_bin = shutil.which("node")
         if not node_bin:
             self.skipTest("node binary not available")
@@ -937,17 +944,26 @@ function collectText(n) {
   for (const ch of (n.children || [])) out.push(collectText(ch));
   return out.join(" ");
 }
+function findAll(node, pred, acc) {
+  acc = acc || [];
+  if (!node) return acc;
+  if (pred(node)) acc.push(node);
+  for (const ch of (node.children || [])) findAll(ch, pred, acc);
+  return acc;
+}
 const document = { createElement: (t) => makeNode(t), createElementNS: (_ns, t) => makeNode(t), getElementById: () => null };
 const state = {
-  overview: { tabs: [{ id: "live", kind: "live" }, { id: "metrics", kind: "metrics" }, { id: "architect", kind: "architect" }, { id: "overview", kind: "core" }] },
+  overview: { tabs: [{ id: "live", kind: "live" }, { id: "architect", kind: "architect" }, { id: "metrics", kind: "metrics" }, { id: "overview", kind: "core" }] },
   live: { selected_session: { conversation_id: "cid-1" }, summary: { llm_calls: 15 } },
   metricsProject: "", metricsQ: "", metricsSub: "overview", metricsFilter: "recorded", metricsSort: "date",
   metricsActionInFlight: false, compareOpen: false, compareA: "s-1", compareB: "s-2",
   sessionTarget: "", sessionDetail: null, sessionDetailLoading: false, sessionDetailSub: "summary",
+  sessionAgentId: "", sessionCollapsed: {},
   sessionEditOpen: false, sessionDeleteConfirm: false, pendingDeleteTarget: "",
-  auditTarget: "", auditData: null, auditLoading: false,
+  auditTarget: "", auditData: null, auditLoading: false, architectSub: "projects",
   metrics: {
     projects: ["gravity", "gravity-studio"],
+    workspaces: ["gravity", "gravity-metrics", "gravity-studio"],
     metrics_md_uri: "file:///tmp/METRICS.md",
     total_matching: 2,
     kpis: {
@@ -969,6 +985,9 @@ const state = {
         cache_read_tokens: 80000, total_tokens: 105000, cache_hit_rate_pct: 80, max_context_tokens: 145000,
         llm_calls: 12, tool_calls: 24, latency_p95_ms: 1850, error_steps: 1, error_rate_pct: 8.3,
         compaction_count: 1, wall_clock_s: 200, cost_usd: 0.25, cache_savings_usd: 0.40,
+        agents: 4, max_depth: 2, current_phase: "build",
+        workspace_share_pct: { gravity: 75, "gravity-studio": 25 },
+        workspace_kinds: { gravity: "code", "gravity-studio": "atelier" },
         started_at: "2026-11-25T10:00:00Z", ended_at: "2026-11-25T10:03:20Z"
       },
       {
@@ -992,8 +1011,8 @@ const box1 = makeNode("div");
 renderMetricsUnifiedView(box1);
 const t1 = collectText(box1);
 assert(t1.includes("Tokens utiles") && t1.includes("Pression contexte") && t1.includes("Atelier") && t1.includes("Code"), "overview technical KPIs & workspaces");
-assert(t1.includes("Répartition par Modèle") && t1.includes("Répartition par Rôle"), "model & role breakdown");
-assert(!t1.includes("Tarif 2026") && !t1.includes("Tarif 2027"), "no tariff toggle");
+assert(t1.includes("Répartition par Modèle") && t1.includes("Répartition par Rôle") && t1.includes("Audits Agents (1)"), "model, role breakdown & unified audits");
+assert(t1.includes("gravity-metrics") && !t1.includes("Tarif 2026") && !t1.includes("Tarif 2027"), "workspaces filter & no tariff toggle");
 
 state.metricsSub = "sessions";
 state.compareOpen = true;
@@ -1016,28 +1035,58 @@ state.sessionDetail = {
 const box2 = makeNode("div");
 renderMetricsUnifiedView(box2);
 const t2 = collectText(box2);
+assert(t2.includes("4 ag.") && t2.includes("prof. N2") && t2.includes("Phase : build") && t2.includes("gravity 75%"), "enriched session cards");
 assert(t2.includes("Mettre à jour (+3 appels)") && t2.includes("Comparateur A/B") && t2.includes("Delta (B - A)"), "freshness badge & A/B comparator");
-assert(t2.includes("Supprimer cette session") && t2.includes("Repère secondaire ($)"), "inline delete confirm & discrete $ footnote");
+assert(t2.includes("Supprimer cette session") && t2.includes("Repère secondaire ($)") && findAll(box2, (n) => n.className === "slide-over").length === 1, "slide-over inline delete confirm & discrete $ footnote");
 
 state.sessionDetailSub = "agents";
 const box2b = makeNode("div");
 renderMetricsUnifiedView(box2b);
 const t2b = collectText(box2b);
+assert(findAll(box2b, (n) => n.className && n.className.includes("tree-row")).length === 2, "agent tree renders 2 rows");
 assert(t2b.includes("Outils les plus utilisés") && t2b.includes("edit_file"), "agents & tools subtab");
 assert(t2b.includes("gemini-4-neon-high") && t2b.includes("Outils : 24"), "legacy agent model & tool_calls fallback");
-assert(t2b.includes("gemini-4-hydrogen-high") && t2b.includes("Outils : 37") && t2b.includes("Workflow") && t2b.includes("Vérification") && t2b.includes("Erreur") && t2b.includes("↳ Builder · N1") && t2b.includes("Anomalies : 2") && t2b.includes("$0.1200"), "report schema agent by_model, tool_calls_total, source, filiation, anomalies, cost");
+
+state.sessionAgentId = "cid-wf";
+const box2b2 = makeNode("div");
+renderMetricsUnifiedView(box2b2);
+const t2b2 = collectText(box2b2);
+assert(t2b2.includes("gemini-4-hydrogen-high") && t2b2.includes("Outils : 37") && t2b2.includes("Workflow") && t2b2.includes("Vérification") && t2b2.includes("Erreur") && t2b2.includes("↳ Builder · N1") && t2b2.includes("Anomalies : 2") && t2b2.includes("$0.1200"), "inspector selected agent details");
 
 state.sessionDetailSub = "diagnostic";
 const box2c = makeNode("div");
 renderMetricsUnifiedView(box2c);
 assert(collectText(box2c).includes("Doublons de rôles") && collectText(box2c).includes("Compactions contexte"), "diagnostic subtab");
 
+state.sessionTarget = "";
 state.metricsSub = "audits";
 state.auditTarget = "studio:2026-11-25.md";
 state.auditData = { found: true, title: "Audit W4", verdict: "PASS", workspace: "gravity-studio", date: "2026-11-25", content: "# Audit Body", uri: "file:///tmp/a.md" };
 const box3 = makeNode("div");
 renderMetricsUnifiedView(box3);
-assert(collectText(box3).includes("# Audit Body") && collectText(box3).includes("Ouvrir .md"), "audits inline reader");
+assert(findAll(box3, (n) => n.className === "slide-over").length === 1 && collectText(box3).includes("# Audit Body") && collectText(box3).includes("Ouvrir .md"), "audits slide-over reader");
+
+state.architectSub = "projects";
+state.architect = {
+  available: true, atelier_root: "/tmp/gravity-studio", discovery_source: "architect_registry",
+  ecosystem: { exists: true, size_bytes: 2048, budget_bytes: 6000, over_budget: false, alerts: [], uri: "file:///tmp/ECO.md" },
+  delta: { exists: true, editorial_status: "NO_EDITORIAL_CHANGES", date: "2026-11-26", hygiene_alerts: [], uri: "file:///tmp/delta.md" },
+  watches_count: 1, archived_specs_count: 1, archived_tasks_count: 2,
+  projects: [{ id: "gravity", name: "Gravity", path: "../gravity", role: "core", main_branch: "main", default_dev_branch: "dev", release_main: "0.3.0", dev_status: "ahead 1", installed_version: "0.3.0", wip_status: "clean", specs_count: 1, tasks_count: 2, audits_count: 1, card_bytes: 1200, card_uri: "file:///tmp/gravity.md" }],
+  specs: [{ filename: "s1.md", title: "Spec v2", target_project: "gravity", status: "validated", status_code: "validated", date: "2026-11-26", size_bytes: 1024, uri: "file:///tmp/s1.md" }],
+  tasks: [{ filename: "t1.md", title: "Task 1", target_project: "gravity", wave: 1, status: "done", status_code: "done", workflow_profile: "quick", expected_branch: "dev", dependencies: ["w0"], spec_source: "specs/s1.md", date: "2026-11-26", uri: "file:///tmp/t1.md" }],
+  waves_summary: { total_tasks: 1, waves_count: 1, waves: [{ wave: 1, tasks_count: 1, projects: ["gravity"], status_counts: { done: 1 } }] },
+  audits: [{ audit_id: "code:a.md", title: "Audit Code", target: "gravity", verdict: "PASS", verdict_tone: "ok", date: "2026-11-26", size_bytes: 512, uri: "file:///tmp/ac.md" }]
+};
+const archP = makeNode("div");
+renderArchitectView(archP);
+const archPTxt = collectText(archP);
+assert(archPTxt.includes("Voir sessions") && archPTxt.includes("Ouvrir fiche") && archPTxt.includes("1 spec(s)") && archPTxt.includes("2 task(s)"), "architect projects cards");
+state.architectSub = "waves";
+const archW = makeNode("div");
+renderArchitectView(archW);
+const archWTxt = collectText(archW);
+assert(archWTxt.includes("Vague 1") && archWTxt.includes("profil: quick") && archWTxt.includes("déps: w0"), "architect waves & tasks");
 console.log(JSON.stringify({ ok: true }));
 """
         with tempfile.TemporaryDirectory() as tmp:
