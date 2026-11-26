@@ -6,6 +6,11 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 ## [Unreleased]
 
 ### Added
+- **[TASK-SHARED-02] Parseur unifié de transcripts dans `shared/gravity_shared/transcript_reader.py` (`SPEC-SHARED-01`) :**
+  - `read_jsonl_incremental` (cache `(st_ino, st_mtime_ns, st_size)` + `offset`/`partial`, gestion des lignes partielles/corrompues, troncatures/rotations, rejet fail-closed des symlinks/jonctions NTFS).
+  - `extract_shell_nonzero_code` (extraction stricte d'en-tête excluant `Command output:` et `Showing lines `).
+  - `normalize_worktree_path`, `is_worktree_path`, `strip_file_uri`, `discover_known_repos` (support `.gemini/antigravity/worktrees/`, `~/gravity-worktrees/`, `.worktrees/`, URI `file://` et chemins Windows).
+  - `parse_transcript_steps`, `next_step_index`, `current_turn_start_step`, `normalize_user_prompt`, `parse_iso_ts` et suite de tests isolée (`tests/test_shared_transcript_reader.py`).
 - **[TASK-SHARED-01] Socle partagé 100 % stdlib Python 3.10+ (`shared/gravity_shared/`) :**
   - `atomic_io.py` (`is_lock_oserror`, `write_bytes_atomic`, `write_text_atomic`, `write_json_atomic`, `append_jsonl_atomic`) avec UTF-8 sans BOM, LF, `os.fsync` et retries bornés sur `WinError 5/32/33` / `EACCES`/`EPERM`/`EBUSY`.
   - `file_lock.py` (`exclusive_file_lock`) fail-closed levant explicitement `TimeoutError` sous POSIX (`fcntl.flock` `LOCK_EX | LOCK_NB`) et Windows (`msvcrt.locking` `LK_NBLCK`).
