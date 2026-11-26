@@ -6,6 +6,10 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 ## [Unreleased]
 
 ### Added
+- **[TASK-SHARED-03] Moteur d'installation unifié (`shared/gravity_shared/installer_core.py`) & synchroniseur SHA-256 (`scripts/sync_shared.py`, `SPEC-SHARED-02`) :**
+  - `installer_core.py` (`< 550` L) : `InstallSpec`, contrat CLI 11 drapeaux (`C11`) + hooks d'extension, `resolve_target_dir` préservant le lien final, `has_real_python3` filtrant `windowsapps`, installation stagée avec réécriture Windows `"python3"`, validation `--strict` prioritaire sur `--skip-validate`, rollback transactionnel `_sync_directory_in_place` / `_copy_file_in_place` (tolérant les fichiers verrouillés identiques via `is_lock_oserror`, rejetant symlinks/jonctions NTFS), et provenance atomique `$GRAVITY_HOME/core/sources.json` (`C5`).
+  - `scripts/sync_shared.py` (`< 300` L) : projection déterministe `shared/gravity_shared/*.py` -> `<repo>/plugin/_shared/*.py` + `<repo>/plugin/.shared_manifest.json` (`SHA-256`, idempotence bit-à-bit), modes `--apply`, `--check` (fail-closed sur `MISSING`/`HASH_MISMATCH`/`EXTRA_FILE`/`MANIFEST_STALE`/`SYMLINK_OR_JUNCTION`), `--json`, `--repos-root` et `--repos`.
+  - Suites unitaires isolées (`tests/test_shared_installer.py`, `tests/test_sync_shared.py`).
 - **[TASK-SHARED-02] Parseur unifié de transcripts dans `shared/gravity_shared/transcript_reader.py` (`SPEC-SHARED-01`) :**
   - `read_jsonl_incremental` (cache `(st_ino, st_mtime_ns, st_size)` + `offset`/`partial`, gestion des lignes partielles/corrompues, troncatures/rotations, rejet fail-closed des symlinks/jonctions NTFS).
   - `extract_shell_nonzero_code` (extraction stricte d'en-tête excluant `Command output:` et `Showing lines `).
