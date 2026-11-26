@@ -6,12 +6,20 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 ## [Unreleased]
 
 ### Changed
+- **[TASK-CORE-02b] Vues UI modulaires (`charts`, `live`, `metrics` < 800 L) (`SPEC-CORE-01`) :**
+  - `plugin/mcp/ui/__init__.py` (`19` L) : exportation complète des 6 fragments dans `__all__` (`APP_JS`, `CHARTS_JS`, `LIVE_VIEWS_JS`, `METRICS_VIEWS_JS`, `VIEWS_JS`, `WIDGET_CSS`).
+  - `plugin/mcp/ui/charts_js.py` (`161` L) : portage des composants SVG/DOM pure-DOM, formatters français, hiérarchie d'agents et barre chronologique (`0` `innerHTML`, `0` `"gravity-studio"`).
+  - `plugin/mcp/ui/live_views_js.py` (`165` L) : portage du cockpit live (`data-freshness`, `Pause`/`Reprendre`, repli `"0/0"`, zéro `Actualiser`) avec rendu structuré des vagues et tâches `live_progress`.
+  - `plugin/mcp/ui/metrics_views_js.py` (`645` L, `< 800` L) : portage allégé de la vue unifiée Historique, comparateur A/B, tiroirs `slide-over` session/audit et actions CLI sans perte fonctionnelle (`0` `innerHTML`, `0` `"0/8"`, `0` `"gravity-studio"`, bundle HTML `139 453` o `< 150` KiB).
+  - Ajout de `tests/test_ui_live_and_charts.py`, adaptation de `tests/test_metrics_provider_pending.py` (`TestMetricsRetirementAndWorktreeHelpers`) et ajout des assertions `renderLiveView`/`renderMetricsUnifiedView` dans `tests/test_mcp_server.py`.
 - **[TASK-CORE-02a] Base UI pure-DOM modulaire (`widget_html`, `styles`, `views_js`, `app_js`) (`SPEC-CORE-01`) :**
   - `plugin/mcp/widget_html.py` (`54` L) : chargement dynamique optionnel des fragments `("VIEWS_JS", "CHARTS_JS", "LIVE_VIEWS_JS", "METRICS_VIEWS_JS", "APP_JS")` depuis `mcp.ui` via `getattr` dans l'IIFE et documentation cible `< 150 KiB` (`68 029` o en W9).
   - `plugin/mcp/ui/styles.py` (`126` L), `plugin/mcp/ui/views_js.py` (`527` L) & `plugin/mcp/ui/app_js.py` (`289` L) : portage du design system compact (`@container app`, `proj-grid`, `wave-group`, `slide-over`, `data-layout="compact"`), des vues pure-DOM sans `innerHTML`, sans URL HTTP externe, sans `"0/8"`, sans `renderBridgeView`/`renderWorkflowView`/`renderArchitectSvgChart`/`gravity-studio`/`gravity-bridge`/`pollInFlight`/`loadBridgeState`, et avec garde-fous `typeof ... === "function"` dans `app_js.py` pour `renderLiveView`/`renderMetricsUnifiedView`/`renderMetricsContent`/`fmtRelativeTime`.
   - Mise à jour `tests/test_mcp_server.py` (seuil `< 150 KiB`, assertions UI base & retrait `architect_provider`).
 
 ### Removed
+- **[TASK-CORE-02b] Retrait définitif de `plugin/dashboard/providers/metrics_provider.py` (`SPEC-CORE-01`) :**
+  - Suppression complète du fournisseur couplé legacy `plugin/dashboard/providers/metrics_provider.py` (`755` L), remplacé par `SPI-1` (`dashboard/providers/spi.py`) et vérifié via `TestMetricsRetirementAndWorktreeHelpers` dans `tests/test_metrics_provider_pending.py`.
 - **[TASK-CORE-02a] Retrait définitif de `plugin/dashboard/providers/architect_provider.py` (`SPEC-CORE-01`) :**
   - Suppression complète du fournisseur couplé legacy `plugin/dashboard/providers/architect_provider.py` (`569` L), remplacé par `SPI-1` (`dashboard/providers/spi.py`) et testé via `test_architect_provider_retired` dans `tests/test_mcp_server.py`.
 - **[TASK-CORE-01c] Retrait définitif de `plugin/dashboard/providers/bridge_provider.py` (`SPEC-CORE-01`) :**

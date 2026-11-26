@@ -280,6 +280,8 @@ class TestMcpServer(unittest.TestCase):
             "ui/notifications/host-context-changed",
             "com.google.antigravity/toggle-aux-pane",
             'addEventListener("message"',
+            "renderLiveView",
+            "renderMetricsUnifiedView",
             "renderArchitectView",
             "gravity_get_live_session",
             "gravity_metrics_action",
