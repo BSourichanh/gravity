@@ -5,7 +5,15 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Changed
+- **[TASK-CORE-02a] Base UI pure-DOM modulaire (`widget_html`, `styles`, `views_js`, `app_js`) (`SPEC-CORE-01`) :**
+  - `plugin/mcp/widget_html.py` (`54` L) : chargement dynamique optionnel des fragments `("VIEWS_JS", "CHARTS_JS", "LIVE_VIEWS_JS", "METRICS_VIEWS_JS", "APP_JS")` depuis `mcp.ui` via `getattr` dans l'IIFE et documentation cible `< 150 KiB` (`68 029` o en W9).
+  - `plugin/mcp/ui/styles.py` (`126` L), `plugin/mcp/ui/views_js.py` (`527` L) & `plugin/mcp/ui/app_js.py` (`289` L) : portage du design system compact (`@container app`, `proj-grid`, `wave-group`, `slide-over`, `data-layout="compact"`), des vues pure-DOM sans `innerHTML`, sans URL HTTP externe, sans `"0/8"`, sans `renderBridgeView`/`renderWorkflowView`/`renderArchitectSvgChart`/`gravity-studio`/`gravity-bridge`/`pollInFlight`/`loadBridgeState`, et avec garde-fous `typeof ... === "function"` dans `app_js.py` pour `renderLiveView`/`renderMetricsUnifiedView`/`renderMetricsContent`/`fmtRelativeTime`.
+  - Mise à jour `tests/test_mcp_server.py` (seuil `< 150 KiB`, assertions UI base & retrait `architect_provider`).
+
 ### Removed
+- **[TASK-CORE-02a] Retrait définitif de `plugin/dashboard/providers/architect_provider.py` (`SPEC-CORE-01`) :**
+  - Suppression complète du fournisseur couplé legacy `plugin/dashboard/providers/architect_provider.py` (`569` L), remplacé par `SPI-1` (`dashboard/providers/spi.py`) et testé via `test_architect_provider_retired` dans `tests/test_mcp_server.py`.
 - **[TASK-CORE-01c] Retrait définitif de `plugin/dashboard/providers/bridge_provider.py` (`SPEC-CORE-01`) :**
   - Suppression complète du fournisseur SQLite legacy `plugin/dashboard/providers/bridge_provider.py` (`450` L) et ajout de `TestBridgeRetirement` dans `tests/test_dashboard_providers.py` (vérification de l'absence du fichier, du `ModuleNotFoundError` à l'import et du retrait de `get_bridge_state` / `open_sqlite_ro` / paramètres `bridge*` de la façade).
 

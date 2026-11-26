@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 from pathlib import Path
@@ -269,7 +270,7 @@ class TestMcpServer(unittest.TestCase):
         self.assertEqual(c0["mimeType"], mcp_server.APP_MIME)
         html_txt = c0["text"]
         self.assertEqual(html_txt, render_dashboard_html())
-        self.assertLess(len(html_txt.encode("utf-8")), 200 * 1024)
+        self.assertLess(len(html_txt.encode("utf-8")), 150 * 1024)
         for forbidden in ("innerHTML", "http://", "https://", "window.confirm", "window.alert", "window.prompt"):
             self.assertNotIn(forbidden, html_txt)
         for required in (
@@ -280,8 +281,36 @@ class TestMcpServer(unittest.TestCase):
             "com.google.antigravity/toggle-aux-pane",
             'addEventListener("message"',
             "renderArchitectView",
+            "gravity_get_live_session",
+            "gravity_metrics_action",
+            "gravity_read_audit",
+            "since_signature",
+            "captureFocusAndScroll",
+            "g-arch-ws",
+            "g-slideover",
+            "g-metrics-project",
+            "proj-grid",
+            "wave-group",
+            "nav-history",
         ):
             self.assertIn(required, html_txt)
+        for absent in (
+            "renderBridgeView",
+            "renderBridgeSvgChart",
+            "renderWorkflowView",
+            "renderArchitectSvgChart",
+            "gravity_get_bridge_state",
+            "loadBridgeState",
+            "Tarif 2026",
+            "Tarif 2027",
+            "metricsTariff",
+            "set-tariff",
+            "0/8",
+            "gravity-studio",
+            "gravity-bridge",
+            "pollInFlight",
+        ):
+            self.assertNotIn(absent, html_txt)
 
         bad_read = mcp_server.handle_jsonrpc_message(
             {"jsonrpc": "2.0", "id": 6, "method": "resources/read", "params": {"uri": "ui://gravity/nope.html"}}
@@ -901,6 +930,11 @@ class TestMcpServer(unittest.TestCase):
             txt_cli = res_cli["content"][0]["text"]  # type: ignore[index]
             self.assertIn("[WARN UI]", txt_cli)
             self.assertIn("agy 1.0.0", txt_cli)
+
+    def test_architect_provider_retired(self) -> None:
+        self.assertFalse((PLUGIN_ROOT / "dashboard" / "providers" / "architect_provider.py").exists())
+        with self.assertRaises(ModuleNotFoundError):
+            importlib.import_module("dashboard.providers.architect_provider")
 
 
 if __name__ == "__main__":
