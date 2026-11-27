@@ -158,8 +158,11 @@ dB.appendChild(_actBtn("Fermer","close-session-detail"));dH.appendChild(dB);draw
 }
 if(state.sessionDetailLoading){drawer.appendChild(_d("empty","Chargement du détail technique..."));return}
 const actRow=_d("actions-row"),dc=_liveDeltaCalls(rec),isArch=String((rec&&rec.status)||(sd&&sd.status)||"archived").toLowerCase()!=="active";
-const updBtn=_actBtn(dc>0?("Mettre à jour (+"+dc+" appels)"):"Mettre à jour","metrics-cli-action",{"data-cli-action":"update","data-cid":cid,"data-target":slug||cid},"btn-primary");
+const sessLbl=String((sd&&sd.label)||rec.label||""),uAttrs={"data-cli-action":"update","data-cid":cid,"data-target":slug||cid};
+if(sessLbl)uAttrs["data-label"]=sessLbl;if(slug){uAttrs["data-slug"]=slug;uAttrs["data-detail-slug"]=slug}
+const updBtn=_actBtn(dc>0?("Mettre à jour (+"+dc+" appels)"):"Mettre à jour","metrics-cli-action",uAttrs,"btn-primary");
 if(state.metricsActionInFlight)updBtn.disabled=true;actRow.appendChild(updBtn);
+if(cid||slug)actRow.appendChild(_actBtn("Ouvrir cockpit","open-live-session",{"data-cid":cid||slug,"data-target":slug||cid}));
 actRow.appendChild(_actBtn("Éditer","toggle-session-edit",{},state.sessionEditOpen?"active":""));
 if(!isArch)actRow.appendChild(_actBtn("Ignorer","metrics-cli-action",{"data-cli-action":"ignore","data-cid":cid,"data-target":cid}));
 actRow.appendChild(_actBtn("Supprimer","ask-remove-session",{"data-target":slug||cid},"btn-danger"));
@@ -173,6 +176,8 @@ const form=el("form","panel",null,{id:"g-session-edit-form","data-target":slug||
 [["g-edit-label","Label",rec.label||""],["g-edit-project","Projet",rec.project||""],["g-edit-note","Note",rec.note||""]].forEach(([fid,ph,val])=>{const inp=el("input","input",null,{id:fid,type:"text",placeholder:ph,value:String(val)});inp.value=String(val);form.appendChild(inp)});
 const fB=_d("actions-row");fB.appendChild(el("button","btn btn-sm btn-primary","Enregistrer",{type:"submit"}));fB.appendChild(_actBtn("Annuler","toggle-session-edit"));form.appendChild(fB);drawer.appendChild(form);
 }
+const isFallback=Boolean((sd&&(sd.source==="history_fallback"||sd.summary_only))||(det&&(det.source==="history_fallback"||det.summary_only)));
+if(isFallback)drawer.appendChild(_d("notice info","Repli history_fallback : rapport JSON détaillé absent, synthèse métriques uniquement."));
 const subTabs=_d("subtabs");[["summary","Synthèse"],["agents","Agents & Outils"],["diagnostic","Diagnostic"]].forEach(([id,l])=>subTabs.appendChild(_actBtn(l,"session-detail-sub",{"data-sub":id},state.sessionDetailSub===id?"active":"")));
 drawer.appendChild(subTabs);
 const summary=det.summary||{},eff=det.efficiency_and_waste||{},agents=Array.isArray(det.agents)?det.agents:[];
@@ -244,9 +249,12 @@ const st=_d("agent-stats");st.appendChild(_s("num","Total : "+fmtTokens(_recTot(
 st.appendChild(_s("num","Cache : "+fmtPct(r.cache_hit_rate_pct||0)));st.appendChild(_s("num","Ctx : "+fmtTokens(maxCtx)));
 if(Number(r.wall_clock_s||0)>0)st.appendChild(_s("num",fmtDuration(r.wall_clock_s)));
 card.appendChild(st);
-const acts=_d("actions-row"),dc=_liveDeltaCalls(r);
+const acts=_d("actions-row"),dc=_liveDeltaCalls(r),lbl=r.label?String(r.label):"",sl=r.detail_slug?String(r.detail_slug):"";
+const uAttrs={"data-cli-action":"update","data-cid":cid,"data-target":target};
+if(lbl)uAttrs["data-label"]=lbl;if(sl){uAttrs["data-slug"]=sl;uAttrs["data-detail-slug"]=sl}
 acts.appendChild(_actBtn("Détail","open-session-detail",{"data-target":target},"btn-primary"));
-acts.appendChild(_actBtn(dc>0?("Mettre à jour (+"+dc+" appels)"):"Mettre à jour","metrics-cli-action",{"data-cli-action":"update","data-cid":cid,"data-target":target}));
+if(cid||target)acts.appendChild(_actBtn("Ouvrir cockpit","open-live-session",{"data-cid":cid||target,"data-target":target}));
+acts.appendChild(_actBtn(dc>0?("Mettre à jour (+"+dc+" appels)"):"Mettre à jour","metrics-cli-action",uAttrs));
 acts.appendChild(_actBtn("A","pin-compare",{"data-slot":"A","data-target":target},state.compareA===target?"active":""));
 acts.appendChild(_actBtn("B","pin-compare",{"data-slot":"B","data-target":target},state.compareB===target?"active":""));
 card.appendChild(acts);return card;
@@ -279,10 +287,12 @@ else r.appendChild(_actBtn("Voir À enregistrer ("+pending.length+")","metrics-f
 b.appendChild(r);return b;
 }
 function _renderMetricsSessions(container,met){
-const recs=met.records||[],pending=met.pending_sessions||[],ignored=met.ignored_sessions||[];
+const recs=met.records||[],pending=met.pending_sessions||[],ignored=met.ignored_sessions||[],totalM=Number(met.total_matching!=null?met.total_matching:recs.length);
+const curLim=Number((met.filters&&met.filters.limit)||(typeof state!=="undefined"&&state.metricsLimit)||100);
 if(pending.length>0&&state.metricsFilter!=="pending")container.appendChild(_renderPendingBanner(pending,false));
+if(met.truncated)container.appendChild(_d("notice warn","Liste tronquée sous le plafond 450 Ko ("+recs.length+" / "+totalM+" affichée(s)). Affinez le filtre dépôt ou la recherche."));
 const cp=el("section","panel"),cH=_d("panel-head"),fT=_d("subtabs"),rC=_d("actions-row");
-[["recorded","Enregistrées ("+recs.length+")"],["pending","À enregistrer ("+pending.length+")"],["ignored","Ignorées ("+ignored.length+")"],["all","Toutes ("+(recs.length+pending.length+ignored.length)+")"]].forEach(([id,l])=>fT.appendChild(_actBtn(l,"metrics-filter",{"data-filter":id},state.metricsFilter===id?"active":"")));
+[["recorded","Enregistrées ("+recs.length+(totalM>recs.length?" / "+totalM:"")+")"],["pending","À enregistrer ("+pending.length+")"],["ignored","Ignorées ("+ignored.length+")"],["all","Toutes ("+(recs.length+pending.length+ignored.length)+")"]].forEach(([id,l])=>fT.appendChild(_actBtn(l,"metrics-filter",{"data-filter":id},state.metricsFilter===id?"active":"")));
 cH.appendChild(fT);
 rC.appendChild(_mkSel("g-metrics-sort","Tri technique",[["date","Tri : Récentes"],["useful_tokens","Tri : Tokens utiles"],["max_context","Tri : Pic contexte"],["errors","Tri : Erreurs"],["latency","Tri : Latence p95"]],state.metricsSort));
 rC.appendChild(_actBtn("Comparateur A/B","toggle-compare",{},state.compareOpen?"active":""));cH.appendChild(rC);cp.appendChild(cH);container.appendChild(cp);
@@ -292,6 +302,14 @@ if(state.metricsFilter==="pending"||state.metricsFilter==="all")pending.forEach(
 if(state.metricsFilter==="ignored"||state.metricsFilter==="all")ignored.forEach((ig)=>lw.appendChild(_renderPendingCard(ig,true)));
 if(state.metricsFilter==="recorded"||state.metricsFilter==="all")_sortRecords(recs,state.metricsSort).forEach((r)=>lw.appendChild(_renderSessionCard(r)));
 container.appendChild(lw.children.length?lw:_d("empty","Aucune session dans cette vue."));
+if((state.metricsFilter==="recorded"||state.metricsFilter==="all")&&(recs.length||totalM>0)){
+const pg=_d("pagination-bar");pg.appendChild(_s("mono",recs.length+" / "+totalM+" session(s)"));
+if(totalM>recs.length&&!met.truncated){
+if(curLim<500){const lb=_actBtn("Charger plus (+100)","metrics-load-more",{},"btn-primary");if(state.metricsActionInFlight)lb.disabled=true;pg.appendChild(lb)}
+else pg.appendChild(_s("kpi-sub","Plafond 500 atteint — affinez via recherche ou dépôt."));
+}
+container.appendChild(pg);
+}
 }
 const _audModelsTxt=(lm)=>{const pm=(lm&&Array.isArray(lm.primary_models))?lm.primary_models:[];return pm.length?pm.slice(0,3).map((m)=>(shortModelName(m.model)||m.model)+" ("+Math.round(Number(m.share_pct||0))+"%)").join(" · "):"Aucun modèle lié"};
 function _renderAuditComparator(audits){

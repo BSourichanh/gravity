@@ -33,6 +33,7 @@ function makeNode(tag) {
     className: "",
     textContent: "",
     attrs: {},
+    dataset: {},
     style: {},
     children: [],
     listeners: {},
@@ -229,7 +230,38 @@ assert(!/·N[0-3]/.test(treeTxt), "no ·N0..N3 suffix in renderAgentTree");
 assert(treeTxt.includes("Sonnet 4.6") && treeTxt.includes("G4 flash"), "readable short model badges in tree headers");
 assert(findAll(fullBox, (n) => n.className.includes("gantt-mini")).length === 4, "4 timeline bars");
 assert(fullTxt.includes("Racine") && fullTxt.includes("Swarm") && fullTxt.includes("Subagent") && fullTxt.includes("Workflow"), "source badges");
-assert(fullTxt.includes("[archivée]"), "archived suffix in live session selector");
+assert(findAll(fullBox, (n) => n.tagName === "OPTGROUP").length === 2, "live session selector renders Actives/Récentes/Archivées optgroups");
+assert(fullTxt.includes("Audit Live · gravity") && fullTxt.includes("Autre · gravity-metrics") && fullTxt.includes("[archivée]"), "session option label·project & archived suffix");
+assert(findAll(fullBox, (n) => n.tagName === "OPTION" && n.selected).length === 1, "single unique selected option");
+assert(findAll(fullBox, (n) => n.attrs && n.attrs["data-action"] === "live-reset-session").length === 0, "no reset button without explicit selectedSessionId");
+
+// Explicit selectedSessionId + archive_only fallback banner + idle dot + Mettre à jour
+const archOnlyBox = makeNode("div");
+const archOnlyPayload = {
+  available: true,
+  archive_only: true,
+  sessions: [
+    { conversation_id: "cid-1111", label: "Active", project: "gravity", category: "active", captured: true, archived: false, updated_at: new Date().toISOString() },
+    { conversation_id: "cid-3333", label: "Purged Arch", project: "gravity", category: "archived", archived: true, archive_only: true, recorded: true, detail_slug: "purged-arch", updated_at: "2026-11-10T10:00:00Z" }
+  ],
+  selected_session: {
+    conversation_id: "cid-3333", label: "Purged Arch", project: "gravity", workspace_kind: "code",
+    captured: false, archived: true, recorded: true, archive_only: true, summary_only: true, detail_slug: "purged-arch",
+    session_started_at: "2026-11-10T09:50:00Z", session_last_ts: "2026-11-10T10:00:00Z"
+  },
+  summary: { total_agents: 1, active_agents: 0, waiting_agents: 0, done_agents: 1, error_agents: 0, useful_tokens: 5000, cache_read_tokens: 10000, cache_hit_pct: 66.7, max_context_tokens: 40000, context_tokens: 40000, llm_calls: 3, tool_calls: 4, error_count: 0, duration_s: 60 },
+  agents: [{ id: "root-cid-3333", role: "Session archivée", status: "done", source: "root", phase: "conception", depth: 0, model: "gemini-4-flash", workspace: "gravity", workspace_kind: "code", llm_calls: 3, tool_calls: 4, context_tokens: 40000, max_context_tokens: 40000, useful_tokens: 5000, duration_s: 60 }],
+  recent_events: []
+};
+renderLiveView(archOnlyBox, archOnlyPayload, { selectedSessionId: "cid-3333" });
+const archOnlyTxt = collectText(archOnlyBox);
+assert(findAll(archOnlyBox, (n) => n.attrs && n.attrs["data-action"] === "live-reset-session").length === 1, "Session courante button shown when selectedSessionId set");
+assert(archOnlyTxt.includes("Archive seule — transcript purgé"), "archive_only banner displayed");
+assert(findAll(archOnlyBox, (n) => n.className && n.className.includes("live-dot idle")).length === 1, "idle live-dot for archived/archive_only");
+const updArchBtn = findAll(archOnlyBox, (n) => n.attrs && n.attrs["data-action"] === "live-metrics-action");
+assert(updArchBtn.length === 1 && updArchBtn[0].attrs["data-metrics-action"] === "update" && collectText(updArchBtn[0]).includes("Mettre à jour"), "archived live session offers Mettre à jour");
+assert(!archOnlyTxt.includes("Non enregistrée") && !archOnlyTxt.includes("Enregistrer"), "archived live session hides Non enregistrée/Enregistrer");
+assert(findAll(archOnlyBox, (n) => n.tagName === "OPTION" && n.selected).length === 1, "single selected option with explicit selectedSessionId");
 const inspNode = findAll(fullBox, (n) => n.id === "g-live-inspector")[0];
 const inspTxt = collectText(inspNode);
 assert(inspTxt.includes("Builder") && inspTxt.includes("↳ Coordinator · N1") && inspTxt.includes("styles.py") && !inspTxt.includes("@w1 GO"), "inspector filters events by selected agent");
@@ -270,8 +302,11 @@ for (let i = 3; i < 35; i++) {
   });
 }
 state.metrics.records = [{ conversation_id: "cid-root", label: "Session 35", detail_slug: "s-35", project: "gravity", status: "archived", input_tokens: 15000, output_tokens: 3000, cache_read_tokens: 40000, total_tokens: 58000, max_context_tokens: 90000, llm_calls: 17, tool_calls: 61 }];
+state.metrics.total_matching = 240;
+state.metrics.filters = { limit: 100 };
+state.metrics.truncated = true;
 state.sessionDetail = {
-  found: true, source: "report_json", slug: "s-35", conversation_id: "cid-root", label: "Session 35",
+  found: true, source: "history_fallback", summary_only: true, slug: "s-35", conversation_id: "cid-root", label: "Session 35",
   record: state.metrics.records[0],
   detail: { summary: { input_tokens: 15000, output_tokens: 3000, cache_read_tokens: 40000 }, agents: manyMetricsAgents }
 };
@@ -281,6 +316,18 @@ const det35Txt = collectText(det35Box);
 assert(findAll(det35Box, (n) => n.className && n.className.includes("tree-row")).length === 35, "metrics detail renders all 35 agents in tree");
 assert(findAll(det35Box, (n) => n.className === "slide-over").length === 1 && findAll(det35Box, (n) => n.id === "g-session-inspector").length === 1, "metrics detail renders in slide-over with inspector");
 assert(det35Txt.includes("35 agent(s)") && det35Txt.includes("Worker-34") && det35Txt.includes("Outils : 41"), "35th agent & tool_calls_total");
+assert(det35Txt.includes("history_fallback"), "slide-over displays history_fallback notice when summary_only");
+assert(det35Txt.includes("1 / 240 session(s)") && det35Txt.includes("tronquée"), "pagination X / Y counter and truncated banner rendered");
+assert(findAll(det35Box, (n) => n.attrs && n.attrs["data-action"] === "open-live-session").length >= 2, "Ouvrir cockpit button on session card and slide-over");
+const cardUpd = findAll(det35Box, (n) => n.attrs && n.attrs["data-cli-action"] === "update");
+assert(cardUpd.length >= 2 && cardUpd[0].attrs["data-label"] === "Session 35" && cardUpd[0].attrs["data-slug"] === "s-35", "update propagates label and detail_slug");
+
+state.metrics.truncated = false;
+const loadMoreBox = makeNode("div");
+renderMetricsUnifiedView(loadMoreBox);
+assert(findAll(loadMoreBox, (n) => n.attrs && n.attrs["data-action"] === "metrics-load-more").length === 1, "Charger plus button shown when total_matching > records.length and not truncated");
+state.metrics.total_matching = 1;
+delete state.metrics.filters;
 
 state.architectSub = "projects";
 state.architect = {
@@ -437,6 +484,7 @@ class TestUiLiveAndCharts(unittest.TestCase):
             ".topbar", ".nav-sys", ".kpi-strip", ".tree-row", ".tree-indent", ".gantt-mini",
             ".inspector-pane", ".slide-over", ".proj-grid", ".wave-group", 'data-layout="compact"',
             ".phase-stepper", ".tree-children", ".tree-branch", ".badge-model", ".ab-row", ".kbd-hint",
+            ".archive-banner", ".pagination-bar", ".btn-reset-session",
         ):
             self.assertIn(css_token, WIDGET_CSS)
         for js_symbol in (
@@ -453,6 +501,7 @@ class TestUiLiveAndCharts(unittest.TestCase):
         for token in (
             "inflight", "reqSeq", "ResizeObserver", "Escape", "CLICK_HANDLERS", "g-content", "g-slideover",
             "data-freshness", "livePhaseFilter", "metricsAxis", "auditCompareA", "auditCompareB",
+            "metricsLimit", "open-live-session", "live-reset-session", "metrics-load-more", "isLiveArchived",
         ):
             self.assertIn(token, APP_JS)
         self.assertIn("data-freshness", LIVE_VIEWS_JS)
@@ -506,6 +555,7 @@ function mkNode(tag) {
     className: "",
     textContent: "",
     attrs: {},
+    dataset: {},
     style: {},
     children: [],
     value: "",
@@ -556,8 +606,14 @@ const window = {
         let result;
         if (name === "gravity_metrics_action" && args.target === "stale-target") {
           result = { isError: true, content: [{ type: "text", text: "Historique vide." }], structuredContent: { ok: false, message: "Historique vide." } };
+        } else if (name === "gravity_metrics_action" && args.action === "update-meta") {
+          result = { isError: false, content: [{ type: "text", text: "OK" }], structuredContent: { ok: true, message: "OK", detail_slug: "new-slug", record: { detail_slug: "new-slug", label: "New Label" } } };
         } else if (name === "gravity_metrics_action") {
           result = { isError: false, content: [{ type: "text", text: "Supprimée." }], structuredContent: { ok: true, message: "Supprimée." } };
+        } else if (name === "gravity_get_session_detail") {
+          result = { isError: false, structuredContent: { found: true, slug: args.target, conversation_id: "cid-1", label: "New Label", record: { detail_slug: args.target }, detail: { summary: {}, agents: [] } } };
+        } else if (name === "gravity_get_live_session") {
+          result = { isError: false, structuredContent: { available: true, changed: true, unchanged: false, signature: "live-sig", sessions: [{ conversation_id: args.session_id || "cid-active", label: "L1", project: "gravity", category: "active" }], selected_session: { conversation_id: args.session_id || "cid-active", label: "L1", project: "gravity", archived: false }, summary: { total_agents: 0 }, agents: [], recent_events: [] } };
         } else if (name === "gravity_get_metrics_state") {
           result = { isError: false, structuredContent: { available: true, changed: true, unchanged: false, signature: "fresh-sig", kpis: { sessions_count: 0 }, records: [], pending_sessions: [], ignored_sessions: [], audits: [] } };
         } else {
@@ -661,7 +717,91 @@ const window = {
   (docListeners.keydown || []).forEach((fn) => fn({ key: "/", preventDefault: () => { prevented = true; } }));
   if (!prevented || !searchInp._focused) throw new Error("'/' shortcut failed to focus search input");
 
+  // Test openSessionDetail resets state.sessionDetail synchronously before fetch
+  state.sessionDetail = { found: true, slug: "old-slug" };
+  const detPromise = openSessionDetail("new-target");
+  if (state.sessionDetail !== null) throw new Error("openSessionDetail did not reset state.sessionDetail to null");
+  await detPromise;
+  if (!state.sessionDetail || state.sessionDetail.slug !== "new-target") throw new Error("openSessionDetail did not load new-target");
+
+  // Test update-meta updates state.sessionTarget to sc.record.detail_slug before reloading detail
+  state.activeTab = "metrics";
+  state.sessionTarget = "old-slug";
+  calls.length = 0;
+  await dispatchMetricsCliAction({ action: "update-meta", target: "old-slug", label: "New Label" });
+  if (state.sessionTarget !== "new-slug") throw new Error("update-meta did not update state.sessionTarget to new-slug");
+  if (!calls.some((c) => c.name === "gravity_get_session_detail" && c.args.target === "new-slug")) {
+    throw new Error("update-meta did not reload detail with new-slug");
+  }
+
+  // Test metrics-cli-action forwards label and detail_slug/slug on update
+  calls.length = 0;
+  const updBtn = mkNode("button");
+  updBtn.setAttribute("data-cli-action", "update");
+  updBtn.setAttribute("data-cid", "cid-1");
+  updBtn.setAttribute("data-target", "s-1");
+  updBtn.setAttribute("data-label", "Lbl 1");
+  updBtn.setAttribute("data-slug", "s-1");
+  CLICK_HANDLERS["metrics-cli-action"](updBtn);
+  await new Promise((r) => setTimeout(r, 20));
+  const updCall = calls.find((c) => c.name === "gravity_metrics_action" && c.args.action === "update");
+  if (!updCall || updCall.args.label !== "Lbl 1" || updCall.args.slug !== "s-1") {
+    throw new Error("metrics-cli-action did not forward label and slug on update");
+  }
+
+  // Test metrics-load-more increments metricsLimit up to 500
+  calls.length = 0;
+  state.metricsLimit = 100;
+  CLICK_HANDLERS["metrics-load-more"]();
+  await new Promise((r) => setTimeout(r, 20));
+  if (state.metricsLimit !== 200 || !calls.some((c) => c.name === "gravity_get_metrics_state" && c.args.limit === 200)) {
+    throw new Error("metrics-load-more failed to increment limit to 200");
+  }
+  state.metricsLimit = 500;
+  CLICK_HANDLERS["metrics-load-more"]();
+  if (state.metricsLimit !== 500) throw new Error("metricsLimit exceeded 500 cap");
+
+  // Test open-live-session & live-reset-session + non-destructive <select> polling + isLiveArchived
+  state.overview = { doctor: { status: "ok" }, tabs: [{ id: "live", kind: "live", label: "Session" }, { id: "metrics", kind: "metrics", label: "Historique" }] };
+  state.slideOver = { title: "Drawer" };
+  calls.length = 0;
+  const openCockpitBtn = mkNode("button");
+  openCockpitBtn.setAttribute("data-cid", "cid-999");
+  CLICK_HANDLERS["open-live-session"](openCockpitBtn);
+  await new Promise((r) => setTimeout(r, 20));
+  if (state.activeTab !== "live" || state.liveUi.selectedSessionId !== "cid-999" || state.slideOver !== null) {
+    throw new Error("open-live-session failed to switch tab/session or clear slideOver");
+  }
+  if (!calls.some((c) => c.name === "gravity_get_live_session" && c.args.session_id === "cid-999")) {
+    throw new Error("open-live-session did not fetch target live session");
+  }
+
+  // Render live view and verify <select id="g-live-session"> identity preserved during polling when focused or unchanged
+  render();
+  const selBefore = nodesById["g-live-session"];
+  if (!selBefore) throw new Error("g-live-session not rendered");
+  renderActiveView(true);
+  if (nodesById["g-live-session"] !== selBefore) throw new Error("g-live-session destroyed on poll with unchanged list");
+  document.activeElement = selBefore;
+  state.live.sessions.push({ conversation_id: "cid-extra", label: "Extra", project: "gravity", category: "recent" });
+  renderActiveView(true);
+  if (nodesById["g-live-session"] !== selBefore) throw new Error("g-live-session destroyed while focused");
+  document.activeElement = null;
+
+  state.live.selected_session = { conversation_id: "cid-999", archived: true, archive_only: false };
+  if (!isLiveArchived()) throw new Error("isLiveArchived failed for archived session");
+  state.live.selected_session = { conversation_id: "cid-999", archived: false, archive_only: true };
+  if (!isLiveArchived()) throw new Error("isLiveArchived failed for archive_only session");
+
+  calls.length = 0;
+  CLICK_HANDLERS["live-reset-session"]();
+  await new Promise((r) => setTimeout(r, 20));
+  if (state.liveUi.selectedSessionId !== "" || !calls.some((c) => c.name === "gravity_get_live_session" && c.args.session_id === "")) {
+    throw new Error("live-reset-session failed to reset selectedSessionId");
+  }
+
   console.log(JSON.stringify({ ok: true }));
+  process.exit(0);
 })().catch((err) => { console.error(err); process.exit(1); });
 """
         with tempfile.TemporaryDirectory() as tmp:

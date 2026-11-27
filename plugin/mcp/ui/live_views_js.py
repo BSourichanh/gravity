@@ -40,29 +40,74 @@ const li=el("span","legend-item"),dot=el("span","legend-dot");dot.style.backgrou
 });
 p.appendChild(grid);if(totTok>0){p.appendChild(strip);p.appendChild(leg)}return p;
 }
-function _renderLiveToolbar(live,ui,h){
-const p=el("section","panel session-bar"),row=el("div","panel-head"),left=el("div","actions-row");
-left.appendChild(el("span",!live||!live.available?"live-dot idle":(ui.paused?"live-dot paused":"live-dot")));
-left.appendChild(el("span","panel-title","Session"));
-const sessions=(live&&Array.isArray(live.sessions))?live.sessions:[],selCid=(live&&live.selected_session&&live.selected_session.conversation_id)||"";
-const sel=el("select","select",null,{id:"g-live-session","aria-label":"Session active"});
-if(!sessions.length)sel.appendChild(el("option",null,"Aucune session active",{value:""}));
-else sessions.forEach((s)=>{
-const cid=String(s.conversation_id||""),lbl=String(s.label||("session-"+cid.slice(0,8)))+(s.project?" · "+s.project:"")+(s.captured?" [suivie]":"")+(s.archived?" [archivée]":"");
-const opt=el("option",null,lbl,{value:cid});if(cid===selCid||cid===ui.selectedSessionId)opt.selected=true;sel.appendChild(opt);
+function _liveCat(s){
+const c=String((s&&s.category)||"").toLowerCase();
+if(c==="active"||c==="recent"||c==="archived")return c;
+return(s&&(s.archived||s.archive_only))?"archived":((s&&s.captured)?"active":"recent");
+}
+function _fmtOptDate(raw){
+if(!raw)return"";const t=Date.parse(String(raw));if(!isFinite(t))return fmtDate(raw);
+return Math.max(0,Math.round((Date.now()-t)/1e3))<86400?fmtRelativeTime(raw):fmtDate(raw);
+}
+function _liveWantCid(sessions,selCid,uiSelCid){
+if(selCid&&sessions.some((s)=>String(s.conversation_id||"")===selCid))return selCid;
+if(uiSelCid&&sessions.some((s)=>String(s.conversation_id||"")===uiSelCid))return uiSelCid;
+return sessions[0]?String(sessions[0].conversation_id||""):"";
+}
+const _liveSessKey=(sessions,wantCid)=>sessions.map((s)=>[s.conversation_id,s.label,s.project,_liveCat(s),s.archived?1:0,s.archive_only?1:0,s.captured?1:0].join(":")).join("|")+"::"+wantCid;
+function _fillLiveSelect(sel,sessions,wantCid,key){
+clearNode(sel);sel.setAttribute("data-sess-key",key);
+if(!sessions.length){sel.appendChild(el("option",null,"Aucune session active",{value:""}));sel.value="";return}
+const groups=[["active",[]],["recent",[]],["archived",[]]],gMap=new Map(groups),gLbl={active:"Actives",recent:"Récentes",archived:"Archivées récentes"};
+sessions.forEach((s)=>{(gMap.get(_liveCat(s))||gMap.get("recent")).push(s)});
+let picked=false;
+groups.forEach(([k,list])=>{
+if(!list.length)return;const og=el("optgroup",null,null,{label:gLbl[k]});
+list.forEach((s)=>{
+const cid=String(s.conversation_id||""),parts=[String(s.label||("session-"+cid.slice(0,8)))];
+if(s.project)parts.push(String(s.project));
+const dt=_fmtOptDate(s.updated_at||s.ended_at||s.last_ts);if(dt)parts.push(dt);
+const suf=s.archive_only?" [archivée · purgée]":(s.archived?" [archivée]":(s.captured?" [suivie]":""));
+const opt=el("option",null,parts.join(" · ")+suf,{value:cid});
+if(!picked&&cid&&cid===wantCid){opt.selected=true;picked=true}
+og.appendChild(opt);
+});sel.appendChild(og);
 });
+if(picked)sel.value=wantCid;
+}
+function _findTreeId(n,id){if(!n)return null;if(n.id===id)return n;for(const c of(n.children||[])){const f=_findTreeId(c,id);if(f)return f}return null}
+function _makeResetBtn(h){const b=el("button","btn btn-sm btn-reset-session","Session courante",{id:"g-live-reset",type:"button","data-action":"live-reset-session",title:"Revenir à la session live courante"});if(typeof h.onResetSession==="function")b.addEventListener("click",()=>h.onResetSession());return b}
+function _syncLiveToolbar(tb,live,ui,h){
+const selObj=live&&live.selected_session,isArchSel=Boolean(selObj&&(selObj.archived||selObj.archive_only)),isIdle=!live||!live.available||!selObj||isArchSel;
+const dot=_findTreeId(tb,"g-live-dot");if(dot)dot.className=isIdle?"live-dot idle":(ui.paused?"live-dot paused":"live-dot");
+const sessions=(live&&Array.isArray(live.sessions))?live.sessions:[],selCid=(selObj&&selObj.conversation_id)||"",wantCid=_liveWantCid(sessions,String(selCid),String(ui.selectedSessionId||"")),sessKey=_liveSessKey(sessions,wantCid);
+const sel=_findTreeId(tb,"g-live-session"),focused=(typeof document!=="undefined"&&document.activeElement===sel);
+if(sel&&!focused&&sel.getAttribute("data-sess-key")!==sessKey)_fillLiveSelect(sel,sessions,wantCid,sessKey);
+const left=_findTreeId(tb,"g-live-tb-left"),rBtn=_findTreeId(tb,"g-live-reset");
+if(left){if(ui.selectedSessionId&&!rBtn)left.appendChild(_makeResetBtn(h));else if(!ui.selectedSessionId&&rBtn)left.removeChild(rBtn)}
+const qInp=_findTreeId(tb,"g-live-q");
+if(qInp&&(typeof document==="undefined"||document.activeElement!==qInp))qInp.value=ui.searchQuery||"";
+const refTs=(selObj&&(selObj.session_last_ts||selObj.last_ts))||ui.lastUpdatedAt||"",fr=_findTreeId(tb,"g-live-fresh");
+if(fr){fr.className="badge "+(isArchSel?"info":(ui.paused?"warn":"ok"));fr.textContent=isArchSel?"Archivée (pause)":(ui.paused?"En pause":("Fraîcheur : "+fmtRelativeTime(refTs)));fr.setAttribute("data-ts",String(refTs));fr.setAttribute("data-paused",(ui.paused||isArchSel)?"1":"0");fr.setAttribute("data-archive",isArchSel?"1":"0")}
+const pb=_findTreeId(tb,"g-live-pause");
+if(pb){pb.className="btn btn-sm"+(ui.paused?" active":"");pb.textContent=ui.paused?"Reprendre":"Pause";pb.setAttribute("aria-pressed",ui.paused?"true":"false");pb.disabled=isArchSel}
+}
+function _renderLiveToolbar(live,ui,h){
+const p=el("section","panel session-bar",null,{id:"g-live-toolbar"}),row=el("div","panel-head"),left=el("div","actions-row",null,{id:"g-live-tb-left"});
+left.appendChild(el("span","live-dot",null,{id:"g-live-dot"}));left.appendChild(el("span","panel-title","Session"));
+const sel=el("select","select",null,{id:"g-live-session","aria-label":"Session active"});
 if(typeof h.onSelectSession==="function")sel.addEventListener("change",()=>h.onSelectSession(sel.value||""));
 left.appendChild(sel);row.appendChild(left);
-const right=el("div","live-controls"),refTs=(live&&live.selected_session&&(live.selected_session.session_last_ts||live.selected_session.last_ts))||ui.lastUpdatedAt||"";
-const sw=el("span","search-wrap"),qInp=el("input","input",null,{id:"g-live-q",type:"search",placeholder:"Filtrer agent, modèle…",value:ui.searchQuery||"","data-global-search":"1","aria-label":"Filtrer les agents"});
-qInp.value=ui.searchQuery||"";sw.appendChild(qInp);sw.appendChild(el("span","kbd-hint","/"));right.appendChild(sw);
-right.appendChild(el("span","badge "+(ui.paused?"warn":"ok"),ui.paused?"En pause":("Fraîcheur : "+fmtRelativeTime(refTs)),{"data-freshness":"1","data-ts":String(refTs),"data-paused":ui.paused?"1":"0"}));
-const pBtn=el("button","btn btn-sm"+(ui.paused?" active":""),ui.paused?"Reprendre":"Pause",{type:"button","data-action":"toggle-live-pause","aria-pressed":ui.paused?"true":"false"});
+const right=el("div","live-controls"),sw=el("span","search-wrap"),qInp=el("input","input",null,{id:"g-live-q",type:"search",placeholder:"Filtrer agent, modèle…",value:ui.searchQuery||"","data-global-search":"1","aria-label":"Filtrer les agents"});
+sw.appendChild(qInp);sw.appendChild(el("span","kbd-hint","/"));right.appendChild(sw);
+right.appendChild(el("span","badge ok","", {id:"g-live-fresh","data-freshness":"1"}));
+const pBtn=el("button","btn btn-sm","Pause",{id:"g-live-pause",type:"button","data-action":"toggle-live-pause","aria-pressed":"false"});
 if(typeof h.onTogglePause==="function")pBtn.addEventListener("click",()=>h.onTogglePause());
 right.appendChild(pBtn);
 const projBtn=el("button","btn btn-sm","Projets",{type:"button","data-action":"nav-projects"});
 if(typeof h.onOpenProjects==="function")projBtn.addEventListener("click",()=>h.onOpenProjects());
-right.appendChild(projBtn);row.appendChild(right);p.appendChild(row);return p;
+right.appendChild(projBtn);row.appendChild(right);p.appendChild(row);
+_syncLiveToolbar(p,live,ui,h);return p;
 }
 function _renderLiveWorkflowBlock(wf){
 if(!wf||!wf.available)return null;const stLow=String(wf.stage||"").trim().toLowerCase();
@@ -144,26 +189,41 @@ const live=liveArg!==undefined?liveArg:(typeof state!=="undefined"?state.live:nu
 const phaseFilter=rawUi.phaseFilter!=null?rawUi.phaseFilter:(typeof state!=="undefined"?(state.livePhaseFilter||""):"");
 const searchQuery=rawUi.searchQuery!=null?rawUi.searchQuery:(typeof state!=="undefined"?(state.liveSearchQ||""):"");
 const ui=Object.assign({},rawUi,{phaseFilter,searchQuery});
-container.appendChild(_renderLiveToolbar(live,ui,h));
-if(!live){container.appendChild(el("div","empty","Chargement de la session en direct..."));return}
+let tb=null,body=null;
+if(container&&Array.isArray(container.children)){tb=container.children.find((c)=>c&&c.id==="g-live-toolbar")||null;body=container.children.find((c)=>c&&c.id==="g-live-body")||null}
+if(tb&&body){_syncLiveToolbar(tb,live,ui,h);clearNode(body)}
+else{tb=_renderLiveToolbar(live,ui,h);body=el("div",null,null,{id:"g-live-body"});Object.assign(body.style,{display:"flex",flexDirection:"column",gap:"9px"});container.appendChild(tb);container.appendChild(body)}
+if(!live){body.appendChild(el("div","empty","Chargement de la session en direct..."));return}
 const wfBlock=_renderLiveWorkflowBlock(live.workflow);
 if(!live.available||!live.selected_session){
-if(wfBlock)container.appendChild(wfBlock);
+if(wfBlock)body.appendChild(wfBlock);
+(live.warnings||[]).forEach((w)=>body.appendChild(el("div","notice warn",String(w))));
 const ep=el("section","panel");ep.appendChild(el("div","empty","Aucune session active détectée dans le dossier brain/."));
-ep.appendChild(el("div","kpi-sub","Les sessions archivées sont consultables dans l'onglet Historique."));container.appendChild(ep);return;
+ep.appendChild(el("div","kpi-sub","Les sessions archivées sont consultables dans l'onglet Historique."));body.appendChild(ep);return;
 }
 const sel=live.selected_session,sum=live.summary||{},agents=Array.isArray(live.agents)?live.agents:[];
+const isArchOnly=Boolean(sel.archive_only),isArch=Boolean(sel.archived||isArchOnly),isRec=Boolean(sel.recorded||sel.captured||isArch);
 const hp=el("section","panel session-bar"),sHead=el("div","panel-head"),sTitle=el("div","actions-row");
 sTitle.appendChild(el("span","panel-title",String(sel.label||sel.swarm_title||sel.goal_title||"Session active")));
 sTitle.appendChild(renderWorkspaceKindBadge(sel.workspace_kind));
 if(sel.project)sTitle.appendChild(el("button","btn btn-sm",String(sel.project),{type:"button","data-action":"nav-history","data-project":String(sel.project)}));
-sTitle.appendChild(makeBadge(sel.captured?("Session unifiée · #"+String(sel.conversation_id||"").slice(0,8)):"Non enregistrée",sel.captured?"ok":"warn"));
+if(isArch){
+sTitle.appendChild(makeBadge(isArchOnly?"Archive seule":"Archivée","info"));
+if(sel.recorded)sTitle.appendChild(makeBadge("Enregistrée · #"+String(sel.conversation_id||"").slice(0,8),""));
+}else{
+sTitle.appendChild(makeBadge(sel.captured?("Session unifiée · #"+String(sel.conversation_id||"").slice(0,8)):(sel.recorded?("Enregistrée · #"+String(sel.conversation_id||"").slice(0,8)):"Non enregistrée"),(sel.captured||sel.recorded)?"ok":"warn"));
 if(sel.captured)sTitle.appendChild(makeBadge("Auto-clôture active","info"));
+}
 sHead.appendChild(sTitle);
-const actName=sel.captured?"update":"record",actBtn=el("button","btn btn-sm btn-primary",ui.actionInFlight?"En cours...":(sel.captured?"Mettre à jour":"Enregistrer"),{type:"button","data-action":"live-metrics-action","data-metrics-action":actName,"data-cid":String(sel.conversation_id||"")});
+const actName=(sel.captured||isRec)?"update":"record",actAttrs={type:"button","data-action":"live-metrics-action","data-metrics-action":actName,"data-cid":String(sel.conversation_id||""),"data-target":String(sel.detail_slug||sel.conversation_id||"")};
+if(sel.label)actAttrs["data-label"]=String(sel.label);
+if(sel.detail_slug){actAttrs["data-slug"]=String(sel.detail_slug);actAttrs["data-detail-slug"]=String(sel.detail_slug)}
+const actBtn=el("button","btn btn-sm btn-primary",ui.actionInFlight?"En cours...":((sel.captured||isRec)?"Mettre à jour":"Enregistrer"),actAttrs);
 if(ui.actionInFlight)actBtn.disabled=true;
 if(typeof h.onCaptureAction==="function")actBtn.addEventListener("click",()=>h.onCaptureAction(actName,String(sel.conversation_id||"")));
 sHead.appendChild(actBtn);hp.appendChild(sHead);
+if(isArchOnly){const ab=el("div","archive-banner");ab.appendChild(el("span",null,"Archive seule — transcript purgé"+(sel.summary_only?" (synthèse métriques uniquement).":" (repli lecture seule depuis l'historique).")));hp.appendChild(ab)}
+else if(isArch){const ab=el("div","archive-banner");ab.appendChild(el("span",null,"Session archivée — polling en pause."));hp.appendChild(ab)}
 const uT=Number(sum.useful_tokens||0),cT=Number(sum.cache_read_tokens||0),totT=uT+cT,agC=Math.max(0,Number(sum.total_agents||agents.length)||0);
 const maxCtx=Number(sum.max_context_tokens)||0,errCnt=Number(sum.error_count)||0,errAg=sum.error_agents!=null?Number(sum.error_agents):agents.filter((a)=>a&&a.status==="error").length;
 const kpiStrip=el("div","kpi-strip");
@@ -173,9 +233,9 @@ const kpiStrip=el("div","kpi-strip");
 ["Pic contexte",fmtTokens(maxCtx),"Actuel : "+fmtTokens(sum.context_tokens||0),maxCtx>CTX_CRIT_TOKENS?"error":(maxCtx>CTX_WARN_TOKENS?"warn":"")],
 ["Agents actifs",fmtInt(sum.active_agents||0)+" / "+fmtInt(agC),(sum.waiting_agents||0)+" att. · "+(errAg>0?errAg+" err":(sum.done_agents||0)+" term."),(errAg>0||errCnt>0)?"error":""],
 ["Durée",fmtDuration(sum.duration_s||0),fmtInt(sum.llm_calls||0)+" LLM · "+fmtInt(sum.tool_calls||0)+" out.",""]].forEach(([l,v,s,t])=>kpiStrip.appendChild(renderMetricKpiCard(l,v,s,t)));
-hp.appendChild(kpiStrip);container.appendChild(hp);
-container.appendChild(_renderPhaseStepper(live.phases||sel.phases,live.current_phase||sel.current_phase||"",phaseFilter));
-if(wfBlock)container.appendChild(wfBlock);
+hp.appendChild(kpiStrip);body.appendChild(hp);
+body.appendChild(_renderPhaseStepper(live.phases||sel.phases,live.current_phase||sel.current_phase||"",phaseFilter));
+if(wfBlock)body.appendChild(wfBlock);
 const idMap={};agents.forEach((a)=>{if(!a)return;const lbl=String(a.role||a.id||"");if(a.id&&lbl)idMap[String(a.id)]=lbl;if(a.conversation_id&&lbl)idMap[String(a.conversation_id)]=lbl});
 let selAgent=null,selKey="";
 if(ui.selectedAgentId!=="__all__"&&agents.length){
@@ -190,11 +250,11 @@ if(parentIds.length)tActs.appendChild(el("button","btn btn-sm",anyCol?"Tout dép
 tActs.appendChild(el("span","mono",(fltInfo.hasFilter?fltInfo.directMatch.size+" / ":"")+agents.length+" agent(s)"));tHead.appendChild(tActs);tp.appendChild(tHead);
 if(!agents.length)tp.appendChild(el("div","empty","Aucun agent actif ou historique détecté pour cette session."));
 else tp.appendChild(renderAgentTree(agents,{selectedId:selKey,collapsedIds:ui.collapsedAgents||{},phaseFilter,searchQuery,sessionStartedAt:sel.session_started_at||live.session_started_at||"",sessionLastTs:sel.session_last_ts||live.session_last_ts||"",onSelect:h.onSelectAgent,onToggle:h.onToggleTree}));
-layout.appendChild(tp);layout.appendChild(_renderLiveInspector(agents,selAgent,live.recent_events||[],idMap,h));container.appendChild(layout);
+layout.appendChild(tp);layout.appendChild(_renderLiveInspector(agents,selAgent,live.recent_events||[],idMap,h));body.appendChild(layout);
 const fold=el("details","fold-panel",null,{id:"g-live-breakdown"});if(ui.breakdownOpen)fold.open=true;
 const fSum=el("summary","fold-summary");fSum.appendChild(el("span",null,"Répartition technique & dépôts"));fSum.appendChild(el("span","mono","Atelier vs Code"));fold.appendChild(fSum);
 const fBody=el("div","fold-body");
 fBody.appendChild(renderStackedBars([{label:"Tokens utiles",value:uT,color:"var(--g-c1)"},{label:"Cache lu",value:cT,color:"var(--g-c3)"},{label:"Raisonnement (est.)",value:sum.thinking_est_tokens||0,color:"var(--g-c2)"}],{title:"Volume tokens session"}));
-fBody.appendChild(renderWorkspaceBreakdown(_aggregateLiveWorkspaces(agents)));fold.appendChild(fBody);container.appendChild(fold);
+fBody.appendChild(renderWorkspaceBreakdown(_aggregateLiveWorkspaces(agents)));fold.appendChild(fBody);body.appendChild(fold);
 }
 """
