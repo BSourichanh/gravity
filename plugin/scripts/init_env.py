@@ -14,6 +14,7 @@ if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
 from _shared.hook_runtime import configure_utf8_stdio  # noqa: E402
+from _shared.path_safety import is_symlink_or_junction  # noqa: E402
 from core.doctor import (  # noqa: E402
     _collect_doctor_warnings,
     _detect_antigravity_app_version,
@@ -38,7 +39,7 @@ from core.registry import (  # noqa: E402
     detect_legacy_homes,
     discover_modules,
     enrich_module_homes,
-    resolve_gravity_home,
+    resolve_gravity_home_raw,
     write_modules_registry,
 )
 
@@ -84,12 +85,15 @@ def run_environment(
             app_version_detector=app_version_detector,
         )
 
-    resolved_home = resolve_gravity_home(gravity_home, home_dir=home_dir)
+    raw_home = resolve_gravity_home_raw(gravity_home, home_dir=home_dir)
+    resolved_home = raw_home.resolve()
     roots = [Path(p) for p in plugins_dirs] if plugins_dirs is not None else default_plugin_roots(home_dir=home_dir)
     raw_modules = discover_modules(roots)
     modules = enrich_module_homes(raw_modules, resolved_home)
     legacy_homes = detect_legacy_homes(home_dir)
 
+    raw_core_dir = raw_home / "core"
+    raw_registry_path = raw_core_dir / "modules.json"
     core_dir = resolved_home / "core"
     registry_path = core_dir / "modules.json"
     if migration_plan:
@@ -102,11 +106,37 @@ def run_environment(
         mode = "init"
 
     if mode == "init":
+        symlink_err: Optional[str] = None
+        if is_symlink_or_junction(raw_home):
+            symlink_err = f"Refusing symlink or junction gravity_home: {raw_home}"
+        elif is_symlink_or_junction(raw_core_dir) or is_symlink_or_junction(core_dir):
+            symlink_err = f"Refusing symlink or junction core directory: {raw_core_dir}"
+        elif is_symlink_or_junction(raw_registry_path) or is_symlink_or_junction(registry_path):
+            symlink_err = f"Refusing symlink or junction registry file: {raw_registry_path}"
+        if symlink_err is not None:
+            return {
+                "mode": mode,
+                "ok": False,
+                "error": symlink_err,
+                "gravity_home": str(raw_home),
+                "core_dir": str(raw_core_dir),
+                "registry_path": str(raw_registry_path),
+                "initialized": False,
+                "registry_exists": False,
+                "plugin_roots": [str(Path(p).expanduser().resolve()) for p in roots],
+                "module_count": len(modules),
+                "valid_count": sum(1 for mod in modules if mod.get("valid")),
+                "invalid_count": sum(1 for mod in modules if not mod.get("valid")),
+                "duplicate_ids": find_duplicate_ids(modules),
+                "warnings": [],
+                "modules": modules,
+                "legacy_homes": legacy_homes,
+            }, 1
         core_dir.mkdir(parents=True, exist_ok=True)
         for mod in modules:
             if mod.get("valid") and mod.get("resolved_home"):
                 Path(mod["resolved_home"]).mkdir(parents=True, exist_ok=True)
-        registry_path = write_modules_registry(resolved_home, modules)
+        registry_path = write_modules_registry(raw_home, modules)
 
     duplicates = find_duplicate_ids(modules)
     invalid_count = sum(1 for mod in modules if not mod.get("valid"))
@@ -180,6 +210,10 @@ def _print_human_report(payload: dict[str, Any]) -> None:
         return
     if mode == "dashboard":
         print_dashboard_report(payload)
+        return
+
+    if payload.get("error"):
+        print(f"[ERROR] {payload['error']}", file=sys.stderr)
         return
 
     print(f"Gravity Core Environment ({payload['mode']})")

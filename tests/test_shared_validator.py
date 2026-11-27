@@ -81,6 +81,22 @@ def _make_valid_plugin(root: Path, *, name: str = "demo-plugin", mod_id: str = "
     return plugin
 
 
+def _safe_home_in_temp_dir() -> bool:
+    if os.name == "nt":
+        return False
+    home_abs = os.path.abspath(os.fspath(vc.safe_home_dir()))
+    home_res = os.path.realpath(home_abs)
+    tmp_abs = os.path.abspath(tempfile.gettempdir())
+    tmp_res = os.path.realpath(tmp_abs)
+    for cand in (home_abs, home_res):
+        if Path(cand).parts[:2] == ("/", "tmp"):
+            return True
+        for tb in (tmp_abs, tmp_res):
+            if cand == tb or cand.startswith(tb.rstrip(os.sep) + os.sep):
+                return True
+    return False
+
+
 class TestSharedValidator(unittest.TestCase):
     def test_valid_plugin_tree_and_allowed_local_modules(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -171,10 +187,11 @@ class TestSharedValidator(unittest.TestCase):
             vc.validate_module_contract(dict(base, dashboard=[], capture_policy="bad"), rep_types)
             self.assertEqual(len(rep_types.errors), 2)
 
-            bad = dict(base, schema_version=True, id="BAD!", commands=["no_slash"])
+            bad = dict(base, schema_version=True, id="BAD!", commands=["no_slash"], ui={"mode": "", "target": ""})
             rep_bad = vc.Report()
             vc.validate_module_contract(bad, rep_bad)
-            self.assertGreaterEqual(len(rep_bad.errors), 3)
+            self.assertGreaterEqual(len(rep_bad.errors), 4)
+            self.assertTrue(any("ui.mode" in err and "ui.target" in err for err in rep_bad.errors))
 
             # Existing gravity/plugin/config/module.json (with consumes: ["*"]) passes
             rep_core_mod = vc.Report()
@@ -357,6 +374,8 @@ class TestSharedValidator(unittest.TestCase):
 
     @unittest.skipUnless(os.path.isfile("/snap/bin/agy"), "/snap/bin/agy non installé")
     def test_run_agy_plugin_validate_live_snap_with_shared_and_manifest(self) -> None:
+        if _safe_home_in_temp_dir():
+            self.skipTest("Snap /snap/bin/agy AppArmor refuse $HOME sous le dossier temporaire")
         with tempfile.TemporaryDirectory() as tmp:
             hidden_root = Path(tmp) / ".gemini" / "plugins"
             plugin = _make_valid_plugin(hidden_root, name="gravity-demo", mod_id="demo")

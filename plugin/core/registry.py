@@ -30,15 +30,20 @@ LEGACY_HOME_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 )
 
 
-def resolve_gravity_home(home: Optional[Path] = None, *, home_dir: Optional[Path] = None) -> Path:
-    """Resolve the Gravity unified home directory (arg > $GRAVITY_HOME > <home_dir>/.gemini/gravity)."""
+def resolve_gravity_home_raw(home: Optional[Path] = None, *, home_dir: Optional[Path] = None) -> Path:
+    """Return expanded Gravity home directory without resolving symlinks/junctions."""
     if home is not None:
-        return Path(home).expanduser().resolve()
+        return Path(home).expanduser()
     env_home = os.environ.get(GRAVITY_HOME_ENV, "").strip()
     if env_home:
-        return Path(env_home).expanduser().resolve()
+        return Path(env_home).expanduser()
     base_home = Path(home_dir).expanduser() if home_dir is not None else safe_home_dir()
-    return (base_home / ".gemini" / "gravity").resolve()
+    return base_home / ".gemini" / "gravity"
+
+
+def resolve_gravity_home(home: Optional[Path] = None, *, home_dir: Optional[Path] = None) -> Path:
+    """Resolve the Gravity unified home directory (arg > $GRAVITY_HOME > <home_dir>/.gemini/gravity)."""
+    return resolve_gravity_home_raw(home, home_dir=home_dir).resolve()
 
 
 def resolve_module_home(

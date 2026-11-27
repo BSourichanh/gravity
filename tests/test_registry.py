@@ -20,6 +20,7 @@ from core.registry import (  # noqa: E402
     detect_legacy_homes,
     discover_modules,
     resolve_gravity_home,
+    resolve_gravity_home_raw,
     resolve_module_home,
     validate_module_contract,
     write_modules_registry,
@@ -76,6 +77,16 @@ class TestRegistry(unittest.TestCase):
                         resolve_gravity_home(),
                         (fake_user / ".gemini" / "gravity").resolve(),
                     )
+
+            real_target = tmp_path / "real-target"
+            real_target.mkdir()
+            sym_home = tmp_path / "sym-gravity-home"
+            os.symlink(real_target, sym_home)
+            self.assertEqual(resolve_gravity_home_raw(sym_home), sym_home)
+            self.assertEqual(resolve_gravity_home(sym_home), real_target.resolve())
+            with mock.patch.dict(os.environ, {"GRAVITY_HOME": str(sym_home)}, clear=False):
+                self.assertEqual(resolve_gravity_home_raw(), sym_home)
+                self.assertEqual(resolve_gravity_home(), real_target.resolve())
 
     def test_resolve_module_home_precedence_and_validation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

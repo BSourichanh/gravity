@@ -902,6 +902,52 @@ class TestInitEnvCLI(unittest.TestCase):
             )
             self.assertEqual(p_bad.returncode, 2)
 
+    def test_init_rejects_symlinked_gravity_home_arg_and_env_without_target_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_home = tmp_path / "user-home"
+            fake_home.mkdir()
+            plugins_dir = tmp_path / "plugins"
+            shutil.copytree(REPO_ROOT / "plugin", plugins_dir / "gravity", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+
+            real_target = tmp_path / "real-target"
+            real_target.mkdir()
+            sym_home = tmp_path / "sym-home"
+            os.symlink(real_target, sym_home)
+            env_base = _isolated_env(fake_home)
+            env_sym = _isolated_env(fake_home, {"GRAVITY_HOME": str(sym_home)})
+
+            for extra_args, cur_env, expect_json in (
+                (["--gravity-home", str(sym_home), "--json"], env_base, True),
+                (["--gravity-home", str(sym_home)], env_base, False),
+                (["--json"], env_sym, True),
+            ):
+                proc = subprocess.run(
+                    [sys.executable, "-B", str(INIT_SCRIPT), "--plugins-dir", str(plugins_dir), *extra_args],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", env=cur_env, timeout=15, check=False,
+                )
+                self.assertEqual(proc.returncode, 1)
+                if expect_json:
+                    out = json.loads(proc.stdout)
+                    self.assertFalse(out["ok"])
+                    self.assertIn("symlink", out["error"].lower())
+                else:
+                    self.assertIn("symlink", (proc.stdout + proc.stderr).lower())
+                self.assertEqual(list(real_target.rglob("*")), [])
+
+            g_home_core = tmp_path / "real-gravity-home"
+            g_home_core.mkdir()
+            core_target = tmp_path / "core-target"
+            core_target.mkdir()
+            os.symlink(core_target, g_home_core / "core")
+            p_core = subprocess.run(
+                [sys.executable, "-B", str(INIT_SCRIPT), "--gravity-home", str(g_home_core), "--plugins-dir", str(plugins_dir), "--json"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", env=env_base, timeout=15, check=False,
+            )
+            self.assertEqual(p_core.returncode, 1)
+            self.assertFalse(json.loads(p_core.stdout)["ok"])
+            self.assertEqual(list(core_target.rglob("*")), [])
+
 
 if __name__ == "__main__":
     unittest.main()
