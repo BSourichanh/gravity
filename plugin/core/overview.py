@@ -91,8 +91,8 @@ def run_guide_mode(
     return payload, 0
 
 
-def print_guide_report(payload: dict[str, Any]) -> None:
-    """Print the untruncated read-only Gravity Core quick guide."""
+def format_guide_report(payload: dict[str, Any]) -> str:
+    """Format the untruncated read-only Gravity Core quick guide."""
     installed = payload.get("installed_modules") or []
     commands = payload.get("commands") or {}
     docs = payload.get("docs") or []
@@ -120,8 +120,7 @@ def print_guide_report(payload: dict[str, Any]) -> None:
     for doc_path in docs:
         lines.append(f"  - {doc_path}")
 
-    for line in lines:
-        print(line)
+    return "\n".join(lines)
 
 
 def build_overview_help(modules: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -153,6 +152,7 @@ def run_overview_mode(
     plugins_dirs: Optional[Sequence[Path]] = None,
     home_dir: Optional[Path] = None,
     app_version_detector: Optional[Callable[[], dict[str, Any]]] = None,
+    health_provider_fn: Optional[Callable[..., dict[str, Any]]] = None,
     plugin_root: Path = PLUGIN_ROOT,
 ) -> tuple[dict[str, Any], int]:
     """Build strictly read-only --overview payload combining environment, health, MCP, and 5-journey help."""
@@ -167,11 +167,30 @@ def run_overview_mode(
     duplicates = find_duplicate_ids(modules)
     invalid_count = sum(1 for m in modules if not m.get("valid"))
     valid_count = len(modules) - invalid_count
-    health_items = [_inspect_module_health_ro(m, plugin_root=plugin_root) for m in modules]
+    health_items = [
+        _inspect_module_health_ro(
+            m,
+            plugin_root=plugin_root,
+            gravity_home=resolved_home,
+            plugin_roots=roots,
+            home_dir=home_dir,
+            health_provider_fn=health_provider_fn,
+        )
+        for m in modules
+    ]
     diag = diagnose_mcp_dashboard(plugin_root)
     detector = app_version_detector or _detect_antigravity_app_version
     app_info = detector()
-    warnings = _collect_doctor_warnings(modules, app_version=app_info, plugin_root=plugin_root)
+    warnings = _collect_doctor_warnings(
+        modules,
+        app_version=app_info,
+        plugin_root=plugin_root,
+        gravity_home=resolved_home,
+        plugin_roots=roots,
+        home_dir=home_dir,
+        health_provider_fn=health_provider_fn,
+        inspected_health=health_items,
+    )
     ok = invalid_count == 0 and not duplicates and not diag["errors"]
 
     payload: dict[str, Any] = {
@@ -240,6 +259,6 @@ def format_overview_markdown(payload: dict[str, Any]) -> str:
 
 
 _run_guide_mode = run_guide_mode
-_print_guide_report = print_guide_report
+_format_guide_report = format_guide_report
 _build_overview_help = build_overview_help
 _run_overview_mode = run_overview_mode

@@ -765,6 +765,8 @@ class TestIsolationT1F1004(unittest.TestCase):
                         app_version_detector=lambda: {"version": "2.35.0", "source": "test", "meets_mcp_app_min": True},
                     )
                     self.assertEqual(diag_payload["modules"], [])
+                    self.assertTrue(diag_payload["warnings"])
+                    self.assertIn("overview_fn", diag_payload["warnings"][0])
                 with mock.patch.object(bundle, "default_plugin_roots", side_effect=AssertionError("host fallback!")):
                     self.assertFalse(bundle._detect_gdrive_plugin(plugins_dirs=[]))
                 with mock.patch.object(updater, "default_plugin_roots", side_effect=AssertionError("host fallback!")):
@@ -777,6 +779,98 @@ class TestIsolationT1F1004(unittest.TestCase):
                     )
                     self.assertEqual(env_rc, 0)
                     self.assertEqual(env_payload["module_count"], 0)
+
+    def test_run_dashboard_diagnostic_overview_injection_and_overview_health_propagation(self) -> None:
+        import shutil
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            from core import doctor, overview
+            from dashboard import api as dashboard_api
+            from scripts import init_env
+
+            tmp_path = Path(tmp)
+            g_home = tmp_path / "gravity-home"
+            fake_user = tmp_path / "user"
+            fake_user.mkdir()
+            plugins_dir = tmp_path / "plugins"
+            shutil.copytree(REPO_ROOT / "plugin", plugins_dir / "gravity", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            (plugins_dir / "gravity-architect" / "config").mkdir(parents=True)
+            (plugins_dir / "gravity-architect" / "plugin.json").write_text(
+                json.dumps({
+                    "name": "gravity-architect", "displayName": "Architect", "version": "1.0.0",
+                    "description": "Test", "logo": "assets/logo.svg", "suggestedPrompts": ["A", "B", "C"],
+                    "author": {"name": "G"}, "homepage": "https://example.com", "repository": "https://example.com/r.git",
+                }),
+                encoding="utf-8",
+            )
+            (plugins_dir / "gravity-architect" / "config" / "module.json").write_text(
+                json.dumps({
+                    "schema_version": 1, "id": "architect", "plugin_name": "gravity-architect", "role": "Arch",
+                    "storage": {"subdir": "architect", "env_override": "GRAVITY_ARCHITECT_HOME"},
+                    "commands": ["/gravity-architect"], "capabilities": ["c"], "ui": {"mode": "none", "target": "gravity"},
+                    "signals": {"produces": [], "consumes": []},
+                    "dashboard": {"provider_script": "scripts/dashboard_provider.py", "views": ["architect", "health"], "actions": []},
+                }),
+                encoding="utf-8",
+            )
+
+            # 1) overview_fn=None -> safe diagnostic without calling dashboard.api
+            with mock.patch.object(dashboard_api, "get_overview", side_effect=AssertionError("must not import/call dashboard.api")):
+                diag_none, rc_none = doctor.run_dashboard_diagnostic(
+                    gravity_home=g_home, plugins_dirs=[plugins_dir], home_dir=fake_user,
+                    app_version_detector=lambda: {"version": "2.35.0", "source": "test", "meets_mcp_app_min": True},
+                )
+            self.assertEqual(rc_none, 0)
+            self.assertEqual(diag_none["registry_source"], "none")
+            self.assertEqual(diag_none["doctor"]["status"], "warn")
+            self.assertTrue(diag_none["warnings"])
+
+            # 2) Injected overview_fn receives gravity_home/plugin_roots/home_dir
+            calls: list[dict[str, object]] = []
+
+            def _fake_overview(**kw: object) -> dict[str, object]:
+                calls.append(dict(kw))
+                return {
+                    "registry_path": str(g_home / "core" / "modules.json"),
+                    "registry_exists": False,
+                    "registry_source": "stub",
+                    "doctor": {"status": "ok", "valid_count": 2, "module_count": 2, "warnings": []},
+                    "tabs": [{"id": "live", "label": "Session"}],
+                    "modules": [{"id": "core"}],
+                    "legacy_homes": [],
+                    "warnings": [],
+                }
+
+            diag_inj, rc_inj = init_env.run_environment(
+                gravity_home=g_home, plugins_dirs=[plugins_dir], home_dir=fake_user,
+                dashboard=True, overview_fn=_fake_overview,
+                app_version_detector=lambda: {"version": "2.35.0", "source": "test", "meets_mcp_app_min": True},
+            )
+            self.assertEqual(rc_inj, 0)
+            self.assertEqual(diag_inj["registry_source"], "stub")
+            self.assertEqual(diag_inj["tabs"], [{"id": "live", "label": "Session"}])
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["gravity_home"], g_home.resolve())
+            self.assertEqual(calls[0]["home_dir"], fake_user)
+
+            # 3) overview.run_overview_mode invokes health_provider_fn once per companion declaring "health"
+            health_calls: list[tuple[str, dict[str, object]]] = []
+
+            def _fake_health(mod_id: str, **kw: object) -> dict[str, object]:
+                health_calls.append((mod_id, dict(kw)))
+                return {"ok": True, "status": "WARN", "summary": "0 atelier", "warnings": ["Module 'architect' : stub"]}
+
+            ov_payload, ov_rc = overview.run_overview_mode(
+                gravity_home=g_home, plugins_dirs=[plugins_dir], home_dir=fake_user,
+                app_version_detector=lambda: {"version": "2.35.0", "source": "test", "meets_mcp_app_min": True},
+                health_provider_fn=_fake_health,
+            )
+            self.assertEqual(ov_rc, 0)
+            self.assertEqual(len(health_calls), 1)
+            self.assertEqual(health_calls[0][0], "architect")
+            self.assertEqual(health_calls[0][1]["gravity_home"], g_home.resolve())
+            self.assertEqual(health_calls[0][1]["home_dir"], fake_user)
+            self.assertIn("Module 'architect' : stub", ov_payload["warnings"])
 
 
 if __name__ == "__main__":

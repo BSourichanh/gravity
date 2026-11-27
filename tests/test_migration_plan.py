@@ -286,6 +286,57 @@ class TestMigrationPlan(unittest.TestCase):
             p_mut = _run_init_env(["--migration-plan", "--check"], env)
             self.assertNotEqual(p_mut.returncode, 0)
 
+    def test_format_migration_plan_report_pure_and_cli_wrapper(self) -> None:
+        from contextlib import redirect_stdout
+        import io
+        import sys
+
+        plugin_root = REPO_ROOT / "plugin"
+        if str(plugin_root) not in sys.path:
+            sys.path.insert(0, str(plugin_root))
+        from core import doctor  # noqa: E402
+        from scripts import init_env  # noqa: E402
+
+        empty_payload = {"shell": "bash", "gravity_home": "/g", "backup_root": "/b", "plans": []}
+        buf_empty = io.StringIO()
+        with redirect_stdout(buf_empty):
+            txt_empty = doctor.format_migration_plan_report(empty_payload)
+        self.assertEqual(buf_empty.getvalue(), "")
+        self.assertIn("none detected", txt_empty)
+
+        conflict_payload = {
+            "shell": "powershell",
+            "gravity_home": "/g",
+            "backup_root": "/b",
+            "plans": [
+                {
+                    "name": "gravity-metrics",
+                    "target_module": "metrics",
+                    "source_path": "/src",
+                    "target_path": "/dst",
+                    "backup_path": "/b/metrics",
+                    "file_count": 3,
+                    "total_bytes": 42,
+                    "skipped_symlink": True,
+                    "truncated": True,
+                    "conflict": True,
+                    "collision_count": 3,
+                    "collisions": ["a.jsonl", "b.jsonl"],
+                    "steps": [{"step": 1, "kind": "backup", "description": "Backup", "command": "Copy-Item"}],
+                }
+            ],
+        }
+        rendered = doctor.format_migration_plan_report(conflict_payload)
+        self.assertIn("[CONFLICT] 3 file(s)", rendered)
+        self.assertIn("(+1 more)", rendered)
+        self.assertIn("symlink", rendered)
+        self.assertIn("Scan cap reached", rendered)
+
+        buf_cli = io.StringIO()
+        with redirect_stdout(buf_cli):
+            init_env._print_migration_plan_report(conflict_payload)
+        self.assertEqual(buf_cli.getvalue(), rendered + "\n")
+
 
 if __name__ == "__main__":
     unittest.main()

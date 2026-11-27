@@ -171,29 +171,46 @@ def build_migration_plan(
     return {"shell": resolved_shell, "backup_root": str(backup_root), "plan_count": len(plans), "has_conflicts": any(p["conflict"] for p in plans), "plans": plans}
 
 
-def print_migration_plan_report(payload: dict[str, Any]) -> None:
-    print(f"Gravity Core Legacy Migration Plan (read-only, shell={payload['shell']})\n  Gravity Home : {payload['gravity_home']}\n  Backup Root  : {payload['backup_root']}")
+def format_migration_plan_report(payload: dict[str, Any]) -> str:
+    """Format the read-only legacy migration plan for human stdout output."""
+    lines: list[str] = [
+        f"Gravity Core Legacy Migration Plan (read-only, shell={payload['shell']})",
+        f"  Gravity Home : {payload['gravity_home']}",
+        f"  Backup Root  : {payload['backup_root']}",
+    ]
     plans = payload.get("plans") or []
     if not plans:
-        print("\nLegacy directories: none detected (nothing to migrate).")
-        return
-    print(f"\nDetected {len(plans)} legacy directory(ies) (read-only plan; nothing modified on disk):")
+        lines.append("\nLegacy directories: none detected (nothing to migrate).")
+        return "\n".join(lines)
+    lines.append(f"\nDetected {len(plans)} legacy directory(ies) (read-only plan; nothing modified on disk):")
     for plan in plans:
-        print(f"\n- {plan['name']} -> module '{plan['target_module']}'\n  Source  : {plan['source_path']} ({plan['file_count']} file(s), {plan['total_bytes']} bytes)")
+        lines.append(
+            f"\n- {plan['name']} -> module '{plan['target_module']}'\n"
+            f"  Source  : {plan['source_path']} ({plan['file_count']} file(s), {plan['total_bytes']} bytes)"
+        )
         if plan.get("skipped_symlink"):
-            print("  Notice  : Source path is a symlink and was not traversed.")
+            lines.append("  Notice  : Source path is a symlink and was not traversed.")
         if plan.get("truncated"):
-            print("  Notice  : Scan cap reached; totals are lower bounds.")
-        print(f"  Target  : {plan['target_path']}\n  Backup  : {plan['backup_path']}")
+            lines.append("  Notice  : Scan cap reached; totals are lower bounds.")
+        lines.append(f"  Target  : {plan['target_path']}\n  Backup  : {plan['backup_path']}")
         if plan.get("conflict"):
             shown = plan.get("collisions") or []
             total_col = plan.get("collision_count", len(shown))
-            print(f"  [CONFLICT] {total_col} file(s) already exist at target (manual review required; non-clobber copy will skip them):")
+            lines.append(
+                f"  [CONFLICT] {total_col} file(s) already exist at target (manual review required; non-clobber copy will skip them):"
+            )
             for rel in shown:
-                print(f"    * {rel}")
+                lines.append(f"    * {rel}")
             if total_col > len(shown):
-                print(f"    * ... (+{total_col - len(shown)} more)")
-        print("  Steps:\n" + "\n".join(f"    {s['step']}. [{s['kind']}] {s['description']}\n       {s['command']}" for s in (plan.get("steps") or [])))
+                lines.append(f"    * ... (+{total_col - len(shown)} more)")
+        lines.append(
+            "  Steps:\n"
+            + "\n".join(
+                f"    {s['step']}. [{s['kind']}] {s['description']}\n       {s['command']}"
+                for s in (plan.get("steps") or [])
+            )
+        )
+    return "\n".join(lines)
 
 
 def find_duplicate_ids(modules: Sequence[dict[str, Any]]) -> list[str]:
@@ -220,29 +237,6 @@ def _read_json_file_ro(path: Path) -> tuple[Any, Optional[str]]:
         return data, (f"{path.name} contient un BOM UTF-8." if bom_err else None)
     except (UnicodeDecodeError, ValueError) as exc:
         return None, f"{path} JSON invalide ({exc})."
-
-
-def _is_valid_atelier_dir(candidate: Path) -> bool:
-    try:
-        return not is_symlink_or_junction(candidate) and candidate.is_dir() and (candidate / "ECOSYSTEM.md").is_file() and (candidate / "projects.json").is_file()
-    except OSError:
-        return False
-
-
-def _inspect_architect_ateliers_ro(ateliers_path: Path) -> tuple[bool, int]:
-    """Inspect <architect_home>/ateliers.json strictly RO; return (exists, valid_count)."""
-    if is_symlink_or_junction(ateliers_path.parent) or is_symlink_or_junction(ateliers_path) or not ateliers_path.is_file():
-        return False, 0
-    data, err = _read_json_file_ro(ateliers_path)
-    if err and data is None:
-        return True, 0
-    if not isinstance(data, dict) or not isinstance(data.get("ateliers"), list):
-        return True, 0
-    valid_count = sum(
-        1 for e in data["ateliers"]
-        if isinstance(e, dict) and str(e.get("workspace_path") or "").strip() and _is_valid_atelier_dir(Path(str(e["workspace_path"]).strip()).expanduser())
-    )
-    return True, valid_count
 
 
 def _parse_semver_str(raw: str) -> Optional[tuple[int, int, int]]:
@@ -307,86 +301,44 @@ def _detect_antigravity_app_version() -> dict[str, Any]:
     return _app_version_payload(None, "none", "")
 
 
-def _validate_jsonl_ro(path: Path) -> tuple[int, Optional[str]]:
-    if is_symlink_or_junction(path):
-        return 0, f"{path} est un symlink (refusé en lecture seule)."
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        return 0, f"{path} illisible ({exc})."
-    count = 0
-    for idx, raw_ln in enumerate(text.splitlines(), start=1):
-        line = raw_ln.lstrip("\ufeff").strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except ValueError as exc:
-            return count, f"{path} ligne {idx} corrompue ({exc})."
-        if not isinstance(obj, dict):
-            return count, f"{path} ligne {idx} n'est pas un objet JSON."
-        count += 1
-    return count, None
-
-
-def _inspect_metrics_health_ro(mod_home: Path) -> tuple[str, str, list[str]]:
-    history_path, metrics_md = mod_home / "data" / "history.jsonl", mod_home / "METRICS.md"
-    try:
-        paths_ok = not any(is_symlink_or_junction(p) for p in (mod_home, history_path.parent, history_path, metrics_md)) and history_path.is_file() and metrics_md.is_file()
-    except OSError:
-        paths_ok = False
-    if not paths_ok:
-        return ("WARN", "history.jsonl/METRICS.md absent(s)", [f"Module 'metrics' actif mais {history_path} ou {metrics_md} absent : exécutez /gravity-metrics pour initialiser la télémétrie."])
-    sessions, jerr = _validate_jsonl_ro(history_path)
-    if jerr:
-        return "WARN", "history.jsonl invalide", [f"Module 'metrics' : {jerr}"]
-    return "OK", f"{sessions} session(s)", []
-
-
-def _check_json_dict_ro(path: Path, warns: list[str], err_prefix: str) -> bool:
-    if not is_symlink_or_junction(path) and not path.is_file():
+def _module_declares_health_view(mod: dict[str, Any]) -> bool:
+    dash = mod.get("dashboard")
+    if not isinstance(dash, dict):
         return False
-    data, err = _read_json_file_ro(path)
-    if err or not isinstance(data, dict):
-        warns.append(f"{err_prefix} : {path} invalide ({err or 'objet JSON attendu'}).")
-        return False
-    return True
+    views = dash.get("views")
+    return isinstance(views, list) and any(isinstance(v, str) and v.strip() == "health" for v in views)
 
 
-def _inspect_workflow_health_ro(mod: dict[str, Any], mod_home: Path) -> tuple[str, str, list[str]]:
-    warns: list[str] = []
-    pdir = str(mod.get("plugin_dir") or "").strip()
-    hooks_path = Path(pdir) / "hooks.json" if pdir else None
-    if hooks_path is None or is_symlink_or_junction(hooks_path) or not hooks_path.is_file():
-        warns.append(f"Module 'workflow' : hooks.json absent ou symlink ({hooks_path}).")
-    else:
-        _check_json_dict_ro(hooks_path, warns, "Module 'workflow'")
-
-    live_count = 0
-    if is_symlink_or_junction(mod_home):
-        warns.append(f"Module 'workflow' : {mod_home} est un symlink.")
-    elif mod_home.is_dir():
-        _check_json_dict_ro(mod_home / "live_workspaces.json", warns, "Module 'workflow'")
-        ws_dir = mod_home / "workspaces"
-        if is_symlink_or_junction(ws_dir):
-            warns.append(f"Module 'workflow' : {ws_dir} est un symlink.")
-        elif ws_dir.is_dir():
-            for sub in sorted(ws_dir.iterdir(), key=lambda p: p.name):
-                if is_symlink_or_junction(sub):
-                    warns.append(f"Module 'workflow' : sous-dossier symlink refusé ({sub}).")
-                elif sub.is_dir():
-                    if _check_json_dict_ro(sub / "live_state.json", warns, "Module 'workflow'"):
-                        live_count += 1
-                    rj = sub / "runs.jsonl"
-                    if is_symlink_or_junction(rj) or rj.is_file():
-                        _, rerr = _validate_jsonl_ro(rj)
-                        if rerr:
-                            warns.append(f"Module 'workflow' : {rerr}")
-    return ("WARN", "état ou hooks invalide(s)", warns) if warns else ("OK", f"hooks.json OK · {live_count} état(s) live", [])
+def _generic_module_health(mod_home: Path) -> tuple[str, str, list[str]]:
+    return "OK", ("home présent" if mod_home.is_dir() else "home non initialisé"), []
 
 
-def _inspect_module_health_ro(mod: dict[str, Any], *, plugin_root: Path = PLUGIN_ROOT) -> dict[str, Any]:
-    """Inspect a single discovered module strictly read-only without symlinks or disk writes."""
+def _parse_spi_health_response(res: Any, mod_home: Path) -> tuple[str, str, list[str]]:
+    if not isinstance(res, dict) or res.get("spi_fallback"):
+        return _generic_module_health(mod_home)
+    raw_status = str(res.get("status") or "").strip().upper()
+    if raw_status not in ("OK", "WARN", "ERR"):
+        raw_status = "OK" if res.get("ok", True) else "WARN"
+    summary = str(res.get("summary") or "").strip()
+    if not summary:
+        summary = "home présent" if mod_home.is_dir() else "home non initialisé"
+    raw_warns = res.get("warnings")
+    warns = [str(w) for w in raw_warns if isinstance(w, str) and w.strip()] if isinstance(raw_warns, list) else []
+    if raw_status in ("WARN", "ERR") and not warns and isinstance(res.get("error"), str) and res["error"].strip():
+        warns = [res["error"].strip()]
+    return raw_status, summary, warns
+
+
+def _inspect_module_health_ro(
+    mod: dict[str, Any],
+    *,
+    plugin_root: Path = PLUGIN_ROOT,
+    gravity_home: Optional[Path] = None,
+    plugin_roots: Optional[Sequence[Path]] = None,
+    home_dir: Optional[Path] = None,
+    health_provider_fn: Optional[Callable[..., dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """Inspect a single discovered module strictly read-only via SPI-1 health or safe generic fallback."""
     mod_id, plugin_name = str(mod.get("id") or ""), str(mod.get("plugin_name") or "")
     commands = [str(c) for c in (mod.get("commands") or []) if isinstance(c, str) and c.strip()]
     base = {"id": mod_id, "plugin_name": plugin_name, "version": str(mod.get("version") or "?"), "commands": commands}
@@ -397,31 +349,37 @@ def _inspect_module_health_ro(mod: dict[str, Any], *, plugin_root: Path = PLUGIN
         return {**base, "status": "OK", "summary": "actif", "warnings": [], "errors": []}
 
     mod_home = Path(raw_home)
-    if mod_id == "architect" or plugin_name == "gravity-architect":
-        ap = mod_home / "ateliers.json"
-        reg_exists, valid_count = _inspect_architect_ateliers_ro(ap)
-        if not reg_exists:
-            status, summary, warns = "WARN", "ateliers.json absent", [f"Module 'architect' actif mais {ap} absent : lancez /gravity-architect init ou /gravity-architect sync dans votre atelier."]
-        elif valid_count == 0:
-            status, summary, warns = "WARN", "0 atelier valide", [f"Module 'architect' actif mais {ap} ne contient aucun atelier valide : lancez /gravity-architect init ou /gravity-architect sync."]
-        else:
-            status, summary, warns = "OK", f"{valid_count} atelier(s) valide(s)", []
-    elif mod_id == "metrics" or plugin_name == "gravity-metrics":
-        status, summary, warns = _inspect_metrics_health_ro(mod_home)
-    elif mod_id == "workflow" or plugin_name == "gravity-workflow":
-        status, summary, warns = _inspect_workflow_health_ro(mod, mod_home)
-    elif mod_id == "core" or plugin_name == "gravity":
+    if mod_id == "core" or plugin_name == "gravity":
         diag = diagnose_mcp_dashboard(Path(mod.get("plugin_dir") or plugin_root))
         status, summary, warns = ("WARN", "MCP dashboard incomplet", list(diag["errors"])) if diag["errors"] else ("OK", ("registre initialisé" if (mod_home / "modules.json").is_file() else "lecture seule (non initialisé)"), [])
     elif is_symlink_or_junction(mod_home):
         status, summary, warns = "WARN", "home symlink refusé", [f"Module '{mod_id}' : {mod_home} est un symlink."]
+    elif health_provider_fn is not None and _module_declares_health_view(mod):
+        try:
+            spi_res = health_provider_fn(
+                mod_id,
+                gravity_home=gravity_home,
+                plugin_roots=plugin_roots,
+                home_dir=home_dir,
+            )
+        except Exception:
+            spi_res = None
+        status, summary, warns = _parse_spi_health_response(spi_res, mod_home)
     else:
-        status, summary, warns = "OK", ("home présent" if mod_home.is_dir() else "home non initialisé"), []
+        status, summary, warns = _generic_module_health(mod_home)
     return {**base, "status": status, "summary": summary, "warnings": warns, "errors": []}
 
 
 def _collect_doctor_warnings(
-    modules: Sequence[dict[str, Any]], *, app_version: Optional[dict[str, Any]] = None, plugin_root: Path = PLUGIN_ROOT,
+    modules: Sequence[dict[str, Any]],
+    *,
+    app_version: Optional[dict[str, Any]] = None,
+    plugin_root: Path = PLUGIN_ROOT,
+    gravity_home: Optional[Path] = None,
+    plugin_roots: Optional[Sequence[Path]] = None,
+    home_dir: Optional[Path] = None,
+    health_provider_fn: Optional[Callable[..., dict[str, Any]]] = None,
+    inspected_health: Optional[Sequence[dict[str, Any]]] = None,
 ) -> list[str]:
     """Collect non-blocking read-only warnings for valid discovered modules and MCP dashboard."""
     warnings: list[str] = []
@@ -431,7 +389,21 @@ def _collect_doctor_warnings(
             continue
         if mod.get("id") == "core" or mod.get("plugin_name") == "gravity":
             has_core = True
-        warnings.extend(_inspect_module_health_ro(mod, plugin_root=plugin_root)["warnings"])
+        if inspected_health is None:
+            warnings.extend(
+                _inspect_module_health_ro(
+                    mod,
+                    plugin_root=plugin_root,
+                    gravity_home=gravity_home,
+                    plugin_roots=plugin_roots,
+                    home_dir=home_dir,
+                    health_provider_fn=health_provider_fn,
+                )["warnings"]
+            )
+    if inspected_health is not None:
+        for item in inspected_health:
+            if item.get("status") != "ERR" or not item.get("errors"):
+                warnings.extend(item.get("warnings") or [])
     if not has_core:
         warnings.extend(diagnose_mcp_dashboard(plugin_root)["errors"])
     app_info = app_version if app_version is not None else _detect_antigravity_app_version()
@@ -487,26 +459,51 @@ def diagnose_mcp_dashboard(plugin_root: Path = PLUGIN_ROOT) -> dict[str, Any]:
 def run_dashboard_diagnostic(
     *, gravity_home: Optional[Path] = None, plugins_dirs: Optional[Sequence[Path]] = None,
     home_dir: Optional[Path] = None, app_version_detector: Optional[Callable[[], dict[str, Any]]] = None,
+    overview_fn: Optional[Callable[..., dict[str, Any]]] = None,
     plugin_root: Path = PLUGIN_ROOT,
 ) -> tuple[dict[str, Any], int]:
     """Run strictly read-only diagnostics for the Gravity MCP App dashboard."""
-    from dashboard import api as dashboard_api
-
     resolved_home = resolve_gravity_home(gravity_home, home_dir=home_dir)
     roots = [Path(p) for p in plugins_dirs] if plugins_dirs is not None else default_plugin_roots(home_dir=home_dir)
     diag, app_info = diagnose_mcp_dashboard(plugin_root), (app_version_detector or _detect_antigravity_app_version)()
-    overview = dashboard_api.get_overview(gravity_home=resolved_home, plugin_roots=roots, home_dir=home_dir)
+    if overview_fn is not None:
+        overview = overview_fn(gravity_home=resolved_home, plugin_roots=roots, home_dir=home_dir)
+    else:
+        reg_path = resolved_home / "core" / "modules.json"
+        fallback_warns = ["overview_fn non injecté : diagnostic dashboard limité au socle MCP."]
+        overview = {
+            "registry_path": str(reg_path),
+            "registry_exists": reg_path.is_file(),
+            "registry_source": "none",
+            "doctor": {
+                "initialized": (resolved_home / "core").is_dir() and reg_path.is_file(),
+                "module_count": 0,
+                "valid_count": 0,
+                "invalid_count": 0,
+                "duplicate_ids": [],
+                "legacy_count": 0,
+                "status": "warn",
+                "warnings": fallback_warns,
+            },
+            "tabs": [],
+            "modules": [],
+            "legacy_homes": [],
+            "warnings": fallback_warns,
+        }
     ok = bool(diag["mcp_config_ok"]) and bool(diag["server_exists"]) and bool(diag["api_exists"]) and not diag["errors"]
+    warns = list(overview.get("warnings") or (overview.get("doctor") or {}).get("warnings") or [])
     return {
         "mode": "dashboard", "ok": ok, "gravity_home": str(resolved_home),
         "registry_path": overview["registry_path"], "registry_exists": overview["registry_exists"],
         "registry_source": overview["registry_source"], "plugin_roots": [str(Path(p).expanduser().resolve()) for p in roots],
         "dashboard": diag, "antigravity_app": app_info, "doctor": overview["doctor"],
         "tabs": overview["tabs"], "modules": overview["modules"], "legacy_homes": overview["legacy_homes"],
+        "warnings": warns,
     }, (0 if ok else 1)
 
 
-def print_dashboard_report(payload: dict[str, Any]) -> None:
+def format_dashboard_report(payload: dict[str, Any]) -> str:
+    """Format the read-only Gravity dashboard diagnostic report for stdout."""
     diag, doctor, tabs, app_info = payload.get("dashboard") or {}, payload.get("doctor") or {}, payload.get("tabs") or [], payload.get("antigravity_app") or {}
     meets = app_info.get("meets_mcp_app_min")
     if meets is True:
@@ -517,7 +514,7 @@ def print_dashboard_report(payload: dict[str, Any]) -> None:
     else:
         app_lbl = "unknown (non détecté)"
     tab_desc = ", ".join(f"{t.get('id')} ({t.get('label')})" for t in tabs) or "none"
-    print(
+    lines = [
         f"Gravity Dashboard Diagnostics (read-only)\n  Gravity Home  : {payload['gravity_home']}\n"
         f"  MCP Config    : {'OK' if diag.get('mcp_config_ok') else 'ERROR'} ({diag.get('mcp_command') or '-'})\n"
         f"  MCP Server    : {'present' if diag.get('server_exists') else 'missing'} ({diag.get('server_path')})\n"
@@ -526,9 +523,10 @@ def print_dashboard_report(payload: dict[str, Any]) -> None:
         f"  Antigravity   : {app_lbl}\n"
         f"  Doctor        : {doctor.get('status', 'unknown')} ({doctor.get('valid_count', 0)}/{doctor.get('module_count', 0)} modules valid)\n"
         f"  Tabs          : {tab_desc}\n  MCP Tool      : open_gravity_dashboard (aux_pane / global)"
-    )
+    ]
     for err in diag.get("errors") or []:
-        print(f"  [ERROR] {err}")
+        lines.append(f"  [ERROR] {err}")
+    return "\n".join(lines)
 
 
 _diagnose_mcp_dashboard = diagnose_mcp_dashboard

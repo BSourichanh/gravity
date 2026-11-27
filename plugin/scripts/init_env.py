@@ -21,16 +21,16 @@ from core.doctor import (  # noqa: E402
     _detect_windows_app_version,
     build_migration_plan,
     find_duplicate_ids,
-    print_dashboard_report,
-    print_migration_plan_report,
+    format_dashboard_report,
+    format_migration_plan_report,
     run_dashboard_diagnostic,
 )
 from core.overview import (  # noqa: E402
     GUIDE_CORE_COMMANDS,
     GUIDE_DOCS,
     GUIDE_QUICKSTART,
+    format_guide_report,
     format_overview_markdown,
-    print_guide_report,
     run_guide_mode,
     run_overview_mode,
 )
@@ -43,10 +43,53 @@ from core.registry import (  # noqa: E402
     write_modules_registry,
 )
 
-_print_dashboard_report = print_dashboard_report
-_print_guide_report = print_guide_report
-_print_migration_plan_report = print_migration_plan_report
 _enrich_module_homes = enrich_module_homes
+
+
+def _print_dashboard_report(payload: dict[str, Any]) -> None:
+    print(format_dashboard_report(payload))
+
+
+def _print_guide_report(payload: dict[str, Any]) -> None:
+    print(format_guide_report(payload))
+
+
+def _print_migration_plan_report(payload: dict[str, Any]) -> None:
+    print(format_migration_plan_report(payload))
+
+
+def _invoke_health_provider(
+    module_id: str,
+    *,
+    gravity_home: Optional[Path] = None,
+    plugin_roots: Optional[Sequence[Path]] = None,
+    home_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    from dashboard.providers.spi import invoke_dashboard_provider
+
+    return invoke_dashboard_provider(
+        module_id,
+        view="health",
+        gravity_home=gravity_home,
+        plugin_roots=plugin_roots,
+        home_dir=home_dir,
+        timeout_s=5.0,
+    )
+
+
+def _get_dashboard_overview(
+    *,
+    gravity_home: Optional[Path] = None,
+    plugin_roots: Optional[Sequence[Path]] = None,
+    home_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    from dashboard import api as dashboard_api
+
+    return dashboard_api.get_overview(
+        gravity_home=gravity_home,
+        plugin_roots=plugin_roots,
+        home_dir=home_dir,
+    )
 
 
 def run_environment(
@@ -62,14 +105,19 @@ def run_environment(
     overview: bool = False,
     shell: str = "auto",
     app_version_detector: Optional[Callable[[], dict[str, Any]]] = None,
+    overview_fn: Optional[Callable[..., dict[str, Any]]] = None,
+    health_provider_fn: Optional[Callable[..., dict[str, Any]]] = None,
 ) -> tuple[dict[str, Any], int]:
     """Execute init, status, check, migration-plan, dashboard, guide, or overview workflow."""
+    eff_health_fn = health_provider_fn or _invoke_health_provider
+    eff_overview_fn = overview_fn or _get_dashboard_overview
     if overview:
         return run_overview_mode(
             gravity_home=gravity_home,
             plugins_dirs=plugins_dirs,
             home_dir=home_dir,
             app_version_detector=app_version_detector,
+            health_provider_fn=eff_health_fn,
         )
     if guide:
         return run_guide_mode(
@@ -83,6 +131,7 @@ def run_environment(
             plugins_dirs=plugins_dirs,
             home_dir=home_dir,
             app_version_detector=app_version_detector,
+            overview_fn=eff_overview_fn,
         )
 
     raw_home = resolve_gravity_home_raw(gravity_home, home_dir=home_dir)
@@ -148,7 +197,14 @@ def run_environment(
         ok = False
     if mode == "check":
         detector = app_version_detector or _detect_antigravity_app_version
-        warnings = _collect_doctor_warnings(modules, app_version=detector())
+        warnings = _collect_doctor_warnings(
+            modules,
+            app_version=detector(),
+            gravity_home=resolved_home,
+            plugin_roots=roots,
+            home_dir=home_dir,
+            health_provider_fn=eff_health_fn,
+        )
     else:
         warnings = []
 
@@ -203,13 +259,13 @@ def _print_human_report(payload: dict[str, Any]) -> None:
         print(format_overview_markdown(payload))
         return
     if mode == "guide":
-        print_guide_report(payload)
+        _print_guide_report(payload)
         return
     if mode == "migration-plan":
-        print_migration_plan_report(payload)
+        _print_migration_plan_report(payload)
         return
     if mode == "dashboard":
-        print_dashboard_report(payload)
+        _print_dashboard_report(payload)
         return
 
     if payload.get("error"):

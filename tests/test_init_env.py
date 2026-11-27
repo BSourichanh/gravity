@@ -79,6 +79,98 @@ def _create_fake_module(plugins_dir: Path, mod_id: str, plugin_name: str, env_ov
     )
 
 
+def _create_fake_spi_health_module(
+    plugins_dir: Path,
+    mod_id: str,
+    plugin_name: str,
+    env_override: str,
+    script_body: str,
+    *,
+    views: list[str] | None = None,
+) -> None:
+    _create_fake_module(plugins_dir, mod_id, plugin_name, env_override)
+    mod_dir = plugins_dir / plugin_name
+    mod_json_path = mod_dir / "config" / "module.json"
+    mod_data = json.loads(mod_json_path.read_text(encoding="utf-8"))
+    mod_data["dashboard"] = {
+        "provider_script": "scripts/dashboard_provider.py",
+        "views": list(views) if views is not None else ["health"],
+        "actions": [],
+    }
+    mod_json_path.write_text(json.dumps(mod_data), encoding="utf-8")
+    (mod_dir / "scripts").mkdir(parents=True, exist_ok=True)
+    (mod_dir / "scripts" / "dashboard_provider.py").write_text(script_body, encoding="utf-8")
+
+
+_ARCHITECT_HEALTH_STUB = """import json, os, sys
+from pathlib import Path
+
+def main():
+    g_home = Path(os.environ.get("GRAVITY_HOME") or (Path.home() / ".gemini" / "gravity"))
+    a_home = Path(os.environ["GRAVITY_ARCHITECT_HOME"]) if os.environ.get("GRAVITY_ARCHITECT_HOME", "").strip() else (g_home / "architect")
+    ap = a_home / "ateliers.json"
+    if not ap.is_file():
+        print(json.dumps({"ok": True, "status": "WARN", "summary": "ateliers.json absent", "warnings": [f"Module 'architect' actif mais {ap} absent : lancez /gravity-architect init."]}))
+        return 0
+    data = json.loads(ap.read_text(encoding="utf-8"))
+    valid = sum(1 for e in (data.get("ateliers") or []) if isinstance(e, dict) and e.get("workspace_path") and (Path(e["workspace_path"]) / "ECOSYSTEM.md").is_file())
+    if valid == 0:
+        print(json.dumps({"ok": True, "status": "WARN", "summary": "0 atelier valide", "warnings": [f"Module 'architect' actif mais {ap} ne contient aucun atelier valide."]}))
+        return 0
+    print(json.dumps({"ok": True, "status": "OK", "summary": f"{valid} atelier(s) valide(s)", "warnings": []}))
+    return 0
+
+raise SystemExit(main())
+"""
+
+_METRICS_HEALTH_STUB = """import json, os
+from pathlib import Path
+
+def main():
+    g_home = Path(os.environ.get("GRAVITY_HOME") or (Path.home() / ".gemini" / "gravity"))
+    m_home = Path(os.environ["GRAVITY_METRICS_HOME"]) if os.environ.get("GRAVITY_METRICS_HOME", "").strip() else (g_home / "metrics")
+    hp, md = m_home / "data" / "history.jsonl", m_home / "METRICS.md"
+    if not hp.is_file() or not md.is_file():
+        print(json.dumps({"ok": True, "status": "WARN", "summary": "history.jsonl/METRICS.md absent(s)", "warnings": [f"Module 'metrics' actif mais {hp} ou {md} absent : exécutez /gravity-metrics."]}))
+        return 0
+    for ln in hp.read_text(encoding="utf-8").splitlines():
+        if ln.strip():
+            try:
+                json.loads(ln)
+            except ValueError as exc:
+                print(json.dumps({"ok": True, "status": "WARN", "summary": "history.jsonl invalide", "warnings": [f"Module 'metrics' : {hp} corrompu ({exc})."]}))
+                return 0
+    print(json.dumps({"ok": True, "status": "OK", "summary": "1 session(s)", "warnings": []}))
+    return 0
+
+raise SystemExit(main())
+"""
+
+_WORKFLOW_HEALTH_STUB = """import json, os
+from pathlib import Path
+
+def main():
+    g_home = Path(os.environ.get("GRAVITY_HOME") or (Path.home() / ".gemini" / "gravity"))
+    w_home = Path(os.environ["GRAVITY_WORKFLOW_HOME"]) if os.environ.get("GRAVITY_WORKFLOW_HOME", "").strip() else (g_home / "workflow")
+    ws_dir = w_home / "workspaces"
+    if ws_dir.is_dir():
+        for sub in ws_dir.iterdir():
+            rj = sub / "runs.jsonl"
+            if rj.is_file():
+                for ln in rj.read_text(encoding="utf-8").splitlines():
+                    if ln.strip():
+                        try:
+                            json.loads(ln)
+                        except ValueError as exc:
+                            print(json.dumps({"ok": True, "status": "WARN", "summary": "runs.jsonl invalide", "warnings": [f"Module 'workflow' : {rj} corrompu ({exc})."]}))
+                            return 0
+    print(json.dumps({"ok": True, "status": "OK", "summary": "hooks.json OK", "warnings": []}))
+    return 0
+
+raise SystemExit(main())
+"""
+
+
 class TestInitEnvCLI(unittest.TestCase):
     def test_init_creates_core_subdirs_registry_and_detects_legacy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -407,8 +499,8 @@ class TestInitEnvCLI(unittest.TestCase):
                 plugins_dir / "gravity",
                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
             )
-            _create_fake_module(plugins_dir, "architect", "gravity-architect", "GRAVITY_ARCHITECT_HOME")
-            _create_fake_module(plugins_dir, "metrics", "gravity-metrics", "GRAVITY_METRICS_HOME")
+            _create_fake_spi_health_module(plugins_dir, "architect", "gravity-architect", "GRAVITY_ARCHITECT_HOME", _ARCHITECT_HEALTH_STUB)
+            _create_fake_spi_health_module(plugins_dir, "metrics", "gravity-metrics", "GRAVITY_METRICS_HOME", _METRICS_HEALTH_STUB)
 
             gravity_home = tmp_path / "doctor-home"
             empty_bin = tmp_path / "empty-bin"
@@ -793,8 +885,8 @@ class TestInitEnvCLI(unittest.TestCase):
             fake_home.mkdir()
             plugins_dir = tmp_path / "plugins"
             shutil.copytree(REPO_ROOT / "plugin", plugins_dir / "gravity", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-            _create_fake_module(plugins_dir, "metrics", "gravity-metrics", "GRAVITY_METRICS_HOME")
-            _create_fake_module(plugins_dir, "workflow", "gravity-workflow", "GRAVITY_WORKFLOW_HOME")
+            _create_fake_spi_health_module(plugins_dir, "metrics", "gravity-metrics", "GRAVITY_METRICS_HOME", _METRICS_HEALTH_STUB)
+            _create_fake_spi_health_module(plugins_dir, "workflow", "gravity-workflow", "GRAVITY_WORKFLOW_HOME", _WORKFLOW_HEALTH_STUB)
             (plugins_dir / "gravity-workflow" / "hooks.json").write_text('{"g": {"enabled": true}}\n', encoding="utf-8")
 
             gravity_home = tmp_path / "g-home"
@@ -947,6 +1039,131 @@ class TestInitEnvCLI(unittest.TestCase):
             self.assertEqual(p_core.returncode, 1)
             self.assertFalse(json.loads(p_core.stdout)["ok"])
             self.assertEqual(list(core_target.rglob("*")), [])
+
+    def test_doctor_spi_health_fallback_boundaries_and_no_dashboard_import(self) -> None:
+        import ast
+
+        core_dir = PLUGIN_ROOT / "core"
+        for py_path in sorted(core_dir.glob("*.py")):
+            tree = ast.parse(py_path.read_text(encoding="utf-8"), filename=str(py_path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        self.assertFalse(alias.name.startswith("dashboard"), msg=f"{py_path.name} imports {alias.name}")
+                elif isinstance(node, ast.ImportFrom):
+                    mod_name = node.module or ""
+                    self.assertFalse(mod_name.startswith("dashboard"), msg=f"{py_path.name} imports from {mod_name}")
+                elif isinstance(node, ast.Call) and py_path.name in ("doctor.py", "overview.py"):
+                    if isinstance(node.func, ast.Name):
+                        self.assertNotEqual(node.func.id, "print", msg=f"{py_path.name} calls print()")
+
+        doctor_src = (core_dir / "doctor.py").read_text(encoding="utf-8")
+        for forbidden in ("ateliers.json", "history.jsonl", "METRICS.md", "hooks.json", "live_workspaces.json", "live_state.json", "runs.jsonl"):
+            self.assertNotIn(forbidden, doctor_src)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            mod_home = tmp_path / "comp-home"
+            mod_base = {
+                "id": "architect",
+                "plugin_name": "gravity-architect",
+                "version": "1.0.0",
+                "valid": True,
+                "commands": ["/gravity-architect"],
+                "resolved_home": str(mod_home),
+                "dashboard": {"provider_script": "scripts/dashboard_provider.py", "views": ["health"]},
+            }
+
+            # 1) health_provider_fn=None -> generic safe fallback (does not read internal files)
+            res_none = doctor._inspect_module_health_ro(mod_base, health_provider_fn=None)
+            self.assertEqual(res_none["status"], "OK")
+            self.assertEqual(res_none["summary"], "home non initialisé")
+            self.assertEqual(res_none["warnings"], [])
+
+            mod_home.mkdir()
+            res_present = doctor._inspect_module_health_ro(mod_base, health_provider_fn=None)
+            self.assertEqual(res_present["summary"], "home présent")
+
+            # 2) "health" not declared in dashboard.views -> generic safe fallback, provider not called
+            mod_no_health = {**mod_base, "dashboard": {"provider_script": "scripts/dashboard_provider.py", "views": ["architect"]}}
+            called: list[str] = []
+
+            def _should_not_run(mid: str, **_: object) -> dict[str, object]:
+                called.append(mid)
+                return {"ok": True, "status": "WARN", "summary": "unexpected", "warnings": ["unexpected"]}
+
+            res_no_view = doctor._inspect_module_health_ro(mod_no_health, health_provider_fn=_should_not_run)
+            self.assertEqual(called, [])
+            self.assertEqual(res_no_view["status"], "OK")
+            self.assertEqual(res_no_view["summary"], "home présent")
+
+            # 3) spi_fallback=True -> generic safe fallback
+            res_spi_fb = doctor._inspect_module_health_ro(
+                mod_base,
+                health_provider_fn=lambda mid, **kw: {"available": False, "spi_fallback": True, "error": "timeout"},
+            )
+            self.assertEqual(res_spi_fb["status"], "OK")
+            self.assertEqual(res_spi_fb["summary"], "home présent")
+            self.assertEqual(res_spi_fb["warnings"], [])
+
+            # 4) Valid SPI-1 --view health response & propagation of gravity_home/plugin_roots/home_dir
+            seen_kwargs: dict[str, object] = {}
+
+            def _fake_health(mid: str, **kw: object) -> dict[str, object]:
+                seen_kwargs["mod_id"] = mid
+                seen_kwargs.update(kw)
+                return {"ok": True, "status": "WARN", "summary": "2 alertes", "warnings": ["Module 'architect' : alerte test"]}
+
+            g_home = tmp_path / "g-home"
+            p_root = tmp_path / "plugins"
+            u_home = tmp_path / "user"
+            res_ok = doctor._inspect_module_health_ro(
+                mod_base,
+                gravity_home=g_home,
+                plugin_roots=[p_root],
+                home_dir=u_home,
+                health_provider_fn=_fake_health,
+            )
+            self.assertEqual(seen_kwargs, {"mod_id": "architect", "gravity_home": g_home, "plugin_roots": [p_root], "home_dir": u_home})
+            self.assertEqual(res_ok["status"], "WARN")
+            self.assertEqual(res_ok["summary"], "2 alertes")
+            self.assertEqual(res_ok["warnings"], ["Module 'architect' : alerte test"])
+
+            # 5) Symlinked mod_home -> WARN without calling provider
+            sym_home = tmp_path / "sym-home"
+            os.symlink(mod_home, sym_home)
+            res_sym = doctor._inspect_module_health_ro({**mod_base, "resolved_home": str(sym_home)}, health_provider_fn=_should_not_run)
+            self.assertEqual(called, [])
+            self.assertEqual(res_sym["status"], "WARN")
+            self.assertEqual(res_sym["summary"], "home symlink refusé")
+
+            # 6) init_env._invoke_health_provider forwards view="health" and timeout_s=5.0
+            from dashboard.providers import spi as spi_mod  # noqa: E402
+
+            with mock.patch.object(spi_mod, "invoke_dashboard_provider", return_value={"ok": True, "status": "OK", "summary": "ok", "warnings": []}) as inv_mock:
+                init_env._invoke_health_provider("architect", gravity_home=g_home, plugin_roots=[p_root], home_dir=u_home)
+                inv_mock.assert_called_once_with(
+                    "architect",
+                    view="health",
+                    gravity_home=g_home,
+                    plugin_roots=[p_root],
+                    home_dir=u_home,
+                    timeout_s=5.0,
+                )
+
+            # 7) format_guide_report is pure and _print_guide_report prints it
+            from core import overview  # noqa: E402
+
+            guide_payload, _ = overview.run_guide_mode(gravity_home=g_home, plugins_dirs=[], home_dir=u_home)
+            buf_guide = io.StringIO()
+            with redirect_stdout(buf_guide):
+                guide_str = overview.format_guide_report(guide_payload)
+            self.assertEqual(buf_guide.getvalue(), "")
+            self.assertIn("Gravity Core — Guide rapide", guide_str)
+            buf_cli_guide = io.StringIO()
+            with redirect_stdout(buf_cli_guide):
+                init_env._print_guide_report(guide_payload)
+            self.assertEqual(buf_cli_guide.getvalue(), guide_str + "\n")
 
 
 if __name__ == "__main__":
