@@ -11,6 +11,15 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
   - `plugin/dashboard/providers/live_provider.py` : extraction incrémentale des signaux de phase transcript, attachement de `phase` dans `_build_agent_entry`, et exposition de `phases` + `current_phase` dans `get_live_session_state` (`selected_session`, payload Live et signature), en lecture seule stricte sous `MAX_PAYLOAD_BYTES = 450_000`.
   - Ajout de la suite unitaire dédiée `tests/test_live_phases.py`.
 
+### Changed
+- **[TASK-UX-06] Refonte UI/UX Cockpit MCP App (`< 150 KiB`, stepper 4 phases, arbre CSS imbriqué, 4 axes tokens & diff audits) (`SPEC-UX-01`) :**
+  - `plugin/mcp/ui/styles.py` : ajout des styles du stepper 4 phases (`.phase-stepper`, `.phase-card`, `.phase-strip`), rails CSS continus courbes (`.tree-children`, `.tree-branch` sans glyphes ASCII), différenciation par profondeur (`.depth-*`), `.badge-model`, `.kbd-hint` et barres comparatives `.ab-row` en conservant `tabular-nums` et le thème `--g-*`.
+  - `plugin/mcp/ui/charts_js.py` : ajout de `shortModelName`, `renderAbCompareRow` et `filterAgentHierarchy` ; refonte de `renderAgentTree` en DOM récursif imbriqué (`.tree-children`/`.tree-branch`, 0 glyphe ASCII `├─`/`└─` ni suffixe `·N0..N3`), badge modèle en en-tête (`title` complet), compteur `+N` replié et préservation des ancêtres atténués sous filtre.
+  - `plugin/mcp/ui/live_views_js.py` : stepper 4 phases cliquable (`_renderPhaseStepper`), KPIs tokens/moyennes en tête, badge session unifiée / auto-clôture, recherche live `#g-live-q` et bouton `Tout replier`/`Tout déplier`.
+  - `plugin/mcp/ui/metrics_views_js.py` : KPIs orientés tokens/moyennes (`avg_tokens_per_session`, `avg_useful_tokens_per_session`), sélecteur 4 axes (`by_agent_type`, `by_phase`, `by_session_mode`, `by_model` avec repli client), modèle principal/profil de phases sur les cartes sessions, comparateur d'audits A vs B côte à côte (`_renderAuditComparator` sur `linked_metrics` et `primary_models`), et compaction/factorisation DOM sous `150 KiB`.
+  - `plugin/mcp/ui/app_js.py` : états `livePhaseFilter`, `liveSearchQ`, `metricsAxis`, `auditCompareA`/`B`, handlers associés et raccourci clavier `/` vers la recherche globale.
+  - Mise à jour de `tests/test_ui_live_and_charts.py`.
+
 ## [0.4.0] - 2026-11-27
 
 ### Fixed

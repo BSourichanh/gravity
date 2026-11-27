@@ -194,11 +194,18 @@ const payload = {
     nodes: { planner: "done", builder: "running", reviewer: "idle" }
   },
   agents: [
-    { id: "coord", role: "Coordinator", status: "active", source: "root", depth: 0, model: "gemini-pro", workspace: "gravity-workshop", workspace_kind: "atelier", task_title: "Orchestration", last_tool: "swarm", llm_calls: 6, tool_calls: 12, children_count: 3, context_tokens: 140000, max_context_tokens: 155000, useful_tokens: 40000, cache_hit_pct: 70, started_at: "2026-11-25T13:00:00Z", last_ts: "2026-11-25T13:03:00Z", duration_s: 180, error_count: 0 },
-    { id: "w1", role: "Builder", status: "waiting", source: "swarm", parent_id: "coord", parent_name: "Coordinator", depth: 1, model: "gemini-flash", workspace: "gravity", workspace_kind: "code", task_title: "UI Live", last_tool: "edit_file", llm_calls: 4, tool_calls: 8, context_tokens: 45000, max_context_tokens: 45000, useful_tokens: 25000, cache_hit_pct: 65, started_at: "2026-11-25T13:00:30Z", last_ts: "2026-11-25T13:02:00Z", duration_s: 90, error_count: 0 },
-    { id: "w2", role: "Reviewer", status: "done", source: "subagent", parent_id: "coord", depth: 1, model: "gemini-pro", workspace: "gravity-metrics", workspace_kind: "code", task_title: "Tests", last_tool: "run_command", llm_calls: 2, tool_calls: 5, context_tokens: 30000, max_context_tokens: 30000, useful_tokens: 20000, cache_hit_pct: 60, started_at: "2026-11-25T13:01:00Z", last_ts: "2026-11-25T13:02:00Z", duration_s: 60, error_count: 0 },
-    { id: "w3", role: "Checker", status: "error", source: "workflow", parent_id: "w1", depth: 2, model: "gemini-pro", workspace: "gravity", workspace_kind: "code", task_title: "Lint", last_tool: "run_command", llm_calls: 2, tool_calls: 7, context_tokens: 205000, max_context_tokens: 210000, useful_tokens: 10000, cache_hit_pct: 50, started_at: "2026-11-25T13:02:00Z", last_ts: "2026-11-25T13:02:45Z", duration_s: 45, error_count: 2 }
+    { id: "coord", role: "Coordinator", status: "active", source: "root", phase: "conception", depth: 0, model: "claude-sonnet-4-6", workspace: "gravity-workshop", workspace_kind: "atelier", task_title: "Orchestration", last_tool: "swarm", llm_calls: 6, tool_calls: 12, children_count: 3, context_tokens: 140000, max_context_tokens: 155000, useful_tokens: 40000, cache_hit_pct: 70, started_at: "2026-11-25T13:00:00Z", last_ts: "2026-11-25T13:03:00Z", duration_s: 180, error_count: 0 },
+    { id: "w1", role: "Builder", status: "waiting", source: "swarm", phase: "production", parent_id: "coord", parent_name: "Coordinator", depth: 1, model: "gemini-4-flash", workspace: "gravity", workspace_kind: "code", task_title: "UI Live", last_tool: "edit_file", llm_calls: 4, tool_calls: 8, context_tokens: 45000, max_context_tokens: 45000, useful_tokens: 25000, cache_hit_pct: 65, started_at: "2026-11-25T13:00:30Z", last_ts: "2026-11-25T13:02:00Z", duration_s: 90, error_count: 0 },
+    { id: "w2", role: "Reviewer", status: "done", source: "subagent", phase: "validation", parent_id: "coord", depth: 1, model: "gemini-4-pro", workspace: "gravity-metrics", workspace_kind: "code", task_title: "Tests", last_tool: "run_command", llm_calls: 2, tool_calls: 5, context_tokens: 30000, max_context_tokens: 30000, useful_tokens: 20000, cache_hit_pct: 60, started_at: "2026-11-25T13:01:00Z", last_ts: "2026-11-25T13:02:00Z", duration_s: 60, error_count: 0 },
+    { id: "w3", role: "Checker", status: "error", source: "workflow", phase: "production", parent_id: "w1", depth: 2, model: "gemini-4-flash-lite", workspace: "gravity", workspace_kind: "code", task_title: "Lint", last_tool: "run_command", llm_calls: 2, tool_calls: 7, context_tokens: 205000, max_context_tokens: 210000, useful_tokens: 10000, cache_hit_pct: 50, started_at: "2026-11-25T13:02:00Z", last_ts: "2026-11-25T13:02:45Z", duration_s: 45, error_count: 2 }
   ],
+  phases: [
+    { id: "conception", label: "Conception", status: "done", tokens: 120000, useful_tokens: 40000, agents: 1, duration_s: 60 },
+    { id: "planification", label: "Planification", status: "done", tokens: 0, useful_tokens: 0, agents: 0, duration_s: 0 },
+    { id: "production", label: "Production", status: "active", tokens: 135000, useful_tokens: 35000, agents: 2, duration_s: 135 },
+    { id: "validation", label: "Validation", status: "pending", tokens: 50000, useful_tokens: 20000, agents: 1, duration_s: 60 }
+  ],
+  current_phase: "production",
   recent_events: [
     { ts: "2026-11-25T13:00:00Z", agent_id: "w1", kind: "tool", name: "edit_file", detail: "styles.py" },
     { ts: "2026-11-25T13:01:00Z", agent_id: "coord", kind: "board", name: "post", detail: "@w1 GO" },
@@ -211,6 +218,15 @@ assert(fullTxt.includes("Enregistrer") && fullTxt.includes("Pause") && fullTxt.i
 assert(findAll(fullBox, (n) => n.attrs && n.attrs["data-freshness"] === "1").length === 1, "freshness badge attr");
 assert(findAll(fullBox, (n) => n.className.includes("kpi-strip")).length === 1, "kpi-strip rendered");
 assert(findAll(fullBox, (n) => n.className.includes("tree-row")).length === 4, "4 hierarchical tree rows");
+assert(findAll(fullBox, (n) => n.className.includes("tree-children")).length >= 2, "nested recursive .tree-children containers");
+assert(findAll(fullBox, (n) => n.className.includes("tree-branch")).length === 3, "3 child .tree-branch containers");
+assert(findAll(fullBox, (n) => n.className.includes("badge-model")).length === 4, "4 model badges in tree headers");
+assert(findAll(fullBox, (n) => n.className.includes("phase-card")).length === 4, "4 phase stepper cards");
+const treeNode = findAll(fullBox, (n) => n.className.includes("tree-wrap"))[0];
+const treeTxt = collectText(treeNode);
+assert(!treeTxt.includes("├─") && !treeTxt.includes("└─") && !treeTxt.includes("↳"), "no ASCII tree glyphs in renderAgentTree");
+assert(!/·N[0-3]/.test(treeTxt), "no ·N0..N3 suffix in renderAgentTree");
+assert(treeTxt.includes("Sonnet 4.6") && treeTxt.includes("G4 flash"), "readable short model badges in tree headers");
 assert(findAll(fullBox, (n) => n.className.includes("gantt-mini")).length === 4, "4 timeline bars");
 assert(fullTxt.includes("Racine") && fullTxt.includes("Swarm") && fullTxt.includes("Subagent") && fullTxt.includes("Workflow"), "source badges");
 assert(fullTxt.includes("[archivée]"), "archived suffix in live session selector");
@@ -218,9 +234,19 @@ const inspNode = findAll(fullBox, (n) => n.id === "g-live-inspector")[0];
 const inspTxt = collectText(inspNode);
 assert(inspTxt.includes("Builder") && inspTxt.includes("↳ Coordinator · N1") && inspTxt.includes("styles.py") && !inspTxt.includes("@w1 GO"), "inspector filters events by selected agent");
 
+const phaseBox = makeNode("div");
+renderLiveView(phaseBox, payload, { phaseFilter: "production", selectedAgentId: "w1" });
+assert(findAll(phaseBox, (n) => n.className.includes("tree-row")).length === 3, "phase filter keeps matching subtree + ancestor");
+assert(findAll(phaseBox, (n) => n.className.includes("dimmed")).length === 1, "non-matching ancestor is dimmed under phase filter");
+
+const searchBox = makeNode("div");
+renderLiveView(searchBox, payload, { searchQuery: "Lint", selectedAgentId: "w3" });
+assert(findAll(searchBox, (n) => n.className.includes("tree-row")).length === 3 && findAll(searchBox, (n) => n.className.includes("dimmed")).length === 2, "search filter preserves dimmed ancestor chain");
+
 const collapsedBox = makeNode("div");
 renderLiveView(collapsedBox, payload, { collapsedAgents: { coord: true }, selectedAgentId: "__all__" });
 assert(findAll(collapsedBox, (n) => n.className.includes("tree-row")).length === 1, "collapsed root hides descendants");
+assert(collectText(collapsedBox).includes("+3"), "collapsed root shows +3 hidden descendants badge");
 const globalInsp = collectText(findAll(collapsedBox, (n) => n.id === "g-live-inspector")[0]);
 assert(globalInsp.includes("Activité récente (3)") && globalInsp.includes("@w1 GO") && globalInsp.includes("styles.py"), "global inspector mode shows all events");
 
@@ -336,6 +362,49 @@ assert(confirmPanels.length === 1 && collectText(confirmPanels[0]).includes("Con
 const confirmRemoveBtn = findAll(confirmPanels[0], (n) => n.tagName === "BUTTON" && n.attrs && n.attrs["data-cli-action"] === "remove" && n.attrs["data-target"] === "cid-orphan");
 assert(confirmRemoveBtn.length === 1, "inline confirm button targets cid-orphan remove");
 
+// 4-axis analytics & Audit Comparator A vs B (linked_metrics, primary_models, by_category)
+state.metricsSub = "overview";
+state.metricsAxis = "agent";
+state.auditCompareA = "aud-1.md";
+state.auditCompareB = "aud-2.md";
+state.metrics.kpis = {
+  sessions_count: 6, archived_count: 6, active_count: 0, total_tokens: 900000, useful_tokens: 150000,
+  avg_tokens_per_session: 150000, avg_useful_tokens_per_session: 25000, avg_cache_hit_rate_pct: 83.3, total_llm_calls: 42
+};
+state.metrics.analytics = {
+  by_agent_type: { build: { label: "Construction", count: 8, total_tokens: 480000, avg_tokens: 60000, avg_useful_tokens: 10000, cache_hit_rate_pct: 84.0, share_pct: 53.3 } },
+  by_phase: { production: { label: "Production", count: 6, total_tokens: 600000, avg_tokens: 100000, avg_useful_tokens: 16000, cache_hit_rate_pct: 85.0, share_pct: 66.7 } },
+  by_session_mode: { swarm: { label: "swarm", count: 4, total_tokens: 640000, avg_tokens: 160000, avg_useful_tokens: 24000, cache_hit_rate_pct: 86.0, share_pct: 71.1 } },
+  by_model: { "gemini-4-flash": { label: "gemini-4-flash", count: 5, total_tokens: 550000, avg_tokens: 110000, avg_useful_tokens: 18000, cache_hit_rate_pct: 87.2, share_pct: 61.1 } }
+};
+state.metrics.audits = [
+  {
+    audit_id: "aud-1.md", rel_path: "aud-1.md", title: "Audit Ref", date: "2026-11-20", verdict: "PASS", verdict_tone: "ok", workspace: "gravity", size_bytes: 1200,
+    linked_metrics: {
+      sessions_count: 3, avg_tokens_per_session: 200000, avg_useful_tokens_per_session: 30000, avg_cache_hit_rate_pct: 82.0,
+      primary_models: [{ model: "gemini-4-pro", share_pct: 80 }],
+      by_category: { build: { label: "Construction", avg_tokens_per_session: 120000 } }
+    }
+  },
+  {
+    audit_id: "aud-2.md", rel_path: "aud-2.md", title: "Audit Target", date: "2026-11-27", verdict: "PASS", verdict_tone: "ok", workspace: "gravity", size_bytes: 1400,
+    linked_metrics: {
+      sessions_count: 3, avg_tokens_per_session: 140000, avg_useful_tokens_per_session: 21000, avg_cache_hit_rate_pct: 88.0,
+      primary_models: [{ model: "gemini-4-flash", share_pct: 75 }],
+      by_category: { build: { label: "Construction", avg_tokens_per_session: 84000 } }
+    }
+  }
+];
+[["agent", "Construction"], ["phase", "Production"], ["mode", "swarm"], ["model", "G4 flash"]].forEach(([ax, expected]) => {
+  state.metricsAxis = ax;
+  const axBox = makeNode("div");
+  renderMetricsUnifiedView(axBox);
+  const axTxt = collectText(axBox);
+  assert(axTxt.includes(expected), "axis " + ax + " renders " + expected);
+  assert(axTxt.includes("Comparateur d'Audits A vs B") && axTxt.includes("Modèles dominants") && axTxt.includes("-30 %"), "audit comparator A vs B rendered");
+  assert(findAll(axBox, (n) => n.className && n.className.includes("ab-row")).length >= 1, "audit comparator category diff bar rendered");
+});
+
 console.log(JSON.stringify({ ok: true }));
 """
 
@@ -367,11 +436,13 @@ class TestUiLiveAndCharts(unittest.TestCase):
             ".fold-panel", ".inline-confirm", ".badge.src-root", ".agent-filiation", ".agent-done-fold", ".agent-group.has-error",
             ".topbar", ".nav-sys", ".kpi-strip", ".tree-row", ".tree-indent", ".gantt-mini",
             ".inspector-pane", ".slide-over", ".proj-grid", ".wave-group", 'data-layout="compact"',
+            ".phase-stepper", ".tree-children", ".tree-branch", ".badge-model", ".ab-row", ".kbd-hint",
         ):
             self.assertIn(css_token, WIDGET_CSS)
         for js_symbol in (
             "fmtTokens", "fmtDuration", "fmtPct", "renderContextGauge", "renderStackedBars", "renderWorkspaceBreakdown",
             "renderMetricKpiCard", "renderLiveView", "renderMetricsUnifiedView", "resolveAgentModel", "resolveAgentToolCalls",
+            "shortModelName", "filterAgentHierarchy", "renderAbCompareRow",
             "renderSourceBadge", "renderFiliationLabel", "buildAgentHierarchy", "renderAgentTree", "renderTimelineBar",
             "navigateTo", "applyHostContext", "openMarkdownFile",
         ):
@@ -379,7 +450,10 @@ class TestUiLiveAndCharts(unittest.TestCase):
 
     def test_app_controller_and_live_view_contracts(self) -> None:
         self.assertNotIn("pollInFlight", APP_JS)
-        for token in ("inflight", "reqSeq", "ResizeObserver", "Escape", "CLICK_HANDLERS", "g-content", "g-slideover", "data-freshness"):
+        for token in (
+            "inflight", "reqSeq", "ResizeObserver", "Escape", "CLICK_HANDLERS", "g-content", "g-slideover",
+            "data-freshness", "livePhaseFilter", "metricsAxis", "auditCompareA", "auditCompareB",
+        ):
             self.assertIn(token, APP_JS)
         self.assertIn("data-freshness", LIVE_VIEWS_JS)
         self.assertNotIn("Actualiser", LIVE_VIEWS_JS)
@@ -445,6 +519,7 @@ function mkNode(tag) {
     getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; },
     addEventListener() {},
     querySelector() { return null; },
+    focus() { this._focused = true; },
   };
 }
 const rootNode = mkNode("div");
@@ -452,6 +527,7 @@ rootNode.setAttribute("id", "root");
 const document = {
   documentElement: { dataset: {}, style: { setProperty() {} } },
   visibilityState: "visible",
+  activeElement: null,
   head: mkNode("head"),
   createElement: mkNode,
   createElementNS: (_ns, t) => mkNode(t),
@@ -552,6 +628,39 @@ const window = {
   if (!calls.some((c) => c.name === "gravity_get_metrics_state") || state.metrics.signature !== "fresh-sig") {
     throw new Error("stale-state remove error did not refresh state.metrics");
   }
+
+  // Test UX v2 state handlers & '/' search shortcut
+  const phBtn = mkNode("button");
+  phBtn.setAttribute("data-phase", "production");
+  CLICK_HANDLERS["filter-live-phase"](phBtn);
+  if (state.livePhaseFilter !== "production") throw new Error("filter-live-phase failed to set phase");
+  CLICK_HANDLERS["filter-live-phase"](phBtn);
+  if (state.livePhaseFilter !== "") throw new Error("filter-live-phase failed to toggle off");
+
+  const togBtn = mkNode("button");
+  togBtn.setAttribute("data-ids", "coord,w1");
+  CLICK_HANDLERS["toggle-live-all"](togBtn);
+  if (!state.liveUi.collapsedAgents.coord || !state.liveUi.collapsedAgents.w1) throw new Error("toggle-live-all failed to collapse");
+  CLICK_HANDLERS["toggle-live-all"](togBtn);
+  if (Object.keys(state.liveUi.collapsedAgents).length !== 0) throw new Error("toggle-live-all failed to expand");
+
+  const axBtn = mkNode("button");
+  axBtn.setAttribute("data-axis", "model");
+  CLICK_HANDLERS["metrics-axis"](axBtn);
+  if (state.metricsAxis !== "model") throw new Error("metrics-axis failed");
+
+  const audBtnA = mkNode("button");
+  audBtnA.setAttribute("data-slot", "A");
+  audBtnA.setAttribute("data-audit-id", "aud-a.md");
+  CLICK_HANDLERS["pin-audit-compare"](audBtnA);
+  if (state.auditCompareA !== "aud-a.md") throw new Error("pin-audit-compare failed");
+
+  const searchInp = mkNode("input");
+  searchInp.setAttribute("id", "g-live-q");
+  let prevented = false;
+  (docListeners.keydown || []).forEach((fn) => fn({ key: "/", preventDefault: () => { prevented = true; } }));
+  if (!prevented || !searchInp._focused) throw new Error("'/' shortcut failed to focus search input");
+
   console.log(JSON.stringify({ ok: true }));
 })().catch((err) => { console.error(err); process.exit(1); });
 """

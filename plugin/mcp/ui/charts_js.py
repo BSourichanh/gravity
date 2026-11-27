@@ -31,6 +31,14 @@ if(best)return best;
 }
 return dir;
 }
+function shortModelName(raw){
+let s=String(raw||"").trim().replace(/^models\//,"").replace(/-20\d{6}$/,"");
+if(!s||s==="unknown")return"";
+s=s.replace(/^claude-(sonnet|opus|haiku)-(\d+)[-.](\d+).*$/i,(_,f,a,b)=>(f[0].toUpperCase()+f.slice(1).toLowerCase()+" "+a+"."+b))
+  .replace(/^gemini-(\d+(?:\.\d+)?)-([a-z0-9-]+?)(?:-preview)?$/i,(_,v,r)=>"G"+v+" "+r.replace(/-/g," "))
+  .replace(/^claude-/i,"Claude ").replace(/-preview$/i,"");
+return s.length>20?s.slice(0,19)+"…":s;
+}
 function resolveAgentToolCalls(ag){return(ag&&typeof ag==="object")?Math.max(0,Number(ag.tool_calls_total!=null?ag.tool_calls_total:ag.tool_calls)||0):0}
 function renderSourceBadge(s){const k=String(s||"").toLowerCase().trim();if(!k)return null;const m={root:["Racine","src-root"],swarm:["Swarm","src-swarm"],subagent:["Subagent","src-subagent"],workflow:["Workflow","src-workflow"]}[k];return m?makeBadge(m[0],m[1]):makeBadge(String(s),"src-other")}
 function renderFiliationLabel(ag,idMap){
@@ -89,6 +97,19 @@ const mid=el("div","kpi-top");mid.appendChild(el("div","kpi-val num",val));
 if(Array.isArray(o.series)&&o.series.length>=2){const sp=renderSparkline(o.series,{label:lbl,color:o.seriesColor});if(sp)mid.appendChild(sp)}
 c.appendChild(mid);if(sub)c.appendChild(el("div","kpi-sub",sub));return c;
 }
+function renderAbCompareRow(lbl,va,vb,mx,fmtFn,opts){
+const o=opts||{},row=el("div","ab-row"),hd=el("div","ws-row-head"),right=el("div","actions-row");
+hd.appendChild(el("span","agent-role",lbl));
+const d=va>0?Math.round(((vb-va)/va)*100):(vb>0?100:0),dGood=o.higherGood?(d>=0):(d<=0),col=o.color||"var(--g-accent)";
+right.appendChild(el("span","mono num","A: "+fmtFn(va)));right.appendChild(el("span","mono num","B: "+fmtFn(vb)));
+right.appendChild(el("span","badge mono "+(dGood?"ok":"warn"),(d>0?"+":"")+d+"%"));hd.appendChild(right);row.appendChild(hd);
+[["A",va,"a"],["B",vb,"b"]].forEach(([tag,v,cls])=>{
+const ln=el("div","ab-line"),tr=el("div","ab-track"),fl=el("div","ab-fill "+cls);
+fl.style.width=(mx>0?Math.max(v>0?3:0,Math.round((v/mx)*100)):0)+"%";fl.style.backgroundColor=col;
+ln.appendChild(el("span","ab-tag",tag));tr.appendChild(fl);ln.appendChild(tr);row.appendChild(ln);
+});
+return row;
+}
 function renderInlineConfirm(opts){
 const o=opts||{},box=el("div","inline-confirm"+(o.danger?" danger":""));box.appendChild(el("span",null,String(o.message||"Confirmer cette action ?")));
 const btns=el("div","inline-confirm-actions"),ok=el("button","btn btn-sm "+(o.danger?"btn-danger":"btn-primary"),o.confirmLabel||"Confirmer",Object.assign({type:"button"},o.confirmAttrs||{})),no=el("button","btn btn-sm",o.cancelLabel||"Annuler",Object.assign({type:"button"},o.cancelAttrs||{}));
@@ -116,6 +137,17 @@ n.startMs=s;n.endMs=e;if(isFinite(s)&&(!isFinite(minMs)||s<minMs))minMs=s;if(isF
 const hasTimeline=isFinite(minMs)&&isFinite(maxMs)&&maxMs>=minMs,flat=[],walk=(n)=>{flat.push(n);n.children.forEach(walk)};roots.forEach(walk);
 return{roots,nodes,flat,byId,idMap,hasTimeline,minMs,maxMs,spanMs:hasTimeline?Math.max(1e3,maxMs-minMs):0,maxDur};
 }
+function filterAgentHierarchy(tree,phaseFilter,searchQuery){
+const pf=String(phaseFilter||"").trim().toLowerCase(),q=String(searchQuery||"").trim().toLowerCase(),hasFilter=Boolean(pf||q);
+const directMatch=new Set(),keepKeys=new Set();
+(tree.nodes||[]).forEach((n)=>{
+const ag=n.ag||{},ph=String(ag.phase||"").trim().toLowerCase();
+const pOk=!pf||ph===pf;
+const qOk=!q||[ag.role,ag.name,ag.type_name,ag.phase,resolveAgentModel(ag),ag.source,ag.workspace,ag.task_title,ag.id].some((v)=>String(v||"").toLowerCase().includes(q));
+if(pOk&&qOk){directMatch.add(n.key);for(let cur=n;cur;cur=cur.parent)keepKeys.add(cur.key)}
+});
+return{hasFilter,directMatch,keepKeys};
+}
 function renderTimelineBar(ag,spanInfo){
 const info=spanInfo||{hasTimeline:false,minMs:NaN,spanMs:0,maxDur:1},err=Number(ag&&(ag.error_steps!=null?ag.error_steps:ag.error_count))||0;
 const st=String((ag&&ag.status)||(ag&&ag.clean_termination===false?(err>0?"error":"interrupted"):"done")).toLowerCase(),dur=_agDur(ag||{});
@@ -130,32 +162,46 @@ b.style.left=l.toFixed(1)+"%";b.style.width=w.toFixed(1)+"%";tr.appendChild(b);w
 function renderAgentTree(agents,opts){
 const o=opts||{},tree=buildAgentHierarchy(agents,o),wrap=el("div","tree-wrap");
 if(!tree.roots.length){wrap.appendChild(el("div","empty",o.emptyLabel||"Aucun agent détecté."));return wrap}
+const flt=filterAgentHierarchy(tree,o.phaseFilter,o.searchQuery);
+if(!flt.keepKeys.size){wrap.appendChild(el("div","empty","Aucun agent ne correspond au filtre."));return wrap}
 const col=o.collapsedIds||{},isCol=(k)=>(col instanceof Set?col.has(k):Boolean(col[k])),selId=String(o.selectedId||""),selAct=o.selectAction||"select-live-agent",togAct=o.toggleAction||"toggle-live-tree";
-const addN=(n)=>{
+const countDesc=(n)=>n.children.reduce((s,c)=>(flt.keepKeys.has(c.key)?s+1+countDesc(c):s),0);
+const addN=(n,isRoot)=>{
 const ag=n.ag,err=Number(ag.error_count!=null?ag.error_count:(ag.error_steps||0))||0;
 const st=String(ag.status||(ag.clean_termination===false?(err>0?"error":"interrupted"):"done")).toLowerCase();
 const isSel=selId===n.key||(ag.id&&selId===String(ag.id))||(ag.conversation_id&&selId===String(ag.conversation_id));
-const row=el("div","tree-row status-"+st+(isSel?" selected":""),null,{"data-action":selAct,"data-agent-id":n.key,role:"button",tabindex:"0"});
+const visKids=n.children.filter((c)=>flt.keepKeys.has(c.key)),collapsed=visKids.length>0&&isCol(n.key)&&!flt.hasFilter;
+const isDim=flt.hasFilter&&!flt.directMatch.has(n.key),branch=el("div",isRoot?"tree-root":"tree-branch");
+const row=el("div","tree-row status-"+st+" depth-"+Math.min(n.depth,4)+(isSel?" selected":"")+(isDim?" dimmed":""),null,{"data-action":selAct,"data-agent-id":n.key,role:"button",tabindex:"0"});
 if(typeof o.onSelect==="function")row.addEventListener("click",()=>o.onSelect(ag,n.key));
-const ind=el("div","tree-indent");if(n.depth>0)ind.style.paddingLeft=(Math.min(n.depth,6)*14)+"px";
-if(n.children.length){
-const exp=!isCol(n.key),tog=el("button","tree-toggle",exp?"▾":"▸",{type:"button","data-action":togAct,"data-agent-id":n.key,"aria-expanded":exp?"true":"false"});
+const ind=el("div","tree-indent");
+if(visKids.length){
+const tog=el("button","tree-toggle",collapsed?"▸":"▾",{type:"button","data-action":togAct,"data-agent-id":n.key,"aria-expanded":collapsed?"false":"true",title:collapsed?"Déplier les sous-agents":"Replier les sous-agents"});
 if(typeof o.onToggle==="function")tog.addEventListener("click",(ev)=>{if(ev&&ev.stopPropagation)ev.stopPropagation();o.onToggle(n.key)});
 ind.appendChild(tog);
-}else if(n.depth>0)ind.appendChild(el("span","tree-branch","↳"));
-const main=el("div","tree-main"),head=el("div","tree-head");
-head.appendChild(el("span","agent-role",String(ag.role||ag.name||ag.id||"Agent")));head.appendChild(renderStatusBadge(st));
+}
+const main=el("div","tree-main"),head=el("div","tree-head"),mod=resolveAgentModel(ag),hidCnt=collapsed?countDesc(n):0;
+head.appendChild(el("span","agent-role",String(ag.role||ag.name||ag.id||"Agent")));
+if(mod)head.appendChild(el("span","badge badge-model",shortModelName(mod),{title:mod}));
+head.appendChild(renderStatusBadge(st));
 const srcB=renderSourceBadge(ag.source||(n.depth===0?"root":""));if(srcB)head.appendChild(srcB);
+if(ag.phase)head.appendChild(makeBadge(String(ag.phase),""));
 head.appendChild(renderWorkspaceKindBadge(ag.workspace_kind||(/-(workshop|studio)$/.test(String(ag.workspace||"").toLowerCase())?"atelier":"code")));
-if(err>0)head.appendChild(makeBadge(err+" err","error"));main.appendChild(head);
-const meta=el("div","tree-meta"),mod=resolveAgentModel(ag);
-if(mod)meta.appendChild(el("span","pill",mod));if(ag.workspace)meta.appendChild(el("span","mono",String(ag.workspace)));
+if(hidCnt>0)head.appendChild(el("span","badge tree-count","+"+hidCnt,{title:hidCnt+" sous-agent(s) replié(s)"}));
+if(err>0)head.appendChild(makeBadge(err+" err","error"));
+main.appendChild(head);
+const meta=el("div","tree-meta"),useful=Number(ag.useful_tokens||0)||((Number(ag.input_tokens)||0)+(Number(ag.output_tokens)||0));
+if(ag.workspace)meta.appendChild(el("span","mono",String(ag.workspace)));
+if(useful>0)meta.appendChild(el("span","mono num",fmtTokens(useful)+" ut."));
 const ctx=Number(ag.context_tokens||ag.max_context_tokens||0);if(ctx>0)meta.appendChild(el("span","mono num","Ctx "+fmtTokens(ctx)));
 meta.appendChild(el("span","mono num",fmtInt(ag.llm_calls||0)+" LLM · "+fmtInt(resolveAgentToolCalls(ag))+" out."));
 if(ag.task_title)meta.appendChild(el("span","preview-text",String(ag.task_title)));
-main.appendChild(meta);ind.appendChild(main);row.appendChild(ind);row.appendChild(renderTimelineBar({...ag,startMs:n.startMs,endMs:n.endMs},tree));wrap.appendChild(row);
-if(n.children.length&&!isCol(n.key))n.children.forEach(addN);
+main.appendChild(meta);ind.appendChild(main);row.appendChild(ind);row.appendChild(renderTimelineBar({...ag,startMs:n.startMs,endMs:n.endMs},tree));
+branch.appendChild(row);
+if(visKids.length&&!collapsed){const kw=el("div","tree-children");visKids.forEach((c)=>kw.appendChild(addN(c,false)));branch.appendChild(kw)}
+return branch;
 };
-tree.roots.forEach(addN);return wrap;
+tree.roots.filter((r)=>flt.keepKeys.has(r.key)).forEach((r)=>wrap.appendChild(addN(r,true)));
+return wrap;
 }
 """

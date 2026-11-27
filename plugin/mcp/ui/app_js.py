@@ -4,7 +4,7 @@ from __future__ import annotations
 
 APP_JS = r"""
 const PROTOCOL_VERSION="2026-01-26",LIVE_POLL_MS=2000;
-const state={hostCaps:{},hostCtx:{},layoutMode:"wide",overview:null,live:null,workflow:null,metrics:null,architect:null,moduleCache:{},moduleLoading:{},activeTab:"live",selectedWs:"",selectedAtelier:"",liveUi:{paused:false,selectedSessionId:"",selectedAgentId:"",collapsedAgents:{},eventsOpen:false,breakdownOpen:false,actionInFlight:false,lastUpdatedAt:""},metricsProject:"",metricsQ:"",metricsSub:"overview",metricsFilter:"recorded",metricsSort:"date",metricsActionInFlight:false,compareOpen:false,compareA:"",compareB:"",architectSub:"projects",sessionTarget:"",sessionDetail:null,sessionDetailLoading:false,sessionDetailSub:"summary",sessionEditOpen:false,sessionDeleteConfirm:false,pendingDeleteTarget:"",auditTarget:"",auditData:null,auditLoading:false,slideOver:null,toast:null,loading:true,hasToolResult:false,inflight:{},reqSeq:{}};
+const state={hostCaps:{},hostCtx:{},layoutMode:"wide",overview:null,live:null,workflow:null,metrics:null,architect:null,moduleCache:{},moduleLoading:{},activeTab:"live",selectedWs:"",selectedAtelier:"",livePhaseFilter:"",liveSearchQ:"",liveUi:{paused:false,selectedSessionId:"",selectedAgentId:"",collapsedAgents:{},eventsOpen:false,breakdownOpen:false,actionInFlight:false,lastUpdatedAt:""},metricsProject:"",metricsQ:"",metricsAxis:"agent",metricsSub:"overview",metricsFilter:"recorded",metricsSort:"date",metricsActionInFlight:false,compareOpen:false,compareA:"",compareB:"",auditCompareA:"",auditCompareB:"",architectSub:"projects",sessionTarget:"",sessionDetail:null,sessionDetailLoading:false,sessionDetailSub:"summary",sessionEditOpen:false,sessionDeleteConfirm:false,pendingDeleteTarget:"",auditTarget:"",auditData:null,auditLoading:false,slideOver:null,toast:null,loading:true,hasToolResult:false,inflight:{},reqSeq:{}};
 let rpcId=1,fallbackTimer=null,livePollTimer=null,freshnessTimer=null,metricsSearchTimer=null,toastTimer=null,lastTabsKey="";
 const pendingRpc=new Map(),byId=(id)=>document.getElementById(id),attr=(n,k)=>(n&&n.getAttribute&&n.getAttribute(k))||"";
 const postToHost=(p)=>window.parent.postMessage(p,"*"),sendNotification=(m,p)=>postToHost({jsonrpc:"2.0",method:m,params:p||{}});
@@ -103,7 +103,7 @@ catch(err){if(!silent)showToast(errLbl+" : "+err.message,true)}finally{if(ch==="
 });
 }
 const loadOverview=(s)=>loadChannelState("overview","gravity_get_overview",{since_signature:s&&state.overview?(state.overview.signature||""):""},s,"Erreur Système",(sc)=>{state.overview=sc;render()});
-const loadLiveSession=(s)=>loadChannelState("live","gravity_get_live_session",{session_id:state.liveUi.selectedSessionId||"",ws:state.selectedWs||"",since_signature:s&&state.live?(state.live.signature||""):"",include_events:true},s,"Erreur Session",(sc)=>{state.live=sc;state.liveUi.lastUpdatedAt=new Date().toISOString();if(getActiveTabObj().kind==="live")renderActiveView()});
+const loadLiveSession=(s)=>loadChannelState("live","gravity_get_live_session",{session_id:state.liveUi.selectedSessionId||"",ws:state.selectedWs||"",since_signature:s&&state.live?(state.live.signature||""):"" ,include_events:true},s,"Erreur Session",(sc)=>{state.live=sc;state.liveUi.lastUpdatedAt=new Date().toISOString();if(getActiveTabObj().kind==="live")renderActiveView()});
 const loadMetricsState=(s,co)=>loadChannelState("metrics","gravity_get_metrics_state",{project:state.metricsProject||"",q:state.metricsQ||"",since_signature:s&&state.metrics?(state.metrics.signature||""):""},s,"Erreur Historique",(sc)=>{state.metrics=sc;if(getActiveTabObj().kind==="metrics"){if(co&&byId("g-metrics-content"))renderMetricsBodyOrFull();else renderActiveView()}});
 const loadArchitectState=(s)=>loadChannelState("architect","gravity_get_architect_state",{atelier:state.selectedAtelier||"",ws:state.selectedWs||"",since_signature:s&&state.architect?(state.architect.signature||""):""},s,"Erreur Projets",(sc)=>{state.architect=sc;if(getActiveTabObj().kind==="architect")renderActiveView()});
 function loadModuleInfo(mid,force){
@@ -137,6 +137,7 @@ function openAuditReader(auditId){
 if(!auditId)return;state.auditTarget=auditId;
 return openSubResource("audit","gravity_read_audit",{path:auditId},"auditLoading","Lecture audit",(sc)=>{state.auditData=sc});
 }
+function _clearSel(){state.sessionTarget="";state.sessionDetail=null;state.sessionEditOpen=false;state.sessionDeleteConfirm=false;state.pendingDeleteTarget="";state.slideOver=null}
 async function dispatchMetricsCliAction(params){
 if(!state.hostCaps.serverTools){showToast("serverTools indisponible.",true);return}
 const act=String((params&&params.action)||"");
@@ -146,11 +147,11 @@ const res=await callServerTool("gravity_metrics_action",params),sc=extractStruct
 if((res&&res.isError)||(sc&&sc.ok===false)){
 showToast((sc&&sc.message)||(res&&res.content&&res.content[0]&&res.content[0].text)||"Action échouée",true);
 if(act==="remove"||act==="ignore"||act==="unignore"||act==="record"){
-if(act==="remove"||act==="ignore"){state.sessionTarget="";state.sessionDetail=null;state.sessionEditOpen=false;state.sessionDeleteConfirm=false;state.pendingDeleteTarget="";state.slideOver=null}
+if(act==="remove"||act==="ignore")_clearSel();
 await loadMetricsState(false,false);if(getActiveTabObj().kind==="live")await loadLiveSession(false);
 }
 }else{
-if(act==="remove"||act==="ignore"){state.sessionTarget="";state.sessionDetail=null;state.sessionEditOpen=false;state.sessionDeleteConfirm=false;state.pendingDeleteTarget="";state.slideOver=null}else if(act==="update-meta")state.sessionEditOpen=false;
+if(act==="remove"||act==="ignore")_clearSel();else if(act==="update-meta")state.sessionEditOpen=false;
 showToast((sc&&sc.message)||"Action exécutée.",false);await loadMetricsState(false,false);
 if(getActiveTabObj().kind==="live")await loadLiveSession(false);
 else if(state.sessionTarget&&(act==="update"||act==="update-meta"))await openSessionDetail(state.sessionTarget);
@@ -212,7 +213,7 @@ const main=byId("g-content");if(!main)return;const snap=captureFocusAndScroll();
 if(state.loading&&!state.overview)main.appendChild(el("div","empty","Connexion au serveur MCP Gravity..."));
 else{
 const t=getActiveTabObj();
-if(t.kind==="live"||t.kind==="workflow"){if(typeof renderLiveView==="function")renderLiveView(main,state.live,state.liveUi,{});else main.appendChild(el("div","empty","Vue Session indisponible."))}
+if(t.kind==="live"||t.kind==="workflow"){if(typeof renderLiveView==="function")renderLiveView(main,state.live,Object.assign({},state.liveUi,{phaseFilter:state.livePhaseFilter,searchQuery:state.liveSearchQ}),{});else main.appendChild(el("div","empty","Vue Session indisponible."))}
 else if(t.kind==="metrics"){if(typeof renderMetricsUnifiedView==="function")renderMetricsView(main);else main.appendChild(el("div","empty","Vue Historique indisponible."))}
 else if(t.kind==="architect")renderArchitectView(main);
 else if(t.kind==="generic")renderModuleView(main,t);
@@ -223,7 +224,17 @@ restoreFocusAndScroll(snap);
 function render(){const r=byId("root");if(!r)return;updateLayoutMode();ensureShell(r);renderHeader();renderToast();renderActiveView();renderSlideOver()}
 document.addEventListener("toggle",(ev)=>{if(!ev.target)return;if(ev.target.id==="g-live-activity")state.liveUi.eventsOpen=Boolean(ev.target.open);else if(ev.target.id==="g-live-breakdown")state.liveUi.breakdownOpen=Boolean(ev.target.open)},true);
 document.addEventListener("submit",(ev)=>{const f=ev.target;if(!f||f.id!=="g-session-edit-form")return;ev.preventDefault();const v=(id)=>{const n=byId(id);return n?n.value:""};dispatchMetricsCliAction({action:"update-meta",target:attr(f,"data-target")||state.sessionTarget,label:v("g-edit-label"),project:v("g-edit-project"),note:v("g-edit-note")})});
-document.addEventListener("keydown",(ev)=>{if(ev.key!=="Escape")return;if(state.slideOver){state.slideOver=null;renderSlideOver()}else if(state.auditTarget){state.auditTarget="";state.auditData=null;renderMetricsBodyOrFull()}else if(state.sessionTarget){state.sessionTarget="";state.sessionDetail=null;renderMetricsBodyOrFull()}});
+document.addEventListener("keydown",(ev)=>{
+if(ev.key==="/"){
+const ae=document.activeElement,tag=ae&&ae.tagName;
+if(tag==="INPUT"||tag==="TEXTAREA"||tag==="SELECT")return;
+const inp=byId("g-live-q")||byId("g-metrics-q")||(document.querySelector&&document.querySelector("[data-global-search]"));
+if(inp&&typeof inp.focus==="function"){if(ev.preventDefault)ev.preventDefault();inp.focus()}
+return;
+}
+if(ev.key!=="Escape")return;
+if(state.slideOver){state.slideOver=null;renderSlideOver()}else if(state.auditTarget){state.auditTarget="";state.auditData=null;renderMetricsBodyOrFull()}else if(state.sessionTarget){state.sessionTarget="";state.sessionDetail=null;renderMetricsBodyOrFull()}
+});
 const CLICK_HANDLERS={
 "select-tab":(t)=>{state.activeTab=attr(t,"data-tab")||"live";ensureActiveTabLoaded(false);render()},
 "refresh":refreshCurrentTab,
@@ -235,11 +246,15 @@ const CLICK_HANDLERS={
 "select-live-agent":(t)=>{state.liveUi.selectedAgentId=attr(t,"data-agent-id");renderActiveView()},
 "live-clear-agent":()=>{state.liveUi.selectedAgentId="__all__";renderActiveView()},
 "toggle-live-tree":(t)=>{const aid=attr(t,"data-agent-id");if(aid){state.liveUi.collapsedAgents[aid]=!state.liveUi.collapsedAgents[aid];renderActiveView()}},
+"toggle-live-all":(t)=>{const ids=attr(t,"data-ids").split(",").filter(Boolean),anyCol=Object.values(state.liveUi.collapsedAgents||{}).some(Boolean);state.liveUi.collapsedAgents={};if(!anyCol)ids.forEach((id)=>{state.liveUi.collapsedAgents[id]=true});renderActiveView()},
+"filter-live-phase":(t)=>{const p=attr(t,"data-phase");state.livePhaseFilter=(state.livePhaseFilter===p?"":p);renderActiveView()},
 "live-metrics-action":(t)=>dispatchMetricsCliAction({action:attr(t,"data-metrics-action")||"record",conversation_id:attr(t,"data-cid")}),
+"metrics-axis":(t)=>{state.metricsAxis=attr(t,"data-axis")||"agent";renderMetricsBodyOrFull()},
 "metrics-sub":(t)=>{state.metricsSub=attr(t,"data-sub")||"overview";state.sessionDeleteConfirm=false;state.pendingDeleteTarget="";renderMetricsBodyOrFull()},
 "metrics-filter":(t)=>{state.metricsFilter=attr(t,"data-filter")||"recorded";state.sessionDeleteConfirm=false;state.pendingDeleteTarget="";renderMetricsBodyOrFull()},
 "toggle-compare":()=>{state.compareOpen=!state.compareOpen;renderMetricsBodyOrFull()},
 "pin-compare":(t)=>{const sl=attr(t,"data-slot"),tg=attr(t,"data-target");if(sl==="A")state.compareA=tg;else if(sl==="B")state.compareB=tg;state.compareOpen=true;renderMetricsBodyOrFull()},
+"pin-audit-compare":(t)=>{const sl=attr(t,"data-slot"),aid=attr(t,"data-audit-id");if(sl==="A")state.auditCompareA=aid;else if(sl==="B")state.auditCompareB=aid;renderMetricsBodyOrFull()},
 "open-session-detail":(t)=>{const tg=attr(t,"data-target");if(tg)openSessionDetail(tg)},
 "close-session-detail":()=>{state.sessionTarget="";state.sessionDetail=null;state.sessionEditOpen=false;state.sessionDeleteConfirm=false;state.pendingDeleteTarget="";state.slideOver=null;renderMetricsBodyOrFull()},
 "session-detail-sub":(t)=>{state.sessionDetailSub=attr(t,"data-sub")||"summary";renderMetricsBodyOrFull()},
@@ -255,15 +270,19 @@ const CLICK_HANDLERS={
 document.addEventListener("click",(ev)=>{const t=ev.target&&ev.target.closest?ev.target.closest("[data-action]"):null;if(t){const fn=CLICK_HANDLERS[attr(t,"data-action")];if(fn)fn(t,ev)}});
 document.addEventListener("change",(ev)=>{
 const n=ev.target;if(!n||!n.id)return;
-if(n.id==="g-live-session"){state.liveUi.selectedSessionId=n.value||"";state.liveUi.selectedAgentId="";state.liveUi.collapsedAgents={};loadLiveSession(false)}
+if(n.id==="g-live-session"){state.liveUi.selectedSessionId=n.value||"";state.liveUi.selectedAgentId="";state.liveUi.collapsedAgents={};state.livePhaseFilter="";loadLiveSession(false)}
 else if(n.id==="g-metrics-project"){state.metricsProject=n.value||"";state.sessionTarget="";state.sessionDetail=null;loadMetricsState(false,true)}
 else if(n.id==="g-metrics-sort"){state.metricsSort=n.value||"date";renderMetricsBodyOrFull()}
 else if(n.id==="g-cmp-a"){state.compareA=n.value||"";renderMetricsBodyOrFull()}
 else if(n.id==="g-cmp-b"){state.compareB=n.value||"";renderMetricsBodyOrFull()}
+else if(n.id==="g-audit-cmp-a"){state.auditCompareA=n.value||"";renderMetricsBodyOrFull()}
+else if(n.id==="g-audit-cmp-b"){state.auditCompareB=n.value||"";renderMetricsBodyOrFull()}
 else if(n.id==="g-arch-ws"){state.selectedAtelier=n.value||"";loadArchitectState(false)}
 });
 document.addEventListener("input",(ev)=>{
-const n=ev.target;if(!n||n.id!=="g-metrics-q")return;state.metricsQ=n.value||"";
+const n=ev.target;if(!n)return;
+if(n.id==="g-live-q"){state.liveSearchQ=n.value||"";renderActiveView();return}
+if(n.id!=="g-metrics-q")return;state.metricsQ=n.value||"";
 if(metricsSearchTimer)clearTimeout(metricsSearchTimer);metricsSearchTimer=setTimeout(()=>{metricsSearchTimer=null;loadMetricsState(false,true)},220);
 });
 window.addEventListener("resize",updateLayoutMode);
