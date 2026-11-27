@@ -5,6 +5,12 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+### Added
+- **[TASK-UX-05] Suivi des 4 phases Live & attribution par agent (`SPEC-UX-01`) :**
+  - `plugin/dashboard/providers/live_progress.py` : ajout de `CYCLE_PHASES`, `PHASE_IDS`, `normalize_phase_id`, `classify_agent_phase` et `build_live_phases` pour les 4 phases ordonnées (`conception`, `planification`, `production`, `validation` avec `status`, `tokens`, `useful_tokens`, `agents`, `duration_s`) sans modifier `build_live_progress` (`"0/0"` par défaut).
+  - `plugin/dashboard/providers/live_provider.py` : extraction incrémentale des signaux de phase transcript, attachement de `phase` dans `_build_agent_entry`, et exposition de `phases` + `current_phase` dans `get_live_session_state` (`selected_session`, payload Live et signature), en lecture seule stricte sous `MAX_PAYLOAD_BYTES = 450_000`.
+  - Ajout de la suite unitaire dédiée `tests/test_live_phases.py`.
+
 ## [0.4.0] - 2026-11-27
 
 ### Fixed

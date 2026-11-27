@@ -28,6 +28,39 @@ _WF_IGNORED_OUTPUT_MARKERS: tuple[str, ...] = ("Showing lines ", "Command output
 _PROGRESS_RATIO_RE = re.compile(r"^\s*(\d+)\s*/\s*(\d+)\s*$")
 _DONE_STATES: frozenset[str] = frozenset({"done", "completed", "complete", "passed", "ok", "closed", "finished"})
 
+CYCLE_PHASES: tuple[tuple[str, str], ...] = (
+    ("conception", "Conception"),
+    ("planification", "Planification"),
+    ("production", "Production"),
+    ("validation", "Validation"),
+)
+PHASE_IDS: tuple[str, ...] = ("conception", "planification", "production", "validation")
+_PHASE_INDEX: dict[str, int] = {pid: idx for idx, pid in enumerate(PHASE_IDS)}
+_PHASE_ALIASES: dict[str, str] = {
+    "conception": "conception", "concept": "conception", "spec": "conception", "specs": "conception",
+    "design": "conception", "discovery": "conception", "research": "conception",
+    "planification": "planification", "plan": "planification", "planning": "planification",
+    "production": "production", "prod": "production", "build": "production", "building": "production",
+    "validation": "validation", "val": "validation", "verify": "validation", "verif": "validation",
+    "verification": "validation", "review": "validation", "cloture": "validation",
+}
+_CONCEPTION_TOKENS: frozenset[str] = frozenset({
+    "research", "discovery", "discover", "explore", "explorer", "conception",
+    "spec_miner", "teamwork_explorer", "teamwork_spec_miner",
+})
+_PLAN_TOKENS: frozenset[str] = frozenset({
+    "planner", "plan", "planning", "planification", "interviewer", "teamwork_interviewer",
+})
+_VALIDATION_TOKENS: frozenset[str] = frozenset({
+    "reviewer", "review", "verifier", "verify", "verification", "auditor", "audit",
+    "validation", "validate", "challenger", "code_review", "qa", "tester",
+    "teamwork_reviewer", "teamwork_challenger", "teamwork_auditor",
+})
+_PRODUCTION_TOKENS: frozenset[str] = frozenset({
+    "builder", "build", "coder", "implementer", "developer", "producer", "production",
+})
+_TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9_]+")
+
 
 def parse_wf_agent_refs(text: str, parent_cid: str = "", step_idx: Optional[int] = None) -> list[dict[str, Any]]:
     """Extract `[agent:type] role: state (uuid)` references from text."""
@@ -372,6 +405,14 @@ def discover_live_tree(
             task_title=n["task_title"], parent_id=n["parent_id"], parent_name=n["parent_name"],
             depth=n["depth"], source=n["source"], spawn_step=n["spawn_step"],
             clean_termination=n["clean_termination"], children_count=len(n["child_indices"]),
+            phase=classify_agent_phase(
+                {
+                    "id": n["aid"], "role": n["role"], "type_name": n["type_name"],
+                    "source": n["source"], "depth": n["depth"],
+                    "phase_signals": n["acc"].get("phase_signals"),
+                },
+                default="conception" if n["depth"] == 0 else "production",
+            ),
         )
         for n in nodes
     ], all_events
@@ -474,8 +515,254 @@ def build_live_progress(wf_state: Optional[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def normalize_phase_id(raw: Any) -> str:
+    """Normalize a phase name or alias into one of the 4 canonical phase IDs, or ''."""
+    cleaned = str(raw or "").strip().lower()
+    if not cleaned:
+        return ""
+    if cleaned in _PHASE_ALIASES:
+        return _PHASE_ALIASES[cleaned]
+    for tok in _TOKEN_SPLIT_RE.split(cleaned):
+        if tok in _PHASE_ALIASES:
+            return _PHASE_ALIASES[tok]
+    return ""
+
+
+def classify_agent_phase(agent_or_meta: Optional[dict[str, Any]] = None, *, default: str = "production") -> str:
+    """Assign an agent to one of (`conception`, `planification`, `production`, `validation`)."""
+    meta = agent_or_meta if isinstance(agent_or_meta, dict) else {}
+    if explicit := normalize_phase_id(meta.get("phase")):
+        return explicit
+
+    raw_fields = (
+        str(meta.get("type_name") or "").strip().lower(),
+        str(meta.get("role") or "").strip().lower(),
+        str(meta.get("id") or meta.get("agent_id") or "").strip().lower(),
+    )
+    tokens: set[str] = set()
+    for field in raw_fields:
+        if field:
+            tokens.add(field)
+            tokens.update(t for t in _TOKEN_SPLIT_RE.split(field) if t)
+
+    for token_set, phase_id in (
+        (_VALIDATION_TOKENS, "validation"),
+        (_PLAN_TOKENS, "planification"),
+        (_CONCEPTION_TOKENS, "conception"),
+        (_PRODUCTION_TOKENS, "production"),
+    ):
+        if tokens & token_set:
+            return phase_id
+
+    sigs = meta.get("phase_signals")
+    if isinstance(sigs, dict):
+        if sigs.get("production"):
+            return "production"
+        if sigs.get("validation"):
+            return "validation"
+        if sigs.get("planification"):
+            return "planification"
+        if sigs.get("conception"):
+            return "conception"
+
+    return normalize_phase_id(default) or "production"
+
+
+def _ingest_wf_phase_signals(
+    wf_state: Optional[dict[str, Any]],
+    reached: list[bool],
+    active_hint: list[bool],
+    done_hint: list[bool],
+    error_hint: list[bool],
+) -> bool:
+    if not isinstance(wf_state, dict):
+        return False
+    stage = str(wf_state.get("stage") or "").strip().lower()
+    wf_active = wf_state.get("is_active") if isinstance(wf_state.get("is_active"), bool) else (stage not in ("", "idle"))
+    wf_all_done = False
+
+    if stage not in ("", "idle"):
+        if stage in ("done", "completed", "workflow:done"):
+            wf_all_done = True
+            for i in range(4):
+                reached[i] = done_hint[i] = True
+        elif any(tok in stage for tok in ("refused", "timeout", "escalated", "unsafe_done")) or stage in ("error", "failed"):
+            reached[3] = error_hint[3] = True
+        elif any(tok in stage for tok in ("review", "remediation", "verif", "validat")):
+            reached[3] = active_hint[3] = True
+        elif any(tok in stage for tok in ("build", "prod", "swarm", "execut")):
+            reached[2] = active_hint[2] = True
+        elif "plan" in stage:
+            reached[1] = active_hint[1] = True
+        elif any(tok in stage for tok in ("spec", "concept", "design", "quickstart")):
+            reached[0] = active_hint[0] = True
+
+    nodes = wf_state.get("nodes")
+    if isinstance(nodes, dict):
+        node_map = {"planner": 1, "builder": 2, "reviewer": 3, "verifier": 3}
+        for n_name, n_state in nodes.items():
+            idx = node_map.get(str(n_name).strip().lower())
+            if idx is None:
+                continue
+            st = str(n_state or "").strip().lower()
+            if st in ("running", "active", "in_progress"):
+                reached[idx] = active_hint[idx] = True
+            elif st in _DONE_STATES:
+                reached[idx] = done_hint[idx] = True
+            elif st in ("error", "failed"):
+                reached[idx] = error_hint[idx] = True
+
+    if wf_active and not any(reached):
+        reached[0] = active_hint[0] = True
+    return wf_all_done
+
+
+def _ingest_architect_phase_signals(
+    architect_state: Optional[dict[str, Any]],
+    reached: list[bool],
+    active_hint: list[bool],
+    done_hint: list[bool],
+    error_hint: list[bool],
+) -> None:
+    if not isinstance(architect_state, dict):
+        return
+    c_phases = architect_state.get("cycle_phases")
+    if isinstance(c_phases, list):
+        for item in c_phases:
+            if not isinstance(item, dict):
+                continue
+            pid = normalize_phase_id(item.get("id"))
+            if not pid:
+                continue
+            idx = _PHASE_INDEX[pid]
+            st = str(item.get("status") or "").strip().lower()
+            if st in ("", "pending"):
+                continue
+            reached[idx] = True
+            if st == "active":
+                active_hint[idx] = True
+            elif st in _DONE_STATES:
+                done_hint[idx] = True
+            elif st in ("error", "failed"):
+                error_hint[idx] = True
+    if any(reached):
+        cur_arch = normalize_phase_id(architect_state.get("current_phase"))
+        if cur_arch:
+            reached[_PHASE_INDEX[cur_arch]] = True
+
+
+def build_live_phases(
+    wf_state: Optional[dict[str, Any]] = None,
+    *,
+    architect_state: Optional[dict[str, Any]] = None,
+    agents: Sequence[dict[str, Any]] = (),
+    signals: Optional[dict[str, Any]] = None,
+    is_archived: bool = False,
+) -> dict[str, Any]:
+    """Compute ordered 4-phase progress (`conception`, `planification`, `production`, `validation`)."""
+    reached = [False, False, False, False]
+    active_hint = [False, False, False, False]
+    done_hint = [False, False, False, False]
+    error_hint = [False, False, False, False]
+
+    if isinstance(signals, dict):
+        last_sig_phase = normalize_phase_id(signals.get("last_phase"))
+        for pid, idx in _PHASE_INDEX.items():
+            if not signals.get(pid):
+                continue
+            if pid == "validation" and last_sig_phase == "production":
+                continue
+            reached[idx] = True
+
+    wf_all_done = _ingest_wf_phase_signals(wf_state, reached, active_hint, done_hint, error_hint)
+    _ingest_architect_phase_signals(architect_state, reached, active_hint, done_hint, error_hint)
+
+    root_error = False
+    for ag in agents:
+        if not isinstance(ag, dict):
+            continue
+        is_root = ag.get("depth") == 0 or str(ag.get("source") or "") == "root"
+        ag_st = str(ag.get("status") or "").strip().lower()
+        if is_root:
+            if ag_st == "error":
+                root_error = True
+            continue
+        ag_phase = normalize_phase_id(ag.get("phase")) or classify_agent_phase(ag)
+        idx = _PHASE_INDEX[ag_phase]
+        reached[idx] = True
+        if ag_st in ("active", "waiting"):
+            active_hint[idx] = True
+        elif ag_st == "error":
+            error_hint[idx] = True
+        elif ag_st == "done":
+            done_hint[idx] = True
+
+    has_session = bool(agents) or bool((signals or {}).get("has_session"))
+    if is_archived or (wf_all_done and not any(active_hint) and not any(error_hint)):
+        cur_idx = 3
+        statuses = ["done", "done", "done", "done"]
+    elif any(reached):
+        cur_idx = max(i for i, flag in enumerate(reached) if flag)
+        statuses = []
+        for i in range(4):
+            if i < cur_idx:
+                statuses.append("done")
+            elif i == cur_idx:
+                if (error_hint[i] or root_error) and not active_hint[i]:
+                    statuses.append("error")
+                elif wf_all_done and done_hint[i] and not active_hint[i]:
+                    statuses.append("done")
+                else:
+                    statuses.append("active")
+            else:
+                statuses.append("pending")
+    elif has_session:
+        cur_idx = 0
+        statuses = ["error" if root_error else "active", "pending", "pending", "pending"]
+    else:
+        cur_idx = 0
+        statuses = ["pending", "pending", "pending", "pending"]
+
+    current_phase = PHASE_IDS[cur_idx]
+    buckets: list[dict[str, Any]] = [
+        {
+            "id": pid,
+            "label": label,
+            "status": statuses[idx],
+            "tokens": 0,
+            "useful_tokens": 0,
+            "agents": 0,
+            "duration_s": 0.0,
+        }
+        for idx, (pid, label) in enumerate(CYCLE_PHASES)
+    ]
+
+    for ag in agents:
+        if not isinstance(ag, dict):
+            continue
+        is_root = ag.get("depth") == 0 or str(ag.get("source") or "") == "root"
+        ag_phase = normalize_phase_id(ag.get("phase"))
+        if not ag_phase:
+            ag_phase = current_phase if is_root else classify_agent_phase(ag)
+        bucket = buckets[_PHASE_INDEX[ag_phase]]
+        useful = max(0, int(ag.get("useful_tokens") or 0))
+        if ag.get("total_tokens") is not None:
+            tot = max(0, int(ag.get("total_tokens") or 0))
+        else:
+            tot = useful + max(0, int(ag.get("cache_read_tokens") or 0))
+        dur = max(0.0, float(ag.get("duration_s") or 0.0))
+        bucket["agents"] += 1
+        bucket["useful_tokens"] += useful
+        bucket["tokens"] += tot
+        bucket["duration_s"] = round(bucket["duration_s"] + dur, 1)
+
+    return {"phases": buckets, "current_phase": current_phase}
+
+
 __all__ = [
-    "TERMINAL_ERROR_STATUSES", "TERMINAL_TOOLS", "WF_AGENT_REF_RE", "build_live_progress", "collect_descendant_sig_tokens",
-    "collect_wf_refs_from_obj", "compute_termination_flags", "derive_agent_status", "discover_live_tree", "extract_shell_nonzero_code",
-    "find_cycle_root_overrides", "merge_wf_ref", "parse_iso_ts", "parse_wf_agent_refs", "update_termination_acc",
+    "CYCLE_PHASES", "PHASE_IDS", "TERMINAL_ERROR_STATUSES", "TERMINAL_TOOLS", "WF_AGENT_REF_RE",
+    "build_live_phases", "build_live_progress", "classify_agent_phase", "collect_descendant_sig_tokens",
+    "collect_wf_refs_from_obj", "compute_termination_flags", "derive_agent_status", "discover_live_tree",
+    "extract_shell_nonzero_code", "find_cycle_root_overrides", "merge_wf_ref", "normalize_phase_id",
+    "parse_iso_ts", "parse_wf_agent_refs", "update_termination_acc",
 ]

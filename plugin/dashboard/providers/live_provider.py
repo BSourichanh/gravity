@@ -21,9 +21,9 @@ from dashboard.providers import (
     enforce_payload_budget, normalize_plugin_roots, read_json_ro, short_digest, stat_token, truncate_preview, unchanged_response,
 )
 from dashboard.providers.live_progress import (
-    build_live_progress, collect_descendant_sig_tokens, collect_wf_refs_from_obj,
-    discover_live_tree, find_cycle_root_overrides, parse_wf_agent_refs,
-    update_termination_acc,
+    build_live_phases, build_live_progress, classify_agent_phase, collect_descendant_sig_tokens,
+    collect_wf_refs_from_obj, discover_live_tree, find_cycle_root_overrides, normalize_phase_id,
+    parse_wf_agent_refs, update_termination_acc,
 )
 from dashboard.providers.spi import invoke_dashboard_provider, resolve_dashboard_provider
 
@@ -37,6 +37,19 @@ _REPO_MARKER_RE = re.compile(
 )
 _CMD_CD_RE = re.compile(r"(?:^|[;&|]\s*)(?:cd|git\s+-C)\s+[\"']?([^\s\"';&|]+)", re.IGNORECASE)
 _UUID_LIKE_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F-]{12,}$|^[A-Za-z0-9._-]{4,80}$")
+_WRITE_TOOLS: frozenset[str] = frozenset({
+    "edit_file", "write_file", "replace_file_content", "multi_replace_file_content", "write_to_file",
+})
+_VALIDATION_DOC_BASENAMES: frozenset[str] = frozenset({"changelog.md", "ecosystem.md", "roadmap.md"})
+_VALIDATION_CMD_RE = re.compile(
+    r"\b(?:validate\.py|audit_ecosystem\.py|sync_shared\.py|ecosystem_install\.py|test_unit\.py|unittest|pytest|cargo\s+test|npm\s+test)\b"
+    r"|sync_tracking\.py[^\n]*--ack-editorial",
+    re.IGNORECASE,
+)
+_PLAN_CMD_RE = re.compile(r"\bwaves\.py\b", re.IGNORECASE)
+_PLAN_PROMPT_RE = re.compile(r"^/(?:plan(?::[a-z0-9_-]+)?|gravity-architect(?::gravity-architect)?\s+(?:handoff|tasks|plan))\b", re.IGNORECASE)
+_CONCEPTION_PROMPT_RE = re.compile(r"^/(?:grill-me(?::[a-z0-9_-]+)?|gravity-architect(?::gravity-architect)?\s+(?:spec|conception|research))\b", re.IGNORECASE)
+_USER_REQ_RE = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.DOTALL | re.IGNORECASE)
 
 _TRANSCRIPT_CACHE: dict[str, dict[str, Any]] = {}
 _BOARD_CACHE: dict[str, dict[str, Any]] = {}
@@ -134,7 +147,76 @@ def _new_transcript_acc() -> dict[str, Any]:
         "last_non_sys_type": "", "last_non_sys_status": "", "last_non_sys_shell_nonzero": False,
         "last_planner_status": "", "last_planner_has_tools": False, "last_planner_terminal_tool": "",
         "trailing_after_planner_count": 0, "trailing_after_planner_all_clean_generic": False, "wf_child_refs": {},
+        "phase_signals": {
+            "conception": False, "planification": False, "production": False, "validation": False,
+            "last_phase": "", "has_session": False,
+        },
     }
+
+
+def _record_phase_signal(acc: dict[str, Any], phase: str) -> None:
+    if not phase:
+        return
+    ps = acc.setdefault("phase_signals", {
+        "conception": False, "planification": False, "production": False, "validation": False,
+        "last_phase": "", "has_session": False,
+    })
+    if phase in ("conception", "planification", "production", "validation"):
+        ps[phase] = True
+        ps["last_phase"] = phase
+
+
+def _classify_write_phase(raw_path: str) -> str:
+    norm = strip_file_uri(raw_path).replace("\\", "/").strip().lower()
+    if not norm:
+        return ""
+    if "/specs/" in norm or norm.startswith("specs/"):
+        return "conception"
+    if "/tasks/" in norm or norm.startswith("tasks/"):
+        return "planification"
+    base = norm.rsplit("/", 1)[-1]
+    if base in _VALIDATION_DOC_BASENAMES or any(seg in norm for seg in ("/audits/", "/docs/", "/tracking/")) or norm.startswith(("audits/", "docs/", "tracking/")):
+        return "validation"
+    return "production"
+
+
+def _classify_tool_phase(name: str, args: Any) -> str:
+    lname = name.lower()
+    if lname in _WRITE_TOOLS and isinstance(args, dict):
+        for k in ("Path", "path", "TargetFile", "file_path"):
+            val = args.get(k)
+            if isinstance(val, str) and val.strip():
+                return _classify_write_phase(val)
+        return "production"
+    if lname in ("run_command", "execute_command") and isinstance(args, dict):
+        cmd = str(args.get("CommandLine") or args.get("command") or "")
+        if _VALIDATION_CMD_RE.search(cmd):
+            return "validation"
+        if _PLAN_CMD_RE.search(cmd):
+            return "planification"
+        return ""
+    if lname == "update_steps":
+        return "planification"
+    if lname == "ask_question":
+        return "conception"
+    if lname in ("swarm", "run_workflow"):
+        return "production"
+    return ""
+
+
+def _classify_user_input_phase(obj: dict[str, Any]) -> str:
+    raw = str(obj.get("content") or "").strip()
+    if not raw or "<SYSTEM_MESSAGE>" in raw:
+        return ""
+    req_m = _USER_REQ_RE.search(raw)
+    text = (req_m.group(1) if req_m else raw).strip()
+    if _PLAN_PROMPT_RE.match(text):
+        return "planification"
+    if _CONCEPTION_PROMPT_RE.match(text):
+        return "conception"
+    if text.lower().startswith("/swarm"):
+        return "production"
+    return ""
 
 
 def _extract_tool_paths(name: str, args: Any, acc: dict[str, Any]) -> None:
@@ -158,6 +240,7 @@ def _extract_tool_paths(name: str, args: Any, acc: dict[str, Any]) -> None:
 
 
 def _apply_transcript_obj(acc: dict[str, Any], obj: dict[str, Any], agent_id: str, *, parent_cid: str = "") -> None:
+    acc["phase_signals"]["has_session"] = True
     ts = str(obj.get("created_at") or "").strip()
     if ts:
         acc["first_ts"], acc["last_ts"] = acc["first_ts"] or ts, ts
@@ -166,6 +249,8 @@ def _apply_transcript_obj(acc: dict[str, Any], obj: dict[str, Any], agent_id: st
     if clean_step is not None:
         acc["last_step_index"] = max(acc["last_step_index"], clean_step)
     step_type, status = str(obj.get("type") or "").strip(), str(obj.get("status") or "").strip()
+    if step_type == "USER_INPUT":
+        _record_phase_signal(acc, _classify_user_input_phase(obj))
     status_up = status.upper()
     if status:
         acc["last_status"] = status
@@ -196,6 +281,7 @@ def _apply_transcript_obj(acc: dict[str, Any], obj: dict[str, Any], agent_id: st
                 tname = str(tc["name"]).strip()
                 acc["tool_calls"] += 1; acc["last_tool"] = tname
                 _extract_tool_paths(tname, tc.get("args"), acc)
+                _record_phase_signal(acc, _classify_tool_phase(tname, tc.get("args")))
                 acc["recent_events"].append({"ts": ts, "agent_id": agent_id, "kind": "tool", "name": tname, "detail": truncate_preview(json.dumps(tc.get("args") or {}, ensure_ascii=False), 120)})
     if len(acc["recent_events"]) > MAX_AGENT_EVENTS:
         acc["recent_events"] = acc["recent_events"][-MAX_AGENT_EVENTS:]
@@ -249,12 +335,17 @@ def _build_agent_entry(
     acc: dict[str, Any], model_hint: str, workspace: str, workspace_kind: str, task_title: str,
     parent_id: Optional[str] = None, parent_name: Optional[str] = None, depth: int = 0,
     source: str = "root", spawn_step: Optional[int] = None, clean_termination: bool = False, children_count: int = 0,
+    phase: Optional[str] = None,
 ) -> dict[str, Any]:
     in_t, cache_t, out_t = acc["input_tokens"], acc["cache_read_tokens"], acc["output_tokens"]
     prompt_t, t0, t1 = in_t + cache_t, parse_iso_ts(acc["first_ts"]), parse_iso_ts(acc["last_ts"])
+    resolved_phase = normalize_phase_id(phase) or classify_agent_phase(
+        {"id": agent_id, "role": role, "type_name": type_name, "source": source, "depth": depth, "phase_signals": acc.get("phase_signals")},
+        default="conception" if depth == 0 else "production",
+    )
     return {
         "id": agent_id, "conversation_id": cid, "role": role, "type_name": type_name, "status": status,
-        "parent_id": parent_id, "parent_name": parent_name, "depth": depth, "source": source,
+        "phase": resolved_phase, "parent_id": parent_id, "parent_name": parent_name, "depth": depth, "source": source,
         "spawn_step": spawn_step, "clean_termination": clean_termination, "children_count": children_count,
         "model": acc["model"] or model_hint or "unknown", "workspace": workspace, "workspace_kind": workspace_kind,
         "task_title": task_title, "last_tool": acc["last_tool"], "context_tokens": acc["context_tokens"],
@@ -491,7 +582,8 @@ def get_live_session_state(
     ws: str = "", gravity_home: Optional[Path] = None, brain_dir: Optional[Path] = None,
     metrics_home: Optional[Path] = None, workflow_home: Optional[Path] = None,
     registry_path: Optional[Path] = None, home_dir: Optional[Path] = None,
-    plugin_roots: Optional[Sequence[Path]] = None, plugins_dir: Optional[Any] = None, **_: Any,
+    plugin_roots: Optional[Sequence[Path]] = None, plugins_dir: Optional[Any] = None,
+    architect_state: Optional[dict[str, Any]] = None, **_: Any,
 ) -> dict[str, Any]:
     """Return incremental read-only live session state from brain/ and Gravity Workflow."""
     eff_roots = normalize_plugin_roots(plugin_roots, plugins_dir)
@@ -553,7 +645,12 @@ def get_live_session_state(
     wf_slim["progress"], wf_slim["progress_detail"] = progress_info["label"], progress_info
     wf_slim["is_active"] = str(wf_slim.get("stage") or "").strip().lower() not in ("", "idle")
 
-    sig_parts: list[Any] = [str(b_dir), q_cid, bool(include_events), live_meta_sig, archived_sig_tokens, wf_state.get("signature", ""), [(r["cid"], r["mtime_ns"], bool(r.get("archived"))) for r in roots]]
+    sig_parts: list[Any] = [
+        str(b_dir), q_cid, bool(include_events), live_meta_sig, archived_sig_tokens, wf_state.get("signature", ""),
+        wf_state.get("stage", ""), progress_info["label"], json.dumps(wf_state.get("nodes") or {}, sort_keys=True),
+        json.dumps(architect_state or {}, sort_keys=True) if architect_state else "", "phases_v1",
+        [(r["cid"], r["mtime_ns"], bool(r.get("archived"))) for r in roots],
+    ]
     root_task_logs_count = 0
     if selected is not None:
         desc_tokens, root_task_logs_count = collect_descendant_sig_tokens(
@@ -569,7 +666,8 @@ def get_live_session_state(
 
     sessions_list = [{"conversation_id": r["cid"], "label": str((active_captures.get(r["cid"]) or {}).get("label") or f"session-{r['cid'][:8]}"), "project": str((active_captures.get(r["cid"]) or {}).get("project") or (session_meta.get(r["cid"]) or {}).get("project") or _normalize_repo_name(str((session_meta.get(r["cid"]) or {}).get("cwd") or ""))), "captured": r["cid"] in active_captures, "archived": bool(r.get("archived")), "updated_at": str((active_captures.get(r["cid"]) or {}).get("updated_at") or (session_meta.get(r["cid"]) or {}).get("updated_at") or (datetime.fromtimestamp(r["mtime_ns"] / 1e9, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if r["mtime_ns"] else ""))} for r in roots]
     if selected is None:
-        return {"changed": True, "unchanged": False, "signature": sig, "available": False, "brain_dir": str(b_dir), "sessions": sessions_list, "selected_session": None, "session_started_at": "", "session_last_ts": "", "agents": [], "recent_events": [], "summary": {"total_agents": 0, "active_agents": 0, "waiting_agents": 0, "done_agents": 0, "error_agents": 0, "session_started_at": "", "session_last_ts": ""}, "workflow": wf_slim}
+        empty_phases = build_live_phases(wf_state, architect_state=architect_state)
+        return {"changed": True, "unchanged": False, "signature": sig, "available": False, "brain_dir": str(b_dir), "sessions": sessions_list, "selected_session": None, "session_started_at": "", "session_last_ts": "", "agents": [], "recent_events": [], "summary": {"total_agents": 0, "active_agents": 0, "waiting_agents": 0, "done_agents": 0, "error_agents": 0, "session_started_at": "", "session_last_ts": ""}, "workflow": wf_slim, "phases": empty_phases["phases"], "current_phase": empty_phases["current_phase"]}
 
     sel_cid, sg = selected["cid"], selected["sg"]
     root_parent = Path(strip_file_uri(root_cwd)).parent if root_cwd else None
@@ -594,6 +692,13 @@ def get_live_session_state(
         read_transcript_fn=lambda c_cid, c_aid: _read_jsonl_incremental(b_dir / c_cid / ".system_generated" / "logs" / "transcript.jsonl", _TRANSCRIPT_CACHE, _new_transcript_acc, lambda a, o, _id=c_aid, _cid=c_cid: _apply_transcript_obj(a, o, _id, parent_cid=_cid)),
         resolve_ws_fn=_resolve_agent_workspace, build_entry_fn=_build_agent_entry, include_events=include_events,
     )
+    root_signals = dict(root_acc.get("phase_signals") or {})
+    root_signals["has_session"] = True
+    is_arch = bool(selected.get("archived"))
+    phases_info = build_live_phases(wf_state, architect_state=architect_state, agents=agents, signals=root_signals, is_archived=is_arch)
+    if agents and (agents[0].get("depth") == 0 or agents[0].get("source") == "root"):
+        agents[0]["phase"] = phases_info["current_phase"]
+        phases_info = build_live_phases(wf_state, architect_state=architect_state, agents=agents, signals=root_signals, is_archived=is_arch)
     if include_events:
         all_events = sorted([*all_events, *_read_board_events(sg / "swarm" / "board.jsonl", sg / "swarm" / "board.json")], key=lambda ev: str(ev.get("ts") or ""), reverse=True)[:MAX_RECENT_EVENTS]
 
@@ -605,10 +710,10 @@ def get_live_session_state(
     payload: dict[str, Any] = {
         "changed": True, "unchanged": False, "signature": sig, "available": True, "brain_dir": str(b_dir), "sessions": sessions_list,
         "session_started_at": session_started_at, "session_last_ts": session_last_ts,
-        "selected_session": {"conversation_id": sel_cid, "label": str((sel_cap or {}).get("label") or swarm_title or goal_title or f"session-{sel_cid[:8]}"), "project": root_ws, "workspace_kind": r_kind, "captured": sel_cap is not None, "start_step": (sel_cap or {}).get("start_step"), "swarm_title": swarm_title, "goal_title": goal_title, "last_step_index": root_acc["last_step_index"], "started_at": session_started_at, "session_started_at": session_started_at, "session_last_ts": session_last_ts, "last_ts": root_acc["last_ts"]},
+        "selected_session": {"conversation_id": sel_cid, "label": str((sel_cap or {}).get("label") or swarm_title or goal_title or f"session-{sel_cid[:8]}"), "project": root_ws, "workspace_kind": r_kind, "captured": sel_cap is not None, "start_step": (sel_cap or {}).get("start_step"), "swarm_title": swarm_title, "goal_title": goal_title, "last_step_index": root_acc["last_step_index"], "started_at": session_started_at, "session_started_at": session_started_at, "session_last_ts": session_last_ts, "last_ts": root_acc["last_ts"], "phases": phases_info["phases"], "current_phase": phases_info["current_phase"]},
         "agents": agents, "recent_events": all_events if include_events else [],
         "summary": {"total_agents": len(agents), "active_agents": sc["active"], "waiting_agents": sc["waiting"], "done_agents": sc["done"], "error_agents": sc["error"], "useful_tokens": tot_in, "cache_read_tokens": tot_cache, "cache_hit_pct": round((tot_cache / (tot_in + tot_cache)) * 100.0, 2) if (tot_in + tot_cache) > 0 else 0.0, "max_context_tokens": max((a["max_context_tokens"] for a in agents), default=0), "context_tokens": agents[0]["context_tokens"], "thinking_est_tokens": sum(a["thinking_est_tokens"] for a in agents), "llm_calls": sum(a["llm_calls"] for a in agents), "tool_calls": sum(a["tool_calls"] for a in agents), "error_count": sum(a["error_count"] for a in agents), "duration_s": max((a["duration_s"] for a in agents), default=0.0), "session_started_at": session_started_at, "session_last_ts": session_last_ts, "background_tasks": root_task_logs_count},
-        "workflow": wf_slim,
+        "workflow": wf_slim, "phases": phases_info["phases"], "current_phase": phases_info["current_phase"],
     }
     return enforce_payload_budget(payload, ("recent_events", "agents", "sessions"), max_bytes=MAX_PAYLOAD_BYTES)
 
