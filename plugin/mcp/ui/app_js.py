@@ -139,18 +139,23 @@ return openSubResource("audit","gravity_read_audit",{path:auditId},"auditLoading
 }
 async function dispatchMetricsCliAction(params){
 if(!state.hostCaps.serverTools){showToast("serverTools indisponible.",true);return}
+const act=String((params&&params.action)||"");
 state.metricsActionInFlight=true;state.liveUi.actionInFlight=true;renderActiveView();
 try{
 const res=await callServerTool("gravity_metrics_action",params),sc=extractStructured(res);
-if((res&&res.isError)||(sc&&sc.ok===false))showToast((sc&&sc.message)||(res&&res.content&&res.content[0]&&res.content[0].text)||"Action échouée",true);
-else{
-const act=String(params.action||"");
-if(act==="remove"||act==="ignore"){state.sessionTarget="";state.sessionDetail=null;state.sessionDeleteConfirm=false;state.pendingDeleteTarget=""}else if(act==="update-meta")state.sessionEditOpen=false;
-showToast((sc&&sc.message)||"Action exécutée.",false);state.metrics=null;await loadMetricsState(false,false);
+if((res&&res.isError)||(sc&&sc.ok===false)){
+showToast((sc&&sc.message)||(res&&res.content&&res.content[0]&&res.content[0].text)||"Action échouée",true);
+if(act==="remove"||act==="ignore"||act==="unignore"||act==="record"){
+if(act==="remove"||act==="ignore"){state.sessionTarget="";state.sessionDetail=null;state.sessionEditOpen=false;state.sessionDeleteConfirm=false;state.pendingDeleteTarget="";state.slideOver=null}
+await loadMetricsState(false,false);if(getActiveTabObj().kind==="live")await loadLiveSession(false);
+}
+}else{
+if(act==="remove"||act==="ignore"){state.sessionTarget="";state.sessionDetail=null;state.sessionEditOpen=false;state.sessionDeleteConfirm=false;state.pendingDeleteTarget="";state.slideOver=null}else if(act==="update-meta")state.sessionEditOpen=false;
+showToast((sc&&sc.message)||"Action exécutée.",false);await loadMetricsState(false,false);
 if(getActiveTabObj().kind==="live")await loadLiveSession(false);
 else if(state.sessionTarget&&(act==="update"||act==="update-meta"))await openSessionDetail(state.sessionTarget);
 }
-}catch(err){showToast("Action Historique : "+err.message,true)}finally{state.metricsActionInFlight=false;state.liveUi.actionInFlight=false;renderActiveView()}
+}catch(err){showToast("Action Historique : "+err.message,true)}finally{state.metricsActionInFlight=false;state.liveUi.actionInFlight=false;renderActiveView();if(!state.slideOver)renderSlideOver()}
 }
 async function openMarkdownFile(uri){
 if(!uri){showToast("Fichier Markdown introuvable.",true);return}
@@ -231,17 +236,17 @@ const CLICK_HANDLERS={
 "live-clear-agent":()=>{state.liveUi.selectedAgentId="__all__";renderActiveView()},
 "toggle-live-tree":(t)=>{const aid=attr(t,"data-agent-id");if(aid){state.liveUi.collapsedAgents[aid]=!state.liveUi.collapsedAgents[aid];renderActiveView()}},
 "live-metrics-action":(t)=>dispatchMetricsCliAction({action:attr(t,"data-metrics-action")||"record",conversation_id:attr(t,"data-cid")}),
-"metrics-sub":(t)=>{state.metricsSub=attr(t,"data-sub")||"overview";renderMetricsBodyOrFull()},
-"metrics-filter":(t)=>{state.metricsFilter=attr(t,"data-filter")||"recorded";renderMetricsBodyOrFull()},
+"metrics-sub":(t)=>{state.metricsSub=attr(t,"data-sub")||"overview";state.sessionDeleteConfirm=false;state.pendingDeleteTarget="";renderMetricsBodyOrFull()},
+"metrics-filter":(t)=>{state.metricsFilter=attr(t,"data-filter")||"recorded";state.sessionDeleteConfirm=false;state.pendingDeleteTarget="";renderMetricsBodyOrFull()},
 "toggle-compare":()=>{state.compareOpen=!state.compareOpen;renderMetricsBodyOrFull()},
 "pin-compare":(t)=>{const sl=attr(t,"data-slot"),tg=attr(t,"data-target");if(sl==="A")state.compareA=tg;else if(sl==="B")state.compareB=tg;state.compareOpen=true;renderMetricsBodyOrFull()},
 "open-session-detail":(t)=>{const tg=attr(t,"data-target");if(tg)openSessionDetail(tg)},
-"close-session-detail":()=>{state.sessionTarget="";state.sessionDetail=null;state.sessionEditOpen=false;state.sessionDeleteConfirm=false;renderMetricsBodyOrFull()},
+"close-session-detail":()=>{state.sessionTarget="";state.sessionDetail=null;state.sessionEditOpen=false;state.sessionDeleteConfirm=false;state.pendingDeleteTarget="";state.slideOver=null;renderMetricsBodyOrFull()},
 "session-detail-sub":(t)=>{state.sessionDetailSub=attr(t,"data-sub")||"summary";renderMetricsBodyOrFull()},
 "toggle-session-edit":()=>{state.sessionEditOpen=!state.sessionEditOpen;renderMetricsBodyOrFull()},
-"ask-remove-session":(t)=>{state.sessionDeleteConfirm=true;state.pendingDeleteTarget=attr(t,"data-target")||state.sessionTarget;renderMetricsBodyOrFull()},
+"ask-remove-session":(t)=>{const tg=attr(t,"data-target")||state.sessionTarget;if(!tg)return;state.sessionDeleteConfirm=true;state.pendingDeleteTarget=tg;renderMetricsBodyOrFull()},
 "cancel-remove-session":()=>{state.sessionDeleteConfirm=false;state.pendingDeleteTarget="";renderMetricsBodyOrFull()},
-"metrics-cli-action":(t)=>{const ca=attr(t,"data-cli-action"),ws=attr(t,"data-workspace"),p={action:ca,conversation_id:attr(t,"data-cid"),target:attr(t,"data-target")};if(ws)p.workspace=ws;if(ca==="remove")p.purge_reports=true;dispatchMetricsCliAction(p)},
+"metrics-cli-action":(t)=>{const ca=attr(t,"data-cli-action"),ws=attr(t,"data-workspace"),cid=attr(t,"data-cid"),tg=attr(t,"data-target"),p={action:ca,conversation_id:cid,target:tg||cid};if(ws)p.workspace=ws;if(ca==="remove")p.purge_reports=true;dispatchMetricsCliAction(p)},
 "read-audit":(t)=>openAuditReader(attr(t,"data-audit-id")),
 "close-audit-reader":()=>{state.auditTarget="";state.auditData=null;renderMetricsBodyOrFull()},
 "open-file":(t)=>openMarkdownFile(attr(t,"data-uri")),

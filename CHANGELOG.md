@@ -6,6 +6,10 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 ## [Unreleased]
 
 ### Fixed
+- **[TASK-GRV-06b] Propagation `brain_dir`, UI orphelins/suppression pending & refresh résilient (`SPEC-MET-06`) :**
+  - `plugin/dashboard/api.py` & `plugin/mcp/server.py` : acceptation et propagation de `brain_dir` dans `ctx` vers le provider SPI-1 pour `get_metrics_state` (`_handle_open_gravity_dashboard`, `_handle_get_metrics_state`, `build_initial_summary`), et repli sécurisé de `target` sur `conversation_id` ou `slug` valide (`_SAFE_TARGET_RE`) dans `run_metrics_cli_action`.
+  - `plugin/mcp/ui/metrics_views_js.py` & `plugin/mcp/ui/app_js.py` : badge `Transcript absent` + désactivation `Enregistrer` + bouton `Supprimer` avec confirmation inline `renderInlineConfirm` sur les cartes `À enregistrer`/`Ignorées` orphelines, ignorées ou en `active_capture`, retrait du bouton `Ignorer` dans le slide-over des sessions déjà archivées, et fermeture/rafraîchissement résilient après `remove` (y compris sur erreur d'état obsolète), en DOM pur sans `innerHTML` sous le plafond `< 150 KiB`.
+  - Mise à jour des tests `tests/test_metrics_provider_pending.py`, `tests/test_live_and_metrics_actions.py` et `tests/test_ui_live_and_charts.py`.
 - **[TASK-CORE-05] Détection EN/FR des négations et séparations dans `scripts/audit_checks.py` (`704` L, `< 750` L) :**
   - Extension de `_AUDIT_SEPARATION_NEG_RE` (`separat`, `isol(?:[ée]|at)`, `exclud`, `never`, `do not`, `don't`, `without mix/combin/merg`, `not mix/combin/merg/together`, `no mix/combin/merg`, `forbid`, `prohibit`, `not allowed`, `avoid mix/combin/merg`), `_NEG_RE` et `_AUDIT_MIX_RE` (`\bmix`) pour éviter le faux positif sur `isolated from audits/agents/` dans `SKILL.md` sans affaiblir la détection des mélanges non niés ni des appels Bridge proactifs sans garde-fou humain.
   - Ajout de `test_cross_repo_en_separation_and_negation_rules_regression` dans `tests/test_audit_ecosystem.py`.

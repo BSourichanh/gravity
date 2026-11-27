@@ -62,6 +62,7 @@ def get_metrics_state(
     since_signature: str = "",
     *,
     gravity_home: Optional[Path] = None,
+    brain_dir: Optional[Path] = None,
     metrics_home: Optional[Path] = None,
     audits_dirs: Optional[Sequence[Path]] = None,
     plugin_roots: Optional[Sequence[Path]] = None,
@@ -76,7 +77,7 @@ def get_metrics_state(
         view="metrics",
         since_signature=since_signature,
         params={"project": project, "limit": limit, "q": q},
-        ctx={"metrics_home": metrics_home, "audits_dirs": audits_dirs},
+        ctx={"metrics_home": metrics_home, "brain_dir": brain_dir, "audits_dirs": audits_dirs},
         gravity_home=gravity_home,
         plugin_roots=eff_roots,
         home_dir=home_dir,
@@ -159,13 +160,18 @@ def run_metrics_cli_action(
         return {"ok": False, "action": clean_action, "error": msg, "message": msg}
 
     clean_target = ""
+    first_non_empty = ""
     for cand in (target, conversation_id, slug):
         s = str(cand or "").strip()
-        if s:
+        if not s:
+            continue
+        if not first_non_empty:
+            first_non_empty = s
+        if _SAFE_TARGET_RE.match(s):
             clean_target = s
             break
-    if not clean_target or not _SAFE_TARGET_RE.match(clean_target):
-        msg = f"Invalid metrics target identifier: {clean_target!r}."
+    if not clean_target:
+        msg = f"Invalid metrics target identifier: {first_non_empty!r}."
         return {"ok": False, "action": clean_action, "error": msg, "message": msg}
 
     eff_roots = normalize_plugin_roots(plugin_roots, plugins_dir)
@@ -413,6 +419,7 @@ def build_initial_summary(
         met = metrics if metrics is not None else get_metrics_state(
             project=project,
             gravity_home=gravity_home,
+            brain_dir=brain_dir,
             metrics_home=metrics_home,
             audits_dirs=audits_dirs,
             plugin_roots=eff_roots,

@@ -280,11 +280,14 @@ function _populateSessionSlideOver(drawer, met, includeHeader) {
   if (state.sessionDetailLoading) { drawer.appendChild(el("div", "empty", "Chargement du détail technique...")); return; }
 
   const actRow = el("div", "actions-row"), deltaCalls = _liveDeltaCalls(rec);
+  const isArchived = String((rec && rec.status) || (sd && sd.status) || "archived").toLowerCase() !== "active";
   const updBtn = _actBtn(deltaCalls > 0 ? ("Mettre à jour (+" + deltaCalls + " appels)") : "Mettre à jour", "metrics-cli-action", { "data-cli-action": "update", "data-cid": cid, "data-target": slug || cid }, "btn-primary");
   if (state.metricsActionInFlight) updBtn.disabled = true;
   actRow.appendChild(updBtn);
   actRow.appendChild(_actBtn("Éditer", "toggle-session-edit", {}, state.sessionEditOpen ? "active" : ""));
-  actRow.appendChild(_actBtn("Ignorer", "metrics-cli-action", { "data-cli-action": "ignore", "data-cid": cid, "data-target": cid }));
+  if (!isArchived) {
+    actRow.appendChild(_actBtn("Ignorer", "metrics-cli-action", { "data-cli-action": "ignore", "data-cid": cid, "data-target": cid }));
+  }
   actRow.appendChild(_actBtn("Supprimer", "ask-remove-session", { "data-target": slug || cid }, "btn-danger"));
   if (!includeHeader && sd && sd.report_md_uri) actRow.appendChild(_actBtn("Ouvrir .md", "open-file", { "data-uri": sd.report_md_uri }));
   drawer.appendChild(actRow);
@@ -474,22 +477,44 @@ function _renderSessionCard(r) {
 }
 
 function _renderPendingCard(item, isIgnored) {
-  const cid = String(item.conversation_id || ""), card = el("article", "agent-card " + (isIgnored ? "done" : "waiting"));
-  const head = el("div", "agent-head"), tWrap = el("div", null);
+  const cid = String(item.conversation_id || ""), target = cid || String(item.detail_slug || item.label || "");
+  const isOrphan = item.brain_exists === false || item.orphan === true;
+  const canDelete = isOrphan || Boolean(isIgnored) || Boolean(item.active_capture);
+  const card = el("article", "agent-card " + (isIgnored ? "done" : "waiting"));
+  const head = el("div", "agent-head"), tWrap = el("div", null), bWrap = el("div", "actions-row");
   tWrap.appendChild(el("div", "agent-role", String(item.label || cid || "Session")));
   tWrap.appendChild(el("div", "mono", (item.project || "workspace") + " · " + fmtDate(item.updated_at || item.ignored_at)));
   head.appendChild(tWrap);
-  head.appendChild(makeBadge(isIgnored ? "Ignorée" : (item.active_capture ? "Capture" : "À enregistrer"), isIgnored ? "" : "warn"));
+  if (isOrphan) bWrap.appendChild(makeBadge("Transcript absent", "error"));
+  bWrap.appendChild(makeBadge(isIgnored ? "Ignorée" : (item.active_capture ? "Capture" : "À enregistrer"), isIgnored ? "" : "warn"));
+  head.appendChild(bWrap);
   card.appendChild(head);
   if (item.ignored_reason || item.current_phase) card.appendChild(el("div", "mono", String(item.ignored_reason || item.current_phase)));
   const acts = el("div", "actions-row");
   if (isIgnored) {
-    acts.appendChild(_actBtn("Restaurer", "metrics-cli-action", { "data-cli-action": "unignore", "data-cid": cid, "data-target": cid }, "btn-primary"));
+    acts.appendChild(_actBtn("Restaurer", "metrics-cli-action", { "data-cli-action": "unignore", "data-cid": cid, "data-target": target }, "btn-primary"));
   } else {
-    acts.appendChild(_actBtn("Enregistrer", "metrics-cli-action", { "data-cli-action": "record", "data-cid": cid, "data-target": cid, "data-workspace": String(item.cwd || "") }, "btn-primary"));
-    acts.appendChild(_actBtn("Ignorer", "metrics-cli-action", { "data-cli-action": "ignore", "data-cid": cid, "data-target": cid }));
+    const recBtn = _actBtn("Enregistrer", "metrics-cli-action", { "data-cli-action": "record", "data-cid": cid, "data-target": target, "data-workspace": String(item.cwd || "") }, "btn-primary");
+    if (isOrphan || state.metricsActionInFlight) recBtn.disabled = true;
+    acts.appendChild(recBtn);
+    acts.appendChild(_actBtn("Ignorer", "metrics-cli-action", { "data-cli-action": "ignore", "data-cid": cid, "data-target": target }));
+  }
+  if (canDelete && target) {
+    const delBtn = _actBtn("Supprimer", "ask-remove-session", { "data-target": target }, "btn-danger");
+    if (state.metricsActionInFlight) delBtn.disabled = true;
+    acts.appendChild(delBtn);
   }
   card.appendChild(acts);
+  if (canDelete && target && state.sessionDeleteConfirm && state.pendingDeleteTarget === target) {
+    card.appendChild(renderInlineConfirm({
+      danger: true,
+      message: isOrphan ? "Purger cette entrée orpheline du suivi métriques ?" : "Supprimer cette session et son suivi métriques ?",
+      confirmLabel: "Confirmer suppression",
+      cancelLabel: "Annuler",
+      confirmAttrs: { "data-action": "metrics-cli-action", "data-cli-action": "remove", "data-target": target, "data-cid": cid },
+      cancelAttrs: { "data-action": "cancel-remove-session" }
+    }));
+  }
   return card;
 }
 

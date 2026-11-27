@@ -822,6 +822,36 @@ elif a.view == "audit-detail":
             self.assertFalse(api.run_metrics_cli_action("drop-all", target=cid, gravity_home=g_home)["ok"])
             self.assertFalse(api.run_metrics_cli_action("ignore", target="../etc/passwd", gravity_home=g_home)["ok"])
 
+            fallback_cid = api.run_metrics_cli_action(
+                "remove",
+                target="Session avec espaces",
+                conversation_id=cid,
+                slug="session-avec-espaces",
+                gravity_home=g_home,
+            )
+            self.assertTrue(fallback_cid["ok"])
+            self.assertEqual(fallback_cid["target"], cid)
+
+            fallback_slug = api.run_metrics_cli_action(
+                "update-meta",
+                target="feat/label invalide",
+                conversation_id="",
+                slug="feat-label-invalide",
+                gravity_home=g_home,
+            )
+            self.assertTrue(fallback_slug["ok"])
+            self.assertEqual(fallback_slug["target"], "feat-label-invalide")
+
+            invalid_all = api.run_metrics_cli_action(
+                "remove",
+                target="../escape",
+                conversation_id="bad id",
+                slug="bad/slug",
+                gravity_home=g_home,
+            )
+            self.assertFalse(invalid_all["ok"])
+            self.assertIn("../escape", invalid_all["error"])
+
             aud_ok = api.read_metrics_audit("2026-11-25-ok.md", gravity_home=g_home, audits_dirs=[audits_agents])
             self.assertTrue(aud_ok["found"])
             self.assertIn("Details here.", aud_ok["content"])

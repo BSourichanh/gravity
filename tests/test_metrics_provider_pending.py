@@ -19,6 +19,7 @@ if str(PLUGIN_ROOT) not in sys.path:
 from _shared.transcript_reader import is_worktree_path  # noqa: E402
 from core.registry import write_modules_registry  # noqa: E402
 from dashboard import api  # noqa: E402
+from mcp import server as mcp_server  # noqa: E402
 
 
 def _clean_env() -> dict[str, str]:
@@ -79,6 +80,7 @@ else:
             "changed": True,
             "unchanged": False,
             "signature": sig,
+            "echo_brain_dir": (req.get("context") or {}).get("brain_dir"),
             "kpis": {"sessions_count": 2, "useful_tokens": 4200, "cost_usd": 0.05},
             "records": [],
             "pending_sessions": [],
@@ -168,15 +170,57 @@ class TestMetricsRetirementAndWorktreeHelpers(unittest.TestCase):
                 ],
             )
 
+            brain_dir = tmp_path / "brain"
+            brain_dir.mkdir(parents=True)
             state1 = api.get_metrics_state(
                 project="gravity",
                 q="demo",
                 gravity_home=g_home,
+                brain_dir=brain_dir,
                 metrics_home=m_home,
                 plugin_roots=[plugins_root],
             )
             self.assertTrue(state1["available"])
             self.assertEqual(state1["kpis"]["sessions_count"], 2)
+            self.assertEqual(state1["echo_brain_dir"], str(brain_dir))
+
+            mcp_res = mcp_server.handle_jsonrpc_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 101,
+                    "method": "tools/call",
+                    "params": {"name": "gravity_get_metrics_state", "arguments": {"project": "gravity"}},
+                },
+                ctx={
+                    "gravity_home": g_home,
+                    "brain_dir": brain_dir,
+                    "metrics_home": m_home,
+                    "plugin_roots": [plugins_root],
+                },
+            )
+            self.assertEqual(
+                mcp_res["result"]["structuredContent"]["echo_brain_dir"],  # type: ignore[index]
+                str(brain_dir),
+            )
+
+            open_res = mcp_server.handle_jsonrpc_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 102,
+                    "method": "tools/call",
+                    "params": {"name": "open_gravity_dashboard", "arguments": {"view": "metrics"}},
+                },
+                ctx={
+                    "gravity_home": g_home,
+                    "brain_dir": brain_dir,
+                    "metrics_home": m_home,
+                    "plugin_roots": [plugins_root],
+                },
+            )
+            self.assertEqual(
+                open_res["result"]["structuredContent"]["metrics"]["echo_brain_dir"],  # type: ignore[index]
+                str(brain_dir),
+            )
             unchanged = api.get_metrics_state(
                 project="gravity",
                 q="demo",

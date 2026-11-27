@@ -286,6 +286,56 @@ payload.selected_session.captured = true;
 renderLiveView(pausedBox, payload, { paused: true });
 const pausedTxt = collectText(pausedBox);
 assert(pausedTxt.includes("Mettre à jour") && pausedTxt.includes("Reprendre") && pausedTxt.includes("En pause"), "captured & paused labels");
+
+// Archived session slide-over must NOT show "Ignorer", active session MUST show "Ignorer"
+state.sessionTarget = "s-35";
+state.sessionDetailSub = "summary";
+const archDetBox = makeNode("div");
+renderMetricsUnifiedView(archDetBox);
+const archBtns = findAll(archDetBox, (n) => n.tagName === "BUTTON" && n.attrs && n.attrs["data-cli-action"] === "ignore");
+assert(archBtns.length === 0, "archived session slide-over hides Ignorer button");
+
+state.metrics.records[0].status = "active";
+state.sessionDetail.record = state.metrics.records[0];
+const activeDetBox = makeNode("div");
+renderMetricsUnifiedView(activeDetBox);
+const activeBtns = findAll(activeDetBox, (n) => n.tagName === "BUTTON" && n.attrs && n.attrs["data-cli-action"] === "ignore");
+assert(activeBtns.length === 1, "active session slide-over keeps Ignorer button");
+state.sessionTarget = "";
+state.sessionDetail = null;
+
+// Pending & ignored cards: Transcript absent badge, disabled Enregistrer, Supprimer + inline confirm
+state.metricsSub = "sessions";
+state.metricsFilter = "all";
+state.sessionDeleteConfirm = false;
+state.pendingDeleteTarget = "";
+state.metrics.pending_sessions = [
+  { conversation_id: "cid-orphan", label: "Orpheline", project: "gravity", brain_exists: false, orphan: true, active_capture: true, updated_at: "2026-11-27T09:00:00Z" },
+  { conversation_id: "cid-real", label: "Valide", project: "gravity", brain_exists: true, orphan: false, active_capture: false, updated_at: "2026-11-27T09:10:00Z" }
+];
+state.metrics.ignored_sessions = [
+  { conversation_id: "cid-ign", label: "Ignorée Orpheline", project: "gravity", brain_exists: false, orphan: true, ignored_at: "2026-11-27T08:00:00Z" }
+];
+const pendBox = makeNode("div");
+renderMetricsUnifiedView(pendBox);
+const pendTxt = collectText(pendBox);
+assert(pendTxt.includes("Transcript absent"), "orphan pending/ignored cards render Transcript absent badge");
+const orphanRecBtns = findAll(pendBox, (n) => n.tagName === "BUTTON" && n.attrs && n.attrs["data-cli-action"] === "record" && n.attrs["data-cid"] === "cid-orphan");
+assert(orphanRecBtns.length === 1 && orphanRecBtns[0].disabled === true, "orphan pending card disables Enregistrer");
+const validRecBtns = findAll(pendBox, (n) => n.tagName === "BUTTON" && n.attrs && n.attrs["data-cli-action"] === "record" && n.attrs["data-cid"] === "cid-real");
+assert(validRecBtns.length === 1 && validRecBtns[0].disabled === false, "valid pending card keeps Enregistrer enabled");
+const delAskBtns = findAll(pendBox, (n) => n.tagName === "BUTTON" && n.attrs && n.attrs["data-action"] === "ask-remove-session");
+assert(delAskBtns.length === 2, "Supprimer shown on orphan/active_capture and ignored cards only");
+
+state.sessionDeleteConfirm = true;
+state.pendingDeleteTarget = "cid-orphan";
+const confirmBox = makeNode("div");
+renderMetricsUnifiedView(confirmBox);
+const confirmPanels = findAll(confirmBox, (n) => n.className && n.className.split(" ").includes("inline-confirm"));
+assert(confirmPanels.length === 1 && collectText(confirmPanels[0]).includes("Confirmer suppression"), "inline confirm rendered on pending card");
+const confirmRemoveBtn = findAll(confirmPanels[0], (n) => n.tagName === "BUTTON" && n.attrs && n.attrs["data-cli-action"] === "remove" && n.attrs["data-target"] === "cid-orphan");
+assert(confirmRemoveBtn.length === 1, "inline confirm button targets cid-orphan remove");
+
 console.log(JSON.stringify({ ok: true }));
 """
 
@@ -362,6 +412,156 @@ class TestUiLiveAndCharts(unittest.TestCase):
                 encoding="utf-8",
             )
             run = subprocess.run([node_bin, str(dom_test)], capture_output=True, text=True, check=False)
+            self.assertEqual(run.returncode, 0, msg=run.stderr or run.stdout)
+            out = json.loads(run.stdout.strip())
+            self.assertTrue(out.get("ok"))
+
+    def test_app_js_remove_refresh_and_inline_confirm_handlers(self) -> None:
+        node_bin = shutil.which("node")
+        if not node_bin:
+            self.skipTest("node binary not available")
+
+        app_test_js = r"""
+const calls = [];
+const docListeners = {};
+const winListeners = {};
+const nodesById = {};
+function mkNode(tag) {
+  return {
+    tagName: String(tag).toUpperCase(),
+    className: "",
+    textContent: "",
+    attrs: {},
+    style: {},
+    children: [],
+    value: "",
+    selected: false,
+    disabled: false,
+    classList: { contains: (c) => false },
+    get firstChild() { return this.children[0] || null; },
+    appendChild(ch) { this.children.push(ch); return ch; },
+    removeChild(ch) { const i = this.children.indexOf(ch); if (i >= 0) this.children.splice(i, 1); return ch; },
+    setAttribute(k, v) { this.attrs[k] = String(v); if (k === "id") { this.id = String(v); nodesById[this.id] = this; } },
+    getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; },
+    addEventListener() {},
+    querySelector() { return null; },
+  };
+}
+const rootNode = mkNode("div");
+rootNode.setAttribute("id", "root");
+const document = {
+  documentElement: { dataset: {}, style: { setProperty() {} } },
+  visibilityState: "visible",
+  head: mkNode("head"),
+  createElement: mkNode,
+  createElementNS: (_ns, t) => mkNode(t),
+  getElementById: (id) => nodesById[id] || null,
+  querySelector: () => null,
+  querySelectorAll: () => [],
+  addEventListener: (ev, fn) => { (docListeners[ev] = docListeners[ev] || []).push(fn); },
+};
+const window = {
+  innerWidth: 1200,
+  scrollX: 0,
+  scrollY: 0,
+  parent: {
+    postMessage(msg) {
+      if (!msg || msg.id == null) return;
+      if (msg.method === "ui/initialize") {
+        setTimeout(() => {
+          (winListeners.message || []).forEach((fn) => fn({ data: { jsonrpc: "2.0", id: msg.id, result: { hostCapabilities: { serverTools: true }, hostContext: {} } } }));
+        }, 0);
+        return;
+      }
+      if (msg.method === "tools/call") {
+        const name = msg.params && msg.params.name;
+        const args = (msg.params && msg.params.arguments) || {};
+        calls.push({ name, args });
+        let result;
+        if (name === "gravity_metrics_action" && args.target === "stale-target") {
+          result = { isError: true, content: [{ type: "text", text: "Historique vide." }], structuredContent: { ok: false, message: "Historique vide." } };
+        } else if (name === "gravity_metrics_action") {
+          result = { isError: false, content: [{ type: "text", text: "Supprimée." }], structuredContent: { ok: true, message: "Supprimée." } };
+        } else if (name === "gravity_get_metrics_state") {
+          result = { isError: false, structuredContent: { available: true, changed: true, unchanged: false, signature: "fresh-sig", kpis: { sessions_count: 0 }, records: [], pending_sessions: [], ignored_sessions: [], audits: [] } };
+        } else {
+          result = { isError: false, structuredContent: { available: true, changed: true, unchanged: false, doctor: { status: "ok" }, tabs: [{ id: "metrics", kind: "metrics", label: "Historique" }] } };
+        }
+        setTimeout(() => {
+          (winListeners.message || []).forEach((fn) => fn({ data: { jsonrpc: "2.0", id: msg.id, result } }));
+        }, 0);
+      }
+    }
+  },
+  addEventListener: (ev, fn) => { (winListeners[ev] = winListeners[ev] || []).push(fn); },
+  scrollTo() {},
+};
+"""
+        tail_js = r"""
+(async () => {
+  await new Promise((r) => setTimeout(r, 20));
+  state.hostCaps = { serverTools: true };
+  state.overview = { doctor: { status: "ok" }, tabs: [{ id: "metrics", kind: "metrics", label: "Historique" }] };
+  state.activeTab = "metrics";
+  state.metricsSub = "sessions";
+  state.metrics = { signature: "old-sig", kpis: { sessions_count: 1 }, records: [{ conversation_id: "cid-1", label: "S1", status: "archived" }], pending_sessions: [{ conversation_id: "cid-orph", brain_exists: false, orphan: true }], ignored_sessions: [], audits: [] };
+
+  // Test inline confirm click handlers on pending card
+  const fakeBtn = mkNode("button");
+  fakeBtn.setAttribute("data-action", "ask-remove-session");
+  fakeBtn.setAttribute("data-target", "cid-orph");
+  CLICK_HANDLERS["ask-remove-session"](fakeBtn);
+  if (!state.sessionDeleteConfirm || state.pendingDeleteTarget !== "cid-orph") {
+    throw new Error("ask-remove-session failed to set pendingDeleteTarget");
+  }
+  CLICK_HANDLERS["cancel-remove-session"]();
+  if (state.sessionDeleteConfirm || state.pendingDeleteTarget !== "") {
+    throw new Error("cancel-remove-session failed to reset confirm state");
+  }
+
+  // Test successful remove closes slideOver & refreshes metrics
+  state.sessionTarget = "s1";
+  state.sessionDetail = { found: true };
+  state.sessionDeleteConfirm = true;
+  state.pendingDeleteTarget = "s1";
+  state.slideOver = { title: "S1" };
+  calls.length = 0;
+  await dispatchMetricsCliAction({ action: "remove", target: "s1", conversation_id: "cid-1", purge_reports: true });
+  if (state.slideOver !== null || state.sessionTarget !== "" || state.sessionDeleteConfirm || state.pendingDeleteTarget !== "") {
+    throw new Error("remove success did not clear slideOver/confirm state");
+  }
+  if (!calls.some((c) => c.name === "gravity_get_metrics_state")) {
+    throw new Error("remove success did not refresh metrics");
+  }
+
+  // Test stale-state error on remove STILL closes slideOver, clears confirm, and refreshes metrics
+  state.sessionTarget = "stale-target";
+  state.sessionDetail = { found: true };
+  state.sessionDeleteConfirm = true;
+  state.pendingDeleteTarget = "stale-target";
+  state.slideOver = { title: "Stale" };
+  state.metrics = { signature: "old-sig", records: [{ conversation_id: "cid-stale", label: "Stale" }], pending_sessions: [], ignored_sessions: [], audits: [] };
+  calls.length = 0;
+  await dispatchMetricsCliAction({ action: "remove", target: "stale-target", conversation_id: "cid-stale", purge_reports: true });
+  if (state.slideOver !== null || state.sessionTarget !== "" || state.sessionDeleteConfirm || state.pendingDeleteTarget !== "") {
+    throw new Error("stale-state remove error did not clear slideOver/confirm state");
+  }
+  if (!state.toast || !state.toast.isError) {
+    throw new Error("stale-state remove error did not show error toast");
+  }
+  if (!calls.some((c) => c.name === "gravity_get_metrics_state") || state.metrics.signature !== "fresh-sig") {
+    throw new Error("stale-state remove error did not refresh state.metrics");
+  }
+  console.log(JSON.stringify({ ok: true }));
+})().catch((err) => { console.error(err); process.exit(1); });
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            app_test = Path(tmp) / "app_test.js"
+            app_test.write_text(
+                "\n".join([app_test_js, VIEWS_JS, CHARTS_JS, LIVE_VIEWS_JS, METRICS_VIEWS_JS, APP_JS, tail_js]),
+                encoding="utf-8",
+            )
+            run = subprocess.run([node_bin, str(app_test)], capture_output=True, text=True, check=False)
             self.assertEqual(run.returncode, 0, msg=run.stderr or run.stdout)
             out = json.loads(run.stdout.strip())
             self.assertTrue(out.get("ok"))

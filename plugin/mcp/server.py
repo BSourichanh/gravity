@@ -208,6 +208,7 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
         metrics = api.get_metrics_state(
             project=initial_project,
             gravity_home=ctx.get("gravity_home"),
+            brain_dir=ctx.get("brain_dir"),
             metrics_home=ctx.get("metrics_home"),
             audits_dirs=ctx.get("audits_dirs"),
             plugin_roots=ctx.get("plugin_roots"),
@@ -310,6 +311,7 @@ def _handle_get_metrics_state(args: dict[str, Any], ctx: dict[str, Any]) -> dict
         q=str(args.get("q") or "").strip(),
         since_signature=str(args.get("since_signature") or "").strip(),
         gravity_home=ctx.get("gravity_home"),
+        brain_dir=ctx.get("brain_dir"),
         metrics_home=ctx.get("metrics_home"),
         audits_dirs=ctx.get("audits_dirs"),
         plugin_roots=ctx.get("plugin_roots"),
