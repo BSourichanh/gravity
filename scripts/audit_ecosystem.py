@@ -8,94 +8,66 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 from pathlib import Path
+try:
+    import pwd as _pwd
+except ImportError:
+    _pwd = None  # type: ignore[assignment]
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any, Optional, Sequence
 
-try:
-    from scripts.audit_checks import (
-        UTF8_BOM,
-        audit_commands_doc,
-        audit_cross_repo,
-        audit_encoding_hygiene,
-        audit_installed_sync,
-        audit_markdown_links,
-        audit_module_contract,
-        audit_personal_paths,
-        collect_ast_literals,
-        collect_validator_sources,
-        count_h2_sections,
-        extract_declared_cli_flags,
-        extract_latest_changelog_version,
-        has_executable_manifest,
-        read_utf8_text,
-    )
-except ImportError:
-    _SCRIPT_DIR = Path(__file__).resolve().parent
-    if str(_SCRIPT_DIR) not in sys.path:
-        sys.path.insert(0, str(_SCRIPT_DIR))
-    from audit_checks import (  # type: ignore[no-redef]
-        UTF8_BOM,
-        audit_commands_doc,
-        audit_cross_repo,
-        audit_encoding_hygiene,
-        audit_installed_sync,
-        audit_markdown_links,
-        audit_module_contract,
-        audit_personal_paths,
-        collect_ast_literals,
-        collect_validator_sources,
-        count_h2_sections,
-        extract_declared_cli_flags,
-        extract_latest_changelog_version,
-        has_executable_manifest,
-        read_utf8_text,
-    )
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_PLUGIN_DIR = _SCRIPT_DIR.parent / "plugin"
+for _p in (_SCRIPT_DIR, _PLUGIN_DIR):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+try:
+    from scripts import audit_checks as _ac
+except ImportError:
+    import audit_checks as _ac  # type: ignore[no-redef]
+
+from _shared.path_safety import is_symlink_or_junction  # noqa: E402
+from _shared.validator_core import run_agy_plugin_validate  # noqa: E402
+
+UTF8_BOM = _ac.UTF8_BOM
+audit_clean_legacy_refs = _ac.audit_clean_legacy_refs
+audit_commands_doc = _ac.audit_commands_doc
+audit_cross_repo = _ac.audit_cross_repo
+audit_encoding_hygiene = _ac.audit_encoding_hygiene
+audit_installed_sync = _ac.audit_installed_sync
+audit_markdown_links = _ac.audit_markdown_links
+audit_module_contract = _ac.audit_module_contract
+audit_personal_paths = _ac.audit_personal_paths
+check_shared_sync = _ac.check_shared_sync
+collect_ast_literals = _ac.collect_ast_literals
+collect_validator_sources = _ac.collect_validator_sources
+count_h2_sections = _ac.count_h2_sections
+extract_declared_cli_flags = _ac.extract_declared_cli_flags
+extract_latest_changelog_version = _ac.extract_latest_changelog_version
+has_executable_manifest = _ac.has_executable_manifest
+imports_shared_module = _ac.imports_shared_module
+read_utf8_text = _ac.read_utf8_text
+
+REPO_ROOT = _SCRIPT_DIR.parent
 DEFAULT_REPOS_ROOT = REPO_ROOT.parent
 DEFAULT_PLUGINS_DIR = Path.home() / ".gemini" / "config" / "plugins"
-
-DEFAULT_REPOS: tuple[str, ...] = (
-    "gravity",
-    "gravity-workflow",
-    "gravity-metrics",
-    "gravity-architect",
-)
+DEFAULT_REPOS: tuple[str, ...] = ("gravity", "gravity-workflow", "gravity-metrics", "gravity-architect")
 VERIFY_PARALLEL_MAX_WORKERS = 4
 VERIFY_CMD_TIMEOUT_SECONDS = 300.0
 
 REQUIRED_INSTALL_FLAGS: tuple[str, ...] = (
-    "--scope",
-    "--workspace",
-    "--target",
-    "--method",
-    "--force",
-    "--skip-validate",
-    "--strict",
-    "--no-fix-python",
-    "--dry-run",
-    "--check",
-    "--uninstall",
+    "--scope", "--workspace", "--target", "--method", "--force",
+    "--skip-validate", "--strict", "--no-fix-python", "--dry-run", "--check", "--uninstall",
 )
-
-OFFICIAL_PLUGIN_FIELDS: frozenset[str] = frozenset(
-    {
-        "name",
-        "displayName",
-        "version",
-        "description",
-        "logo",
-        "suggestedPrompts",
-        "author",
-        "homepage",
-        "repository",
-        "disabled",
-    }
-)
+OFFICIAL_PLUGIN_FIELDS: frozenset[str] = frozenset({
+    "name", "displayName", "version", "description", "logo",
+    "suggestedPrompts", "author", "homepage", "repository", "disabled",
+})
 REQUIRED_PLUGIN_FIELDS: frozenset[str] = OFFICIAL_PLUGIN_FIELDS - {"disabled"}
 
 REPO_AGENTS_MAX_BYTES = 2500
@@ -121,7 +93,7 @@ def _configure_stdio() -> None:
 
 
 def _audit_install_cli(repo_dir: Path, errors: list[str]) -> dict[str, Any]:
-    """Verify the 11-flag common CLI contract in install.py using AST inspection."""
+    """Verify the 11-flag common CLI contract in install.py (or delegated _shared/installer_core.py)."""
     installer = repo_dir / "install.py"
     if not installer.is_file():
         errors.append("install.py introuvable à la racine du dépôt.")
@@ -132,15 +104,33 @@ def _audit_install_cli(repo_dir: Path, errors: list[str]) -> dict[str, Any]:
         errors.append(f"install.py : échec inspection AST ({parse_err}).")
         return {"ok": False, "present": [], "missing": list(REQUIRED_INSTALL_FLAGS)}
 
+    delegates, imp_err = imports_shared_module(installer, "installer_core")
+    if imp_err is not None:
+        errors.append(f"install.py : échec inspection imports AST ({imp_err}).")
+        return {"ok": False, "present": [], "missing": list(REQUIRED_INSTALL_FLAGS)}
+
+    if delegates:
+        shared_installer = repo_dir / "plugin" / "_shared" / "installer_core.py"
+        if not shared_installer.is_file() or is_symlink_or_junction(shared_installer):
+            errors.append("install.py délègue à _shared.installer_core mais plugin/_shared/installer_core.py est introuvable.")
+            present = [f for f in REQUIRED_INSTALL_FLAGS if f in flags]
+            missing = [f for f in REQUIRED_INSTALL_FLAGS if f not in flags]
+            return {"ok": False, "present": present, "missing": missing, "delegated_to_shared": True}
+        shared_flags, shared_err = extract_declared_cli_flags(shared_installer)
+        if shared_err is not None or shared_flags is None:
+            errors.append(f"plugin/_shared/installer_core.py : échec inspection AST ({shared_err}).")
+            return {"ok": False, "present": [], "missing": list(REQUIRED_INSTALL_FLAGS), "delegated_to_shared": True}
+        flags |= shared_flags
+
     present = [flag for flag in REQUIRED_INSTALL_FLAGS if flag in flags]
     missing = [flag for flag in REQUIRED_INSTALL_FLAGS if flag not in flags]
     if missing:
         errors.append(f"install.py : drapeau(x) CLI manquant(s) ({len(missing)}/11) : {', '.join(missing)}.")
-    return {"ok": not missing, "present": present, "missing": missing}
+    return {"ok": not missing, "present": present, "missing": missing, "delegated_to_shared": delegates}
 
 
 def _audit_validate_contract(repo_dir: Path, errors: list[str]) -> dict[str, Any]:
-    """Verify plugin/scripts/validate.py presence, flags, and required validation checks."""
+    """Verify plugin/scripts/validate.py presence, flags, and required checks (incl. _shared delegation)."""
     plugin_dir = repo_dir / "plugin"
     validate_path = plugin_dir / "scripts" / "validate.py"
     requires_fix = has_executable_manifest(plugin_dir)
@@ -154,11 +144,34 @@ def _audit_validate_contract(repo_dir: Path, errors: list[str]) -> dict[str, Any
         errors.append(f"plugin/scripts/validate.py : échec inspection AST ({parse_err}).")
         return {"ok": False, "missing": ["valid_ast"], "requires_fix_python_cmd": requires_fix}
 
+    delegates, imp_err = imports_shared_module(validate_path, "validator_core")
+    if imp_err is not None:
+        errors.append(f"plugin/scripts/validate.py : échec inspection imports AST ({imp_err}).")
+        return {"ok": False, "missing": ["valid_ast"], "requires_fix_python_cmd": requires_fix}
+
+    if delegates:
+        shared_val = plugin_dir / "_shared" / "validator_core.py"
+        if not shared_val.is_file() or is_symlink_or_junction(shared_val):
+            errors.append(
+                "plugin/scripts/validate.py délègue à _shared.validator_core mais plugin/_shared/validator_core.py est introuvable."
+            )
+            return {
+                "ok": False, "missing": ["_shared/validator_core.py"],
+                "requires_fix_python_cmd": requires_fix, "delegated_to_shared": True,
+            }
+        shared_flags, shared_err = extract_declared_cli_flags(shared_val)
+        if shared_err is not None or shared_flags is None:
+            errors.append(f"plugin/_shared/validator_core.py : échec inspection AST ({shared_err}).")
+            return {
+                "ok": False, "missing": ["_shared/validator_core.py"],
+                "requires_fix_python_cmd": requires_fix, "delegated_to_shared": True,
+            }
+        flags |= shared_flags
+
     missing_items: list[str] = []
     if "--strict" not in flags:
         missing_items.append("--strict")
         errors.append("plugin/scripts/validate.py : drapeau '--strict' non déclaré.")
-
     if requires_fix and "--fix-python-cmd" not in flags:
         missing_items.append("--fix-python-cmd")
         errors.append("plugin/scripts/validate.py : drapeau '--fix-python-cmd' requis (manifeste exécutable présent).")
@@ -166,31 +179,25 @@ def _audit_validate_contract(repo_dir: Path, errors: list[str]) -> dict[str, Any
     combined_src, trees = collect_validator_sources(plugin_dir)
     str_lits, bytes_lits = collect_ast_literals(trees)
 
-    has_plugin_json_9 = ("plugin.json" in combined_src) and all(
-        field in str_lits or f'"{field}"' in combined_src for field in REQUIRED_PLUGIN_FIELDS
-    )
-    if not has_plugin_json_9:
+    if not (("plugin.json" in combined_src) and all(f in str_lits or f'"{f}"' in combined_src for f in REQUIRED_PLUGIN_FIELDS)):
         missing_items.append("check:plugin.json(9)")
         errors.append("plugin/scripts/validate.py : contrôle plugin.json (9 champs) non détecté.")
-
-    has_module_json = ("module.json" in combined_src) and (
-        "schema_version" in combined_src or "validate_module_contract" in combined_src
-    )
-    if not has_module_json:
+    if not (("module.json" in combined_src) and ("schema_version" in combined_src or "validate_module_contract" in combined_src)):
         missing_items.append("check:config/module.json")
         errors.append("plugin/scripts/validate.py : contrôle config/module.json non détecté.")
-
     if "stdlib_module_names" not in combined_src:
         missing_items.append("check:stdlib-only")
         errors.append("plugin/scripts/validate.py : contrôle stdlib-only (stdlib_module_names) non détecté.")
-
-    has_bom_check = (UTF8_BOM in bytes_lits) or ("\\xef\\xbb\\xbf" in combined_src.lower())
-    has_lf_check = (b"\r\n" in bytes_lits) or ("\r\n" in str_lits) or ("\\r\\n" in combined_src)
-    if not (has_bom_check and has_lf_check):
+    has_bom = (UTF8_BOM in bytes_lits) or ("\\xef\\xbb\\xbf" in combined_src.lower())
+    has_lf = (b"\r\n" in bytes_lits) or ("\r\n" in str_lits) or ("\\r\\n" in combined_src)
+    if not (has_bom and has_lf):
         missing_items.append("check:utf8-bom-lf")
         errors.append("plugin/scripts/validate.py : contrôle UTF-8 sans BOM / LF non détecté.")
 
-    return {"ok": not missing_items, "missing": missing_items, "requires_fix_python_cmd": requires_fix}
+    return {
+        "ok": not missing_items, "missing": missing_items,
+        "requires_fix_python_cmd": requires_fix, "delegated_to_shared": delegates,
+    }
 
 
 def _audit_root_agents(repo_dir: Path, errors: list[str]) -> dict[str, Any]:
@@ -199,25 +206,18 @@ def _audit_root_agents(repo_dir: Path, errors: list[str]) -> dict[str, Any]:
     if not agents_path.is_file():
         errors.append("AGENTS.md racine introuvable.")
         return {"ok": False, "bytes": None, "sections": 0}
-
     err_before = len(errors)
     text, size = read_utf8_text(agents_path, "AGENTS.md", errors)
     if size > REPO_AGENTS_MAX_BYTES:
         errors.append(f"AGENTS.md : dépasse {REPO_AGENTS_MAX_BYTES} octets ({size} o).")
-
     sections = count_h2_sections(text) if text is not None else 0
     if text is not None and sections != REPO_AGENTS_EXPECTED_H2:
         errors.append(f"AGENTS.md : {sections} section(s) '##' détectée(s), {REPO_AGENTS_EXPECTED_H2} attendues.")
-
     return {"ok": len(errors) == err_before, "bytes": size, "sections": sections}
 
 
 def _audit_rules_d4(
-    repo_name: str,
-    repo_dir: Path,
-    errors: list[str],
-    warnings: list[str],
-    infos: list[str],
+    repo_name: str, repo_dir: Path, errors: list[str], warnings: list[str], infos: list[str],
 ) -> dict[str, Any]:
     """Verify plugin/rules/AGENTS.md D4 budgets and zero YAML frontmatter."""
     rules_path = repo_dir / "plugin" / "rules" / "AGENTS.md"
@@ -228,30 +228,24 @@ def _audit_rules_d4(
         errors.append("plugin/rules/AGENTS.md introuvable.")
         return {"ok": False, "exempt": False, "bytes": None, "severity": "error"}
 
-    err_before = len(errors)
-    warn_before = len(warnings)
+    err_before, warn_before = len(errors), len(warnings)
     text, size = read_utf8_text(rules_path, "plugin/rules/AGENTS.md", errors)
-
     if size > RULES_ERROR_BYTES:
         errors.append(f"plugin/rules/AGENTS.md : dépasse {RULES_ERROR_BYTES} octets ({size} o).")
     elif size > RULES_WARN_BYTES:
         warnings.append(
             f"plugin/rules/AGENTS.md : dépasse la cible éditoriale de {RULES_WARN_BYTES} octets ({size} o <= {RULES_ERROR_BYTES} o)."
         )
-
     if text is not None and text.lstrip().startswith("---"):
         errors.append("plugin/rules/AGENTS.md : frontmatter YAML interdit.")
-
     severity = "error" if len(errors) > err_before else ("warn" if len(warnings) > warn_before else "ok")
     return {"ok": severity == "ok", "exempt": False, "bytes": size, "severity": severity}
 
 
 def _audit_manifest_and_changelog(repo_dir: Path, errors: list[str]) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
     """Verify plugin.json (9 fields, suggestedPrompts <= 100 c, /cmd — summary) and CHANGELOG sync."""
-    manifest_path = repo_dir / "plugin" / "plugin.json"
-    changelog_path = repo_dir / "CHANGELOG.md"
+    manifest_path, changelog_path = repo_dir / "plugin" / "plugin.json", repo_dir / "CHANGELOG.md"
     err_before = len(errors)
-
     plugin_version: Optional[str] = None
     changelog_version: Optional[str] = None
     prompts_ok = True
@@ -267,57 +261,40 @@ def _audit_manifest_and_changelog(repo_dir: Path, errors: list[str]) -> tuple[di
             except ValueError as exc:
                 errors.append(f"plugin/plugin.json : JSON invalide ({exc}).")
                 parsed = None
-
             if isinstance(parsed, dict):
                 manifest = parsed
-                unknown = sorted(set(manifest.keys()) - OFFICIAL_PLUGIN_FIELDS)
-                if unknown:
+                if (unknown := sorted(set(manifest) - OFFICIAL_PLUGIN_FIELDS)):
                     errors.append(f"plugin/plugin.json : champs non officiels détectés : {unknown}.")
-                missing = sorted(REQUIRED_PLUGIN_FIELDS - set(manifest.keys()))
-                if missing:
+                if (missing := sorted(REQUIRED_PLUGIN_FIELDS - set(manifest))):
                     errors.append(f"plugin/plugin.json : champs officiels requis manquants : {missing}.")
-
                 desc = manifest.get("description")
                 if not isinstance(desc, str) or not desc.strip() or len(desc) > 160:
-                    dlen = len(desc) if isinstance(desc, str) else 0
-                    errors.append(f"plugin/plugin.json : 'description' vide ou > 160 caractères ({dlen}).")
-
+                    errors.append(f"plugin/plugin.json : 'description' vide ou > 160 caractères ({len(desc) if isinstance(desc, str) else 0}).")
                 raw_ver = manifest.get("version")
                 if not isinstance(raw_ver, str) or not SEMVER_RE.match(raw_ver.strip()):
                     errors.append(f"plugin/plugin.json : 'version' SemVer invalide ({raw_ver!r}).")
                 else:
                     plugin_version = raw_ver.strip()
-
                 prompts = manifest.get("suggestedPrompts")
-                if (
-                    not isinstance(prompts, list)
-                    or len(prompts) != 3
-                    or not all(isinstance(p, str) and p.strip() for p in prompts)
-                ):
+                if not isinstance(prompts, list) or len(prompts) != 3 or not all(isinstance(p, str) and p.strip() for p in prompts):
                     prompts_ok = False
                     errors.append("plugin/plugin.json : exactement 3 'suggestedPrompts' non vides sont requis.")
                 else:
                     for idx, prompt in enumerate(prompts):
                         if len(prompt) > SUGGESTED_PROMPT_MAX_CHARS:
                             prompts_ok = False
-                            errors.append(
-                                f"plugin/plugin.json : suggestedPrompts[{idx}] > {SUGGESTED_PROMPT_MAX_CHARS} car. ({len(prompt)})."
-                            )
+                            errors.append(f"plugin/plugin.json : suggestedPrompts[{idx}] > {SUGGESTED_PROMPT_MAX_CHARS} car. ({len(prompt)}).")
                         stripped = prompt.lstrip()
                         if stripped.startswith("/"):
                             sep = " — " if " — " in stripped else (" - " if " - " in stripped else None)
                             if sep is None:
                                 prompts_ok = False
-                                errors.append(
-                                    f"plugin/plugin.json : suggestedPrompts[{idx}] débutant par '/' doit suivre '/cmd — résumé'."
-                                )
+                                errors.append(f"plugin/plugin.json : suggestedPrompts[{idx}] débutant par '/' doit suivre '/cmd — résumé'.")
                             else:
-                                cmd_part, summary_part = stripped.split(sep, 1)
-                                if len(cmd_part.strip()) <= 1 or not summary_part.strip():
+                                cmd_part, sum_part = stripped.split(sep, 1)
+                                if len(cmd_part.strip()) <= 1 or not sum_part.strip():
                                     prompts_ok = False
-                                    errors.append(
-                                        f"plugin/plugin.json : suggestedPrompts[{idx}] commande ou résumé vide."
-                                    )
+                                    errors.append(f"plugin/plugin.json : suggestedPrompts[{idx}] commande ou résumé vide.")
             elif parsed is not None:
                 errors.append("plugin/plugin.json doit contenir un objet JSON.")
 
@@ -330,19 +307,12 @@ def _audit_manifest_and_changelog(repo_dir: Path, errors: list[str]) -> tuple[di
             if changelog_version is None:
                 errors.append("CHANGELOG.md : aucune release '## [X.Y.Z]' détectée.")
             elif plugin_version is not None and plugin_version != changelog_version:
-                errors.append(
-                    f"Désynchronisation SemVer : plugin.json={plugin_version!r} != CHANGELOG.md={changelog_version!r}."
-                )
+                errors.append(f"Désynchronisation SemVer : plugin.json={plugin_version!r} != CHANGELOG.md={changelog_version!r}.")
 
-    return (
-        {
-            "ok": len(errors) == err_before,
-            "plugin_version": plugin_version,
-            "changelog_version": changelog_version,
-            "prompts_ok": prompts_ok,
-        },
-        manifest,
-    )
+    return {
+        "ok": len(errors) == err_before, "plugin_version": plugin_version,
+        "changelog_version": changelog_version, "prompts_ok": prompts_ok,
+    }, manifest
 
 
 def _is_mcp_ui_bundle(py_file: Path, plugin_dir: Path) -> bool:
@@ -353,18 +323,12 @@ def _is_mcp_ui_bundle(py_file: Path, plugin_dir: Path) -> bool:
     return len(rel.parts) == 3 and rel.parts[0] == "mcp" and rel.parts[1] == "ui"
 
 
-def _audit_python_monoliths(
-    repo_dir: Path,
-    errors: list[str],
-    warnings: list[str],
-    infos: list[str],
-) -> dict[str, Any]:
+def _audit_python_monoliths(repo_dir: Path, errors: list[str], warnings: list[str], infos: list[str]) -> dict[str, Any]:
     """Detect oversized Python modules under plugin/**/*.py with exemption for plugin/mcp/ui/*.py."""
     plugin_dir = repo_dir / "plugin"
     warn_files: list[dict[str, Any]] = []
     error_files: list[dict[str, Any]] = []
     exempt_files: list[dict[str, Any]] = []
-
     if not plugin_dir.is_dir():
         return {"ok": True, "warn_files": [], "error_files": [], "exempt_files": []}
 
@@ -376,16 +340,12 @@ def _audit_python_monoliths(
         except OSError as exc:
             errors.append(f"{py_file.relative_to(repo_dir).as_posix()} illisible : {exc}")
             continue
-
-        lines = len(content.splitlines())
-        rel_posix = py_file.relative_to(repo_dir).as_posix()
-
+        lines, rel_posix = len(content.splitlines()), py_file.relative_to(repo_dir).as_posix()
         if _is_mcp_ui_bundle(py_file, plugin_dir):
             if lines > PY_WARN_LINES:
                 exempt_files.append({"path": rel_posix, "lines": lines})
                 infos.append(f"{rel_posix} ({lines} L) exempté (bundle JS/CSS embarqué sous plugin/mcp/ui/).")
             continue
-
         entry = {"path": rel_posix, "lines": lines}
         if lines > PY_ERROR_LINES:
             error_files.append(entry)
@@ -403,6 +363,7 @@ def audit_repo(
     *,
     check_installed: bool = False,
     plugins_dir: Optional[Path] = None,
+    repos_root: Optional[Path] = None,
 ) -> dict[str, Any]:
     """Run all read-only compliance checks on a single Gravity repository."""
     errors: list[str] = []
@@ -412,16 +373,11 @@ def audit_repo(
     if not repo_dir.is_dir():
         errors.append(f"Dépôt introuvable : {repo_dir}")
         return {
-            "repo": repo_name,
-            "path": str(repo_dir),
-            "exists": False,
-            "status": "FAIL",
-            "errors": errors,
-            "warnings": warnings,
-            "infos": infos,
-            "checks": {},
+            "repo": repo_name, "path": str(repo_dir), "exists": False, "status": "FAIL",
+            "errors": errors, "warnings": warnings, "infos": infos, "checks": {},
         }
 
+    resolved_root = repos_root if repos_root is not None else repo_dir.parent
     install_res = _audit_install_cli(repo_dir, errors)
     validate_res = _audit_validate_contract(repo_dir, errors)
     agents_res = _audit_root_agents(repo_dir, errors)
@@ -433,118 +389,63 @@ def audit_repo(
     encoding_res = audit_encoding_hygiene(repo_dir, errors)
     paths_res = audit_personal_paths(repo_dir, errors)
     cmds_res = audit_commands_doc(repo_dir, module_res, errors)
+    shared_res = check_shared_sync(resolved_root, repo_name, repo_dir, errors)
+    legacy_res = audit_clean_legacy_refs(repo_dir, errors)
 
     checks: dict[str, Any] = {
-        "install_cli": install_res,
-        "validate_contract": validate_res,
-        "agents_root": agents_res,
-        "rules_d4": rules_res,
-        "manifest_changelog": manifest_res,
-        "monoliths": monolith_res,
-        "module_contract": module_res,
-        "markdown_links": links_res,
-        "encoding_hygiene": encoding_res,
-        "personal_paths": paths_res,
-        "commands_doc": cmds_res,
+        "install_cli": install_res, "validate_contract": validate_res, "agents_root": agents_res,
+        "rules_d4": rules_res, "manifest_changelog": manifest_res, "monoliths": monolith_res,
+        "module_contract": module_res, "markdown_links": links_res, "encoding_hygiene": encoding_res,
+        "personal_paths": paths_res, "commands_doc": cmds_res, "shared_sync": shared_res,
+        "legacy_refs": legacy_res,
     }
     if check_installed:
-        plugin_name = (
-            (manifest_obj.get("name") if isinstance(manifest_obj, dict) else None)
-            or module_res.get("plugin_name")
-            or repo_name
-        )
-        resolved_plugins = (plugins_dir or DEFAULT_PLUGINS_DIR).expanduser().resolve()
-        checks["installed_sync"] = audit_installed_sync(repo_dir, str(plugin_name), resolved_plugins, errors)
+        pname = (manifest_obj.get("name") if isinstance(manifest_obj, dict) else None) or module_res.get("plugin_name") or repo_name
+        checks["installed_sync"] = audit_installed_sync(repo_dir, str(pname), (plugins_dir or DEFAULT_PLUGINS_DIR).expanduser().resolve(), errors)
 
     status = "FAIL" if errors else ("WARN" if warnings else "PASS")
     return {
-        "repo": repo_name,
-        "path": str(repo_dir),
-        "exists": True,
-        "status": status,
-        "errors": errors,
-        "warnings": warnings,
-        "infos": infos,
-        "checks": checks,
+        "repo": repo_name, "path": str(repo_dir), "exists": True, "status": status,
+        "errors": errors, "warnings": warnings, "infos": infos, "checks": checks,
     }
 
 
 def _tail_lines(text: str, max_lines: int = 12) -> str:
     lines = [ln for ln in text.splitlines() if ln.strip()]
-    if len(lines) <= max_lines:
-        return "\n".join(lines)
     return "\n".join(lines[-max_lines:])
 
 
 def _failed_check_result(
-    error: str,
-    *,
-    cmd: Optional[list[str]] = None,
-    returncode: int = 1,
-    duration_s: float = 0.0,
+    error: str, *, cmd: Optional[list[str]] = None, returncode: int = 1, duration_s: float = 0.0,
 ) -> dict[str, Any]:
     return {
-        "cmd": list(cmd or []),
-        "returncode": returncode,
-        "ok": False,
-        "duration_s": round(duration_s, 3),
-        "stdout_tail": "",
-        "stderr_tail": error,
-        "error": error,
+        "cmd": list(cmd or []), "returncode": returncode, "ok": False,
+        "duration_s": round(duration_s, 3), "stdout_tail": "", "stderr_tail": error, "error": error,
     }
 
 
 def _run_verify_cmd(cmd: list[str], cwd: Path, timeout_s: float) -> dict[str, Any]:
-    env = dict(os.environ)
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["PYTHONUTF8"] = "1"
-    env["PYTHONIOENCODING"] = "utf-8"
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     started = time.monotonic()
     try:
         proc = subprocess.run(
-            cmd,
-            cwd=str(cwd),
-            env=env,
-            shell=False,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            timeout=timeout_s,
-            check=False,
+            cmd, cwd=str(cwd), env=env, shell=False, text=True,
+            encoding="utf-8", errors="replace", capture_output=True, timeout=timeout_s, check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        elapsed = time.monotonic() - started
-        res = _failed_check_result(
-            f"Timeout après {timeout_s:.0f}s : {' '.join(cmd)}",
-            cmd=cmd,
-            returncode=124,
-            duration_s=elapsed,
-        )
+        res = _failed_check_result(f"Timeout après {timeout_s:.0f}s : {' '.join(cmd)}", cmd=cmd, returncode=124, duration_s=time.monotonic() - started)
         if exc.stdout:
-            out_txt = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else str(exc.stdout)
-            res["stdout_tail"] = _tail_lines(out_txt)
+            res["stdout_tail"] = _tail_lines(exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else str(exc.stdout))
         if exc.stderr:
-            err_txt = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr)
-            res["stderr_tail"] = _tail_lines(err_txt)
+            res["stderr_tail"] = _tail_lines(exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else str(exc.stderr))
         return res
     except OSError as exc:
-        return _failed_check_result(
-            f"Erreur exécution ({exc}) : {' '.join(cmd)}",
-            cmd=cmd,
-            returncode=127,
-            duration_s=time.monotonic() - started,
-        )
+        return _failed_check_result(f"Erreur exécution ({exc}) : {' '.join(cmd)}", cmd=cmd, returncode=127, duration_s=time.monotonic() - started)
 
-    elapsed = round(time.monotonic() - started, 3)
-    ok = proc.returncode == 0
+    elapsed, ok = round(time.monotonic() - started, 3), proc.returncode == 0
     result: dict[str, Any] = {
-        "cmd": cmd,
-        "returncode": proc.returncode,
-        "ok": ok,
-        "duration_s": elapsed,
-        "stdout_tail": _tail_lines(proc.stdout),
-        "stderr_tail": _tail_lines(proc.stderr),
+        "cmd": cmd, "returncode": proc.returncode, "ok": ok, "duration_s": elapsed,
+        "stdout_tail": _tail_lines(proc.stdout), "stderr_tail": _tail_lines(proc.stderr),
     }
     if not ok:
         detail = result["stderr_tail"] or result["stdout_tail"] or f"exit {proc.returncode}"
@@ -552,81 +453,79 @@ def _run_verify_cmd(cmd: list[str], cwd: Path, timeout_s: float) -> dict[str, An
     return result
 
 
+def _within_real_home(path: Path) -> bool:
+    if _pwd is not None and hasattr(os, "getuid"):
+        try:
+            real_home = Path(_pwd.getpwuid(os.getuid()).pw_dir).resolve()
+            return path.resolve().is_relative_to(real_home)
+        except (KeyError, OSError, ValueError):
+            pass
+    try:
+        return path.resolve().is_relative_to(Path.home().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _run_agy_verify(plugin_dir: Path, repo_dir: Path, resolved_agy: str, timeout_s: float) -> dict[str, Any]:
+    is_snap = "/snap/" in resolved_agy or "/snap/" in os.path.realpath(resolved_agy)
+    resolved_plugin = plugin_dir.resolve()
+    has_hidden = any(part.startswith(".") for part in resolved_plugin.parts if part not in ("/", ""))
+    tmp_base = os.path.abspath(tempfile.gettempdir())
+    in_posix_tmp = os.name != "nt" and resolved_plugin.parts[:2] == ("/", "tmp")
+    in_tmp = in_posix_tmp or str(resolved_plugin) == tmp_base or str(resolved_plugin).startswith(tmp_base.rstrip(os.sep) + os.sep)
+    if not (has_hidden or in_tmp or (is_snap and not _within_real_home(resolved_plugin))):
+        return _run_verify_cmd([resolved_agy, "plugin", "validate", "./plugin", "--strict"], repo_dir, timeout_s)
+    started = time.monotonic()
+    res = run_agy_plugin_validate(plugin_dir, strict=True, agy_bin=resolved_agy, timeout_s=timeout_s)
+    out = {
+        "cmd": [resolved_agy, "plugin", "validate", "./plugin", "--strict"],
+        "returncode": int(res.get("rc", 1)), "ok": bool(res.get("ok")),
+        "duration_s": round(time.monotonic() - started, 3), "staged": bool(res.get("staged")),
+        "stdout_tail": _tail_lines(str(res.get("stdout") or "")), "stderr_tail": _tail_lines(str(res.get("stderr") or "")),
+    }
+    if not out["ok"]:
+        detail = out["stderr_tail"] or out["stdout_tail"] or f"exit {out['returncode']}"
+        out["error"] = f"Échec commande (rc={out['returncode']}) : {detail.splitlines()[-1]}"
+    return out
+
+
 def verify_repo_checks(
-    repo_name: str,
-    repo_dir: Path,
-    *,
-    agy_bin: Optional[str] = None,
-    timeout_s: float = VERIFY_CMD_TIMEOUT_SECONDS,
+    repo_name: str, repo_dir: Path, *, agy_bin: Optional[str] = None, timeout_s: float = VERIFY_CMD_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Run validate.py --strict, agy plugin validate ./plugin --strict, and unittest discover for one repo."""
     started = time.monotonic()
     if not repo_dir.is_dir():
         msg = f"Dépôt introuvable : {repo_dir}"
         return {
-            "repo": repo_name,
-            "path": str(repo_dir),
-            "exists": False,
-            "ok": False,
-            "status": "FAIL",
-            "duration_s": 0.0,
-            "errors": [msg],
-            "checks": {
-                "validate": _failed_check_result(msg),
-                "agy": _failed_check_result(msg),
-                "unittest": _failed_check_result(msg),
-            },
+            "repo": repo_name, "path": str(repo_dir), "exists": False, "ok": False, "status": "FAIL",
+            "duration_s": 0.0, "errors": [msg],
+            "checks": {k: _failed_check_result(msg) for k in ("validate", "agy", "unittest")},
         }
 
     checks: dict[str, dict[str, Any]] = {}
-    val_script = repo_dir / "plugin" / "scripts" / "validate.py"
-    if not val_script.is_file():
-        checks["validate"] = _failed_check_result("plugin/scripts/validate.py introuvable.")
-    else:
-        checks["validate"] = _run_verify_cmd(
-            [sys.executable, "-B", str(val_script), "--strict"],
-            repo_dir,
-            timeout_s,
-        )
-
-    plugin_dir = repo_dir / "plugin"
+    val_script, plugin_dir, tests_dir = repo_dir / "plugin" / "scripts" / "validate.py", repo_dir / "plugin", repo_dir / "tests"
+    checks["validate"] = (
+        _run_verify_cmd([sys.executable, "-B", str(val_script), "--strict"], repo_dir, timeout_s)
+        if val_script.is_file() else _failed_check_result("plugin/scripts/validate.py introuvable.")
+    )
     resolved_agy = agy_bin if agy_bin is not None else shutil.which("agy")
     if not plugin_dir.is_dir():
         checks["agy"] = _failed_check_result("Dossier plugin/ introuvable.")
     elif not resolved_agy:
         checks["agy"] = _failed_check_result("Exécutable 'agy' introuvable dans PATH (fail-closed).", returncode=127)
     else:
-        checks["agy"] = _run_verify_cmd(
-            [resolved_agy, "plugin", "validate", "./plugin", "--strict"],
-            repo_dir,
-            timeout_s,
-        )
+        checks["agy"] = _run_agy_verify(plugin_dir, repo_dir, resolved_agy, timeout_s)
+    checks["unittest"] = (
+        _run_verify_cmd([sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"], repo_dir, timeout_s)
+        if tests_dir.is_dir() else _failed_check_result("Dossier tests/ introuvable.")
+    )
 
-    tests_dir = repo_dir / "tests"
-    if not tests_dir.is_dir():
-        checks["unittest"] = _failed_check_result("Dossier tests/ introuvable.")
-    else:
-        checks["unittest"] = _run_verify_cmd(
-            [sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"],
-            repo_dir,
-            timeout_s,
-        )
-
-    errors: list[str] = []
-    for cname, res in checks.items():
-        if not res.get("ok"):
-            errors.append(f"{cname}: {res.get('error') or 'failed'}")
-
-    repo_ok = len(errors) == 0 and all(bool(c.get("ok")) for c in checks.values())
+    errors = [f"{cname}: {res.get('error') or 'failed'}" for cname, res in checks.items() if not res.get("ok")]
+    repo_ok = not errors and all(bool(c.get("ok")) for c in checks.values())
     return {
-        "repo": repo_name,
-        "path": str(repo_dir),
-        "exists": True,
-        "ok": repo_ok,
-        "status": "PASS" if repo_ok else "FAIL",
-        "duration_s": round(time.monotonic() - started, 3),
-        "errors": errors,
-        "checks": checks,
+        "repo": repo_name, "path": str(repo_dir), "exists": True, "ok": repo_ok,
+        "status": "PASS" if repo_ok else "FAIL", "duration_s": round(time.monotonic() - started, 3),
+        "errors": errors, "checks": checks,
     }
 
 
@@ -640,61 +539,32 @@ def verify_ecosystem_parallel(
     timeout_s: float = VERIFY_CMD_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Run all 3 verification commands across target repositories in parallel (fail-closed)."""
-    started = time.monotonic()
-    repo_list = list(repos)
+    started, repo_list = time.monotonic(), list(repos)
     if not repo_list:
         return {
-            "ok": False,
-            "mode": "verify-parallel",
-            "strict": strict,
-            "repos_root": str(repos_root),
-            "max_workers": max_workers,
-            "duration_s": 0.0,
-            "repos": [],
+            "ok": False, "mode": "verify-parallel", "strict": strict, "repos_root": str(repos_root),
+            "max_workers": max_workers, "duration_s": 0.0, "repos": [],
             "errors": ["Aucun dépôt cible fourni (fail-closed)."],
-            "summary": {
-                "repo_count": 0,
-                "pass_count": 0,
-                "fail_count": 0,
-                "total_errors": 1,
-                "checks_total": 0,
-                "checks_passed": 0,
-                "checks_failed": 0,
-            },
+            "summary": {"repo_count": 0, "pass_count": 0, "fail_count": 0, "total_errors": 1, "checks_total": 0, "checks_passed": 0, "checks_failed": 0},
         }
 
     ordered_results: list[Optional[dict[str, Any]]] = [None] * len(repo_list)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {
-            executor.submit(
-                verify_repo_checks,
-                name,
-                repos_root / name,
-                agy_bin=agy_bin,
-                timeout_s=timeout_s,
-            ): idx
+            executor.submit(verify_repo_checks, name, repos_root / name, agy_bin=agy_bin, timeout_s=timeout_s): idx
             for idx, name in enumerate(repo_list)
         }
         for future in as_completed(future_map):
             idx = future_map[future]
-            repo_name = repo_list[idx]
+            rname = repo_list[idx]
             try:
                 ordered_results[idx] = future.result()
             except Exception as exc:
                 msg = f"Exception interne worker ({exc})"
                 ordered_results[idx] = {
-                    "repo": repo_name,
-                    "path": str(repos_root / repo_name),
-                    "exists": (repos_root / repo_name).is_dir(),
-                    "ok": False,
-                    "status": "FAIL",
-                    "duration_s": 0.0,
-                    "errors": [msg],
-                    "checks": {
-                        "validate": _failed_check_result(msg),
-                        "agy": _failed_check_result(msg),
-                        "unittest": _failed_check_result(msg),
-                    },
+                    "repo": rname, "path": str(repos_root / rname), "exists": (repos_root / rname).is_dir(),
+                    "ok": False, "status": "FAIL", "duration_s": 0.0, "errors": [msg],
+                    "checks": {k: _failed_check_result(msg) for k in ("validate", "agy", "unittest")},
                 }
 
     repo_results = [r for r in ordered_results if r is not None]
@@ -702,28 +572,15 @@ def verify_ecosystem_parallel(
     fail_count = len(repo_results) - pass_count
     total_errors = sum(len(r.get("errors") or []) for r in repo_results)
     checks_total = sum(len(r.get("checks") or {}) for r in repo_results)
-    checks_passed = sum(
-        1 for r in repo_results for c in (r.get("checks") or {}).values() if c.get("ok")
-    )
-    checks_failed = checks_total - checks_passed
-    overall_ok = (len(repo_results) == len(repo_list)) and (fail_count == 0) and (total_errors == 0)
-
+    checks_passed = sum(1 for r in repo_results for c in (r.get("checks") or {}).values() if c.get("ok"))
     return {
-        "ok": overall_ok,
-        "mode": "verify-parallel",
-        "strict": strict,
-        "repos_root": str(repos_root),
-        "max_workers": max_workers,
-        "duration_s": round(time.monotonic() - started, 3),
-        "repos": repo_results,
+        "ok": len(repo_results) == len(repo_list) and fail_count == 0 and total_errors == 0,
+        "mode": "verify-parallel", "strict": strict, "repos_root": str(repos_root),
+        "max_workers": max_workers, "duration_s": round(time.monotonic() - started, 3), "repos": repo_results,
         "summary": {
-            "repo_count": len(repo_results),
-            "pass_count": pass_count,
-            "fail_count": fail_count,
-            "total_errors": total_errors,
-            "checks_total": checks_total,
-            "checks_passed": checks_passed,
-            "checks_failed": checks_failed,
+            "repo_count": len(repo_results), "pass_count": pass_count, "fail_count": fail_count,
+            "total_errors": total_errors, "checks_total": checks_total,
+            "checks_passed": checks_passed, "checks_failed": checks_total - checks_passed,
         },
     }
 
@@ -741,79 +598,35 @@ def audit_ecosystem(
     if verify_parallel:
         return verify_ecosystem_parallel(repos_root, repos, strict=strict)
     repo_reports = [
-        audit_repo(name, repos_root / name, check_installed=check_installed, plugins_dir=plugins_dir)
+        audit_repo(name, repos_root / name, check_installed=check_installed, plugins_dir=plugins_dir, repos_root=repos_root)
         for name in repos
     ]
-    cross_repo = audit_cross_repo(repo_reports, repos_root)
+    cross_repo = audit_cross_repo(repo_reports, repos_root, required_repos=DEFAULT_REPOS)
     total_errors = sum(len(r["errors"]) for r in repo_reports) + len(cross_repo["errors"])
     total_warnings = sum(len(r["warnings"]) for r in repo_reports) + len(cross_repo["warnings"])
-    ok = total_errors == 0 and (not strict or total_warnings == 0)
-
     return {
-        "ok": ok,
-        "strict": strict,
-        "repos_root": str(repos_root),
-        "repos": repo_reports,
-        "cross_repo": cross_repo,
+        "ok": total_errors == 0 and (not strict or total_warnings == 0),
+        "strict": strict, "repos_root": str(repos_root), "repos": repo_reports, "cross_repo": cross_repo,
         "summary": {
             "repo_count": len(repo_reports),
             "pass_count": sum(1 for r in repo_reports if r["status"] == "PASS"),
             "warn_count": sum(1 for r in repo_reports if r["status"] == "WARN"),
             "fail_count": sum(1 for r in repo_reports if r["status"] == "FAIL"),
-            "total_errors": total_errors,
-            "total_warnings": total_warnings,
-            "cross_repo_errors": len(cross_repo["errors"]),
-            "cross_repo_warnings": len(cross_repo["warnings"]),
+            "total_errors": total_errors, "total_warnings": total_warnings,
+            "cross_repo_errors": len(cross_repo["errors"]), "cross_repo_warnings": len(cross_repo["warnings"]),
             "rules_total_bytes": cross_repo["rules_total_bytes"],
         },
     }
 
 
-def _format_cell_install(checks: dict[str, Any]) -> str:
-    ic = checks.get("install_cli") or {}
-    return f"{len(ic.get('present') or [])}/11" if ic else "-"
-
-
-def _format_cell_validate(checks: dict[str, Any]) -> str:
-    vc = checks.get("validate_contract") or {}
-    return "-" if not vc else ("OK" if vc.get("ok") else f"ERR({len(vc.get('missing') or [])})")
-
-
-def _format_cell_agents(checks: dict[str, Any]) -> str:
-    ag = checks.get("agents_root") or {}
-    b = ag.get("bytes")
-    return "MISSING" if b is None else f"{b}o({'OK' if ag.get('ok') else 'ERR'})"
-
-
-def _format_cell_rules(checks: dict[str, Any]) -> str:
-    rl = checks.get("rules_d4") or {}
-    if rl.get("exempt"):
-        return "EXEMPT"
-    b = rl.get("bytes")
-    return "MISSING" if b is None else f"{b}o({rl.get('severity', 'ok').upper()})"
-
-
-def _format_cell_manifest(checks: dict[str, Any]) -> str:
-    mc = checks.get("manifest_changelog") or {}
-    if not mc:
-        return "-"
-    pv, cv = mc.get("plugin_version") or "?", mc.get("changelog_version") or "?"
-    return f"{pv}=={cv}" if mc.get("ok") else (f"{pv}!={cv}" if pv != cv else f"{pv}(ERR)")
-
-
-def _format_cell_monoliths(checks: dict[str, Any]) -> str:
-    mn = checks.get("monoliths") or {}
-    if not mn:
-        return "-"
-    parts = [f"E:{len(mn.get('error_files') or [])}", f"W:{len(mn.get('warn_files') or [])}"]
-    n_ex = len(mn.get("exempt_files") or [])
-    if n_ex:
-        parts.append(f"Ex:{n_ex}")
-    return " ".join(parts)
+def _fmt_table(headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> list[str]:
+    widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)] if rows else [len(h) for h in headers]
+    fmt = lambda vals: " | ".join(vals[i].ljust(widths[i]) for i in range(len(headers)))
+    return [fmt(headers), "-+-".join("-" * w for w in widths), *(fmt(r) for r in rows)]
 
 
 def _format_cell_integrity(checks: dict[str, Any]) -> str:
-    keys = ("module_contract", "markdown_links", "encoding_hygiene", "personal_paths", "commands_doc")
+    keys = ("module_contract", "markdown_links", "encoding_hygiene", "personal_paths", "commands_doc", "shared_sync", "legacy_refs")
     if not any(k in checks for k in keys):
         return "-"
     fails = sum(1 for k in keys if checks.get(k) and not checks[k].get("ok"))
@@ -823,7 +636,20 @@ def _format_cell_integrity(checks: dict[str, Any]) -> str:
     return "OK" if fails == 0 else f"ERR({fails})"
 
 
-def _format_verify_cell(checks: dict[str, Any], key: str) -> str:
+def _format_repo_cells(checks: dict[str, Any]) -> tuple[str, ...]:
+    ic, vc, ag = checks.get("install_cli") or {}, checks.get("validate_contract") or {}, checks.get("agents_root") or {}
+    rl, mc, mn = checks.get("rules_d4") or {}, checks.get("manifest_changelog") or {}, checks.get("monoliths") or {}
+    c_inst = f"{len(ic.get('present') or [])}/11" if ic else "-"
+    c_val = "-" if not vc else ("OK" if vc.get("ok") else f"ERR({len(vc.get('missing') or [])})")
+    c_ag = "MISSING" if ag.get("bytes") is None else f"{ag['bytes']}o({'OK' if ag.get('ok') else 'ERR'})"
+    c_rl = "EXEMPT" if rl.get("exempt") else ("MISSING" if rl.get("bytes") is None else f"{rl['bytes']}o({rl.get('severity', 'ok').upper()})")
+    pv, cv = mc.get("plugin_version") or "?", mc.get("changelog_version") or "?"
+    c_mc = "-" if not mc else (f"{pv}=={cv}" if mc.get("ok") else (f"{pv}!={cv}" if pv != cv else f"{pv}(ERR)"))
+    c_mn = "-" if not mn else " ".join([f"E:{len(mn.get('error_files') or [])}", f"W:{len(mn.get('warn_files') or [])}", *([f"Ex:{len(mn['exempt_files'])}"] if mn.get("exempt_files") else [])])
+    return (c_inst, c_val, c_ag, c_rl, c_mc, c_mn, _format_cell_integrity(checks))
+
+
+def _fmt_verify_cell(checks: dict[str, Any], key: str) -> str:
     res = checks.get(key)
     if not isinstance(res, dict):
         return "-"
@@ -834,58 +660,25 @@ def _format_verify_cell(checks: dict[str, Any], key: str) -> str:
 def format_verify_parallel_report(report: dict[str, Any]) -> str:
     """Render a compact summary table and failure details for --verify-parallel output."""
     headers = ("Repo", "Status", "validate", "agy", "unittest", "Duration")
-    rows: list[tuple[str, ...]] = []
-    for item in report.get("repos") or []:
-        checks = item.get("checks") or {}
-        rows.append(
-            (
-                str(item.get("repo") or "?"),
-                str(item.get("status") or "FAIL"),
-                _format_verify_cell(checks, "validate"),
-                _format_verify_cell(checks, "agy"),
-                _format_verify_cell(checks, "unittest"),
-                f"{float(item.get('duration_s') or 0.0):.2f}s",
-            )
-        )
-
-    widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)] if rows else [len(h) for h in headers]
-
-    def fmt_row(vals: Sequence[str]) -> str:
-        return " | ".join(vals[i].ljust(widths[i]) for i in range(len(headers)))
-
-    lines: list[str] = [
-        f"Gravity Ecosystem Parallel Verify (repos-root={report.get('repos_root')}, "
-        f"workers={report.get('max_workers', VERIFY_PARALLEL_MAX_WORKERS)}, strict={bool(report.get('strict'))})",
-        fmt_row(headers),
-        "-+-".join("-" * w for w in widths),
+    rows = [
+        (str(it.get("repo") or "?"), str(it.get("status") or "FAIL"), _fmt_verify_cell(it.get("checks") or {}, "validate"),
+         _fmt_verify_cell(it.get("checks") or {}, "agy"), _fmt_verify_cell(it.get("checks") or {}, "unittest"), f"{float(it.get('duration_s') or 0.0):.2f}s")
+        for it in report.get("repos") or []
     ]
-    lines.extend(fmt_row(row) for row in rows)
-
+    lines = [
+        f"Gravity Ecosystem Parallel Verify (repos-root={report.get('repos_root')}, workers={report.get('max_workers', VERIFY_PARALLEL_MAX_WORKERS)}, strict={bool(report.get('strict'))})",
+        *_fmt_table(headers, rows),
+    ]
     for item in report.get("repos") or []:
-        errs = item.get("errors") or []
-        if not errs:
+        if not (errs := item.get("errors") or []):
             continue
-        lines.extend(["", f"[{item.get('repo')}] ({item.get('status')})"])
-        lines.extend(f"  [ERROR] {err}" for err in errs)
-        checks = item.get("checks") or {}
+        lines.extend(["", f"[{item.get('repo')}] ({item.get('status')})", *(f"  [ERROR] {e}" for e in errs)])
         for cname in ("validate", "agy", "unittest"):
-            cres = checks.get(cname) or {}
-            if not cres.get("ok"):
-                tail = cres.get("stderr_tail") or cres.get("stdout_tail") or ""
-                if tail:
-                    lines.append(f"  [{cname} tail]")
-                    lines.extend(f"    {ln}" for ln in tail.splitlines())
-
-    summary = report.get("summary") or {}
-    verdict = "PASS" if report.get("ok") else "FAIL"
-    lines.extend(
-        [
-            "",
-            f"[{verdict}] {summary.get('pass_count', 0)}/{summary.get('repo_count', 0)} dépôts validés en parallèle "
-            f"({summary.get('checks_passed', 0)}/{summary.get('checks_total', 0)} vérifs OK, "
-            f"erreurs={summary.get('total_errors', 0)}, durée={float(report.get('duration_s') or 0.0):.2f}s).",
-        ]
-    )
+            cres = (item.get("checks") or {}).get(cname) or {}
+            if not cres.get("ok") and (tail := cres.get("stderr_tail") or cres.get("stdout_tail") or ""):
+                lines.extend([f"  [{cname} tail]", *(f"    {ln}" for ln in tail.splitlines())])
+    s = report.get("summary") or {}
+    lines.extend(["", f"[{'PASS' if report.get('ok') else 'FAIL'}] {s.get('pass_count', 0)}/{s.get('repo_count', 0)} dépôts validés en parallèle ({s.get('checks_passed', 0)}/{s.get('checks_total', 0)} vérifs OK, erreurs={s.get('total_errors', 0)}, durée={float(report.get('duration_s') or 0.0):.2f}s)."])
     return "\n".join(lines)
 
 
@@ -894,60 +687,16 @@ def format_console_report(report: dict[str, Any], *, strict: bool = False) -> st
     if report.get("mode") == "verify-parallel":
         return format_verify_parallel_report(report)
     headers = ("Repo", "Status", "install", "validate", "AGENTS", "rules D4", "SemVer/UX", "Monoliths", "INT")
-    rows: list[tuple[str, ...]] = []
-    for item in report["repos"]:
-        checks = item.get("checks") or {}
-        rows.append(
-            (
-                item["repo"],
-                item["status"],
-                _format_cell_install(checks),
-                _format_cell_validate(checks),
-                _format_cell_agents(checks),
-                _format_cell_rules(checks),
-                _format_cell_manifest(checks),
-                _format_cell_monoliths(checks),
-                _format_cell_integrity(checks),
-            )
-        )
-
-    widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)] if rows else [len(h) for h in headers]
-
-    def fmt_row(vals: Sequence[str]) -> str:
-        return " | ".join(vals[i].ljust(widths[i]) for i in range(len(headers)))
-
-    lines: list[str] = [
-        f"Gravity Ecosystem Drift Audit (repos-root={report['repos_root']}, strict={strict})",
-        fmt_row(headers),
-        "-+-".join("-" * w for w in widths),
-    ]
-    lines.extend(fmt_row(row) for row in rows)
-
-    for item in report["repos"]:
-        if not (item["errors"] or item["warnings"] or item["infos"]):
-            continue
-        lines.extend(["", f"[{item['repo']}] ({item['status']})"])
-        lines.extend(f"  [ERROR] {err}" for err in item["errors"])
-        lines.extend(f"  [WARN]  {warn}" for warn in item["warnings"])
-        lines.extend(f"  [INFO]  {info}" for info in item["infos"])
-
+    rows = [(it["repo"], it["status"], *_format_repo_cells(it.get("checks") or {})) for it in report["repos"]]
+    lines = [f"Gravity Ecosystem Drift Audit (repos-root={report['repos_root']}, strict={strict})", *_fmt_table(headers, rows)]
+    for it in report["repos"]:
+        if it["errors"] or it["warnings"] or it["infos"]:
+            lines.extend(["", f"[{it['repo']}] ({it['status']})", *(f"  [ERROR] {e}" for e in it["errors"]), *(f"  [WARN]  {w}" for w in it["warnings"]), *(f"  [INFO]  {i}" for i in it["infos"])])
     cross = report.get("cross_repo") or {}
     if cross.get("errors") or cross.get("warnings"):
-        lines.extend(["", f"[cross-repo] (rules_total={cross.get('rules_total_bytes', 0)} o)"])
-        lines.extend(f"  [ERROR] {err}" for err in cross.get("errors") or [])
-        lines.extend(f"  [WARN]  {warn}" for warn in cross.get("warnings") or [])
-
-    summary = report["summary"]
-    verdict = "PASS" if report["ok"] else "FAIL"
-    lines.extend(
-        [
-            "",
-            f"[{verdict}] {summary['repo_count']} dépôts audités "
-            f"(PASS={summary['pass_count']}, WARN={summary['warn_count']}, FAIL={summary['fail_count']}; "
-            f"erreurs={summary['total_errors']}, avertissements={summary['total_warnings']}; "
-            f"rules_cumul={summary.get('rules_total_bytes', 0)} o).",
-        ]
-    )
+        lines.extend(["", f"[cross-repo] (rules_total={cross.get('rules_total_bytes', 0)} o)", *(f"  [ERROR] {e}" for e in cross.get("errors") or []), *(f"  [WARN]  {w}" for w in cross.get("warnings") or [])])
+    s = report["summary"]
+    lines.extend(["", f"[{'PASS' if report['ok'] else 'FAIL'}] {s['repo_count']} dépôts audités (PASS={s['pass_count']}, WARN={s['warn_count']}, FAIL={s['fail_count']}; erreurs={s['total_errors']}, avertissements={s['total_warnings']}; rules_cumul={s.get('rules_total_bytes', 0)} o)."])
     return "\n".join(lines)
 
 
@@ -955,13 +704,7 @@ def _parse_repos_csv(raw_csv: str) -> list[str]:
     repos = [tok.strip() for tok in raw_csv.split(",") if tok.strip()]
     if not repos:
         raise ValueError("--repos requiert au moins un nom de dépôt.")
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for name in repos:
-        if name not in seen:
-            seen.add(name)
-            ordered.append(name)
-    return ordered
+    return list(dict.fromkeys(repos))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -972,43 +715,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plugins-dir", type=Path, default=DEFAULT_PLUGINS_DIR, help="Dossier des plugins installés (défaut: ~/.gemini/config/plugins).")
     parser.add_argument("--json", action="store_true", help="Émet le rapport complet en JSON (CI-ready).")
     parser.add_argument("--strict", action="store_true", help="Échoue (exit 1) également en présence d'avertissements.")
-    parser.add_argument(
-        "--verify-parallel",
-        action="store_true",
-        help="Exécute en parallèle (max_workers=4) validate.py --strict, agy plugin validate ./plugin --strict et unittest discover.",
-    )
+    parser.add_argument("--verify-parallel", action="store_true", help="Exécute en parallèle (max_workers=4) validate.py --strict, agy plugin validate ./plugin --strict et unittest discover.")
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     _configure_stdio()
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
+    args = build_parser().parse_args(argv)
     try:
         repos = _parse_repos_csv(args.repos)
     except ValueError as exc:
-        if args.json:
-            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2))
-        else:
-            print(f"[ERROR] {exc}", file=sys.stderr)
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2) if args.json else f"[ERROR] {exc}", file=sys.stdout if args.json else sys.stderr)
         return 2
 
-    repos_root = args.repos_root.expanduser().resolve()
-    plugins_dir = args.plugins_dir.expanduser().resolve() if args.plugins_dir else None
     report = audit_ecosystem(
-        repos_root,
-        repos,
-        strict=args.strict,
+        args.repos_root.expanduser().resolve(), repos, strict=args.strict,
         check_installed=args.check_installed,
-        plugins_dir=plugins_dir,
+        plugins_dir=args.plugins_dir.expanduser().resolve() if args.plugins_dir else None,
         verify_parallel=args.verify_parallel,
     )
-
-    if args.json:
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-    else:
-        print(format_console_report(report, strict=args.strict))
+    print(json.dumps(report, ensure_ascii=False, indent=2) if args.json else format_console_report(report, strict=args.strict))
     return 0 if report["ok"] else 1
 
 

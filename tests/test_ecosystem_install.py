@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,8 @@ import unittest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ORCHESTRATOR = REPO_ROOT / "scripts" / "ecosystem_install.py"
+SYNC_SCRIPT = REPO_ROOT / "scripts" / "sync_shared.py"
+REAL_SHARED = REPO_ROOT / "shared" / "gravity_shared"
 
 ALL_REPOS = (
     "gravity",
@@ -33,7 +36,6 @@ def _isolated_env(fake_home: Path, gravity_home: Path, log_file: Path) -> dict[s
         "GRAVITY_WORKFLOW_HOME",
         "GRAVITY_METRICS_HOME",
         "GRAVITY_ARCHITECT_HOME",
-        "GRAVITY_BRIDGE_HOME",
     ):
         env.pop(var, None)
     return env
@@ -222,7 +224,6 @@ class TestEcosystemInstall(unittest.TestCase):
                 self.assertIn("--workspace", entry["args"])
                 self.assertIn(str(ws), entry["args"])
                 self.assertIn("--method", entry["args"])
-            # dry-run must not write modules.json
             self.assertFalse((gravity_home / "core" / "modules.json").exists())
 
             # Mutual exclusion --tier + --modules
@@ -251,7 +252,6 @@ class TestEcosystemInstall(unittest.TestCase):
             out_miss = json.loads(p_miss.stdout)
             self.assertFalse(out_miss["ok"])
             self.assertEqual(out_miss["missing"][0]["repo"], "gravity-architect")
-            # Fail-closed before running any installer
             self.assertEqual(_read_exec_log(miss_log), [])
             self.assertFalse((gravity_home / "core" / "modules.json").exists())
 
@@ -298,13 +298,7 @@ class TestEcosystemInstall(unittest.TestCase):
             env["GIT_TERMINAL_PROMPT"] = "0"
             return subprocess.run(
                 ["git", "-C", str(cwd), *args],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=env,
-                timeout=15,
-                check=True,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=15, check=True,
             )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -315,7 +309,6 @@ class TestEcosystemInstall(unittest.TestCase):
             repos_root = tmp_path / "repos"
             _create_stub_repos(repos_root)
 
-            # --pull incompatible with --check, default check, and --uninstall (exit 2)
             for combo in (["--pull"], ["--check", "--pull"], ["--uninstall", "--pull"]):
                 p_bad = _run_orchestrator(
                     [*combo, "--repos-root", str(repos_root), "--json"],
@@ -324,7 +317,6 @@ class TestEcosystemInstall(unittest.TestCase):
                 self.assertEqual(p_bad.returncode, 2, msg=p_bad.stdout or p_bad.stderr)
                 self.assertFalse(json.loads(p_bad.stdout)["ok"])
 
-            # Create bare remotes + clones for gravity (behind by 1) and gravity-workflow (dirty)
             remotes_dir = tmp_path / "remotes"
             remotes_dir.mkdir()
             for name in ("gravity", "gravity-workflow"):
@@ -339,13 +331,10 @@ class TestEcosystemInstall(unittest.TestCase):
                 _git(repo_dir, "remote", "add", "origin", str(bare_dir))
                 _git(repo_dir, "push", "-u", "origin", "dev")
 
-            # Advance bare remote of gravity from a temp pusher clone
             pusher = tmp_path / "pusher"
             subprocess.run(
                 ["git", "clone", "-b", "dev", str(remotes_dir / "gravity.git"), str(pusher)],
-                check=True,
-                capture_output=True,
-                text=True,
+                check=True, capture_output=True, text=True,
             )
             _git(pusher, "config", "user.email", "test@example.com")
             _git(pusher, "config", "user.name", "Test")
@@ -354,10 +343,8 @@ class TestEcosystemInstall(unittest.TestCase):
             _git(pusher, "commit", "-m", "remote update")
             _git(pusher, "push", "origin", "dev")
 
-            # Make gravity-workflow dirty
             (repos_root / "gravity-workflow" / "dirty.txt").write_text("untracked\n", encoding="utf-8")
 
-            # --pull --update --dry-run must NOT pull CHANGELOG.md
             dry_log = tmp_path / "pull_dry.log"
             p_dry = _run_orchestrator(
                 ["--update", "--pull", "--dry-run", "--modules", "gravity,gravity-workflow", "--repos-root", str(repos_root), "--json"],
@@ -368,7 +355,6 @@ class TestEcosystemInstall(unittest.TestCase):
             self.assertEqual([r["status"] for r in out_dry["pull_results"]], ["dry_run", "dry_run"])
             self.assertFalse((repos_root / "gravity" / "CHANGELOG.md").exists())
 
-            # Real --update --pull pulls clean gravity and skips dirty gravity-workflow without failing
             pull_log = tmp_path / "pull_real.log"
             p_pull = _run_orchestrator(
                 ["--update", "--pull", "--modules", "gravity,gravity-workflow", "--repos-root", str(repos_root), "--json"],
@@ -382,6 +368,55 @@ class TestEcosystemInstall(unittest.TestCase):
             self.assertEqual(by_repo["gravity-workflow"]["status"], "skipped")
             self.assertEqual(by_repo["gravity-workflow"]["reason"], "dirty")
             self.assertTrue((repos_root / "gravity" / "CHANGELOG.md").is_file())
+
+    def test_sync_shared_preflight_passes_when_aligned_and_aborts_fail_closed_on_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_home = tmp_path / "home"
+            fake_home.mkdir()
+            gravity_home = tmp_path / "gravity-home"
+            repos_root = tmp_path / "repos"
+            _create_stub_repos(repos_root)
+
+            # Copy real gravity/shared/gravity_shared and scripts/sync_shared.py into temp repos_root
+            shutil.copytree(REAL_SHARED, repos_root / "gravity" / "shared" / "gravity_shared", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            sync_dst = repos_root / "gravity" / "scripts" / "sync_shared.py"
+            sync_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(SYNC_SCRIPT, sync_dst)
+            for name in ALL_REPOS:
+                (repos_root / name / "plugin").mkdir(parents=True, exist_ok=True)
+
+            # Project SSOT cleanly across all 4 repos
+            apply_proc = subprocess.run(
+                [sys.executable, "-B", str(sync_dst), "--apply", "--repos-root", str(repos_root), "--json"],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(apply_proc.returncode, 0, msg=apply_proc.stdout + apply_proc.stderr)
+
+            ok_log = tmp_path / "sync_ok.log"
+            p_ok = _run_orchestrator(
+                ["--install", "--repos-root", str(repos_root), "--json"],
+                _isolated_env(fake_home, gravity_home, ok_log),
+            )
+            self.assertEqual(p_ok.returncode, 0, msg=p_ok.stderr or p_ok.stdout)
+            out_ok = json.loads(p_ok.stdout)
+            self.assertTrue(out_ok["ok"])
+            self.assertTrue(out_ok["shared_sync"]["ok"])
+            self.assertEqual([e["repo"] for e in _read_exec_log(ok_log)], list(ALL_REPOS))
+
+            # Introduce drift in gravity-workflow/plugin/_shared -> fail-closed BEFORE any installer runs
+            (repos_root / "gravity-workflow" / "plugin" / "_shared" / "atomic_io.py").write_text("# drifted\n", encoding="utf-8")
+            drift_log = tmp_path / "sync_drift.log"
+            p_drift = _run_orchestrator(
+                ["--install", "--repos-root", str(repos_root), "--json"],
+                _isolated_env(fake_home, gravity_home, drift_log),
+            )
+            self.assertEqual(p_drift.returncode, 1)
+            out_drift = json.loads(p_drift.stdout)
+            self.assertFalse(out_drift["ok"])
+            self.assertIn("sync_shared.py --check", out_drift["error"])
+            self.assertFalse(out_drift["shared_sync"]["ok"])
+            self.assertEqual(_read_exec_log(drift_log), [])
 
 
 if __name__ == "__main__":

@@ -70,7 +70,7 @@ Interdits : `$schema`, `license`, `keywords` ou tout champ non officiel, ainsi q
 | `AGENTS.md` (racine dépôt) | **<= 2 500 octets UTF-8** *(contrôlé par `validate.py`)* | UTF-8 sans BOM, LF, strictement 3 sections (`## Périmètre & Architecture`, `## Invariants` citant KISS/YAGNI/DRY/SOLID/CUPID, `## Vérifications obligatoires`) |
 | `plugin/rules/AGENTS.md` *(D4)* | **<= 600 octets UTF-8** *(cible éditoriale ; avertissement bloquant sous `--strict` au-delà)* / **<= 1 000 octets UTF-8** *(erreur bloquante)* | UTF-8 sans BOM, LF, **zéro frontmatter YAML** (`---`) |
 | `plugin/skills/<skill>/SKILL.md` *(routeur)* | **<= 6 000 octets UTF-8** *(contrôlé par `validate.py`)* | UTF-8 sans BOM, LF, frontmatter YAML (`name`, `description <= 160 car.`) |
-| `gravity-studio` Hot *(référence)* | `ECOSYSTEM.md <= 6 000 o`, fiches `<= 3 500 o`, `IMPACT.md <= 6 000 o` | Données froides (`archives/`, `specs/archive/`, `handoffs/archive/`) hors session courante |
+| `gravity-workshop` Hot *(référence)* | `ECOSYSTEM.md <= 6 000 o`, fiches `<= 3 500 o`, `IMPACT.md <= 6 000 o` | Données froides (`archives/`, `specs/archive/`, `tasks/archive/`) hors session courante |
 
 > **Exception SRP (`gravity-workflow`) :** `gravity-workflow/plugin/rules/` est volontairement absent afin de ne pas alourdir les sessions Antigravity hors harnais ; ses règles sont déployées uniquement dans `.agents/rules/` du workspace cible.
 >
@@ -115,12 +115,11 @@ agy plugin validate ./plugin --strict
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Pour contrôler la dérive inter-dépôts en **lecture seule stricte** (`gravity`, `gravity-workflow`, `gravity-metrics`, `gravity-architect`), ou lancer les `3` vérifications obligatoires en parallèle (`max_workers=4`), exécuter depuis `gravity` :
+Pour contrôler la dérive inter-dépôts en **lecture seule stricte** (`gravity`, `gravity-workflow`, `gravity-metrics`, `gravity-architect`), exécuter depuis `gravity` :
 
 ```powershell
 python scripts/audit_ecosystem.py
 python scripts/audit_ecosystem.py --strict --json
-python scripts/audit_ecosystem.py --verify-parallel --strict
 ```
 
-`scripts/audit_ecosystem.py` (`--repos-root`, `--repos`, `--json`, `--strict`, `--verify-parallel`) vérifie par inspection statique/AST sans exécution : le contrat CLI à 11 drapeaux de `install.py`, le contrat de `plugin/scripts/validate.py` (`--strict`, `plugin.json`, `config/module.json`, `stdlib-only`, UTF-8/LF et `--fix-python-cmd` si manifeste exécutable), les budgets `AGENTS.md` / D4 (exemption documentée `gravity-workflow/plugin/rules/`), la synchronisation `plugin.json` ↔ `CHANGELOG.md` + `suggestedPrompts` (`<= 100` car.) et la dette monolithique `plugin/**/*.py` (`> 800` L `warn`, `> 1 500` L `error`, exemption des bundles JS/CSS embarqués sous `plugin/mcp/ui/*.py`), tandis que `--verify-parallel` exécute en parallèle `validate.py --strict`, `agy plugin validate ./plugin --strict` et `unittest discover` sur les `4` dépôts actifs.
+`scripts/audit_ecosystem.py` (`--repos-root`, `--repos`, `--json`, `--strict`) vérifie par inspection statique/AST sans exécution : le contrat CLI à 11 drapeaux de `install.py`, le contrat de `plugin/scripts/validate.py` (`--strict`, `plugin.json`, `config/module.json`, `stdlib-only`, UTF-8/LF et `--fix-python-cmd` si manifeste exécutable), les budgets `AGENTS.md` / D4 (exemption documentée `gravity-workflow/plugin/rules/`), la synchronisation `plugin.json` ↔ `CHANGELOG.md` + `suggestedPrompts` (`<= 100` car.) et la dette monolithique `plugin/**/*.py` (`> 800` L `warn`, `> 1 500` L `error`, exemption des bundles JS/CSS embarqués sous `plugin/mcp/ui/*.py`).

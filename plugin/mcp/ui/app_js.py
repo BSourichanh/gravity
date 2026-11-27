@@ -157,7 +157,7 @@ if(!uri){showToast("Fichier Markdown introuvable.",true);return}
 try{const res=await sendRequest("com.google.antigravity/toggle-aux-pane",{tabType:"fileView",uri});if(res&&res.isError)showToast("Ouverture fichier refusée par l'hôte.",false)}
 catch(_){showToast("Ouverture .md indisponible sur cette surface.",false)}
 }
-function renderMetricsBodyOrFull(){const b=byId("g-metrics-content");if(b){const s=captureFocusAndScroll();clearNode(b);renderMetricsContent(b);restoreFocusAndScroll(s)}else renderActiveView()}
+function renderMetricsBodyOrFull(){const b=byId("g-metrics-content");if(b&&typeof renderMetricsContent==="function"){const s=captureFocusAndScroll();clearNode(b);renderMetricsContent(b);restoreFocusAndScroll(s)}else renderActiveView()}
 function ensureActiveTabLoaded(f){
 const t=getActiveTabObj();
 if(t.kind==="live"&&(f||!state.live))loadLiveSession(false);
@@ -207,8 +207,8 @@ const main=byId("g-content");if(!main)return;const snap=captureFocusAndScroll();
 if(state.loading&&!state.overview)main.appendChild(el("div","empty","Connexion au serveur MCP Gravity..."));
 else{
 const t=getActiveTabObj();
-if(t.kind==="live"||t.kind==="workflow")renderLiveView(main,state.live,state.liveUi,{});
-else if(t.kind==="metrics")renderMetricsView(main);
+if(t.kind==="live"||t.kind==="workflow"){if(typeof renderLiveView==="function")renderLiveView(main,state.live,state.liveUi,{});else main.appendChild(el("div","empty","Vue Session indisponible."))}
+else if(t.kind==="metrics"){if(typeof renderMetricsUnifiedView==="function")renderMetricsView(main);else main.appendChild(el("div","empty","Vue Historique indisponible."))}
 else if(t.kind==="architect")renderArchitectView(main);
 else if(t.kind==="generic")renderModuleView(main,t);
 else renderOverviewView(main);
@@ -282,7 +282,7 @@ const res=await sendRequest("ui/initialize",{appInfo:{name:"gravity",version:"0.
 state.hostCaps=(res&&res.hostCapabilities)||{};applyHostContext((res&&res.hostContext)||{});sendNotification("ui/notifications/initialized",{});
 if(!state.hasToolResult)fallbackTimer=setTimeout(()=>{if(!state.hasToolResult&&state.hostCaps.serverTools)loadOverview(false);else if(!state.hasToolResult){state.loading=false;render()}},450);
 livePollTimer=setInterval(()=>{if(document.visibilityState==="visible"&&state.hostCaps.serverTools&&!state.inflight.live&&!state.liveUi.paused&&getActiveTabObj().kind==="live")loadLiveSession(true)},LIVE_POLL_MS);
-freshnessTimer=setInterval(()=>{if(document.visibilityState!=="visible"||!document.querySelectorAll)return;document.querySelectorAll("[data-freshness]").forEach((n)=>{n.textContent=attr(n,"data-paused")==="1"?"En pause":("Fraîcheur : "+fmtRelativeTime(attr(n,"data-ts")))})},1000);
+freshnessTimer=setInterval(()=>{if(document.visibilityState!=="visible"||!document.querySelectorAll||typeof fmtRelativeTime!=="function")return;document.querySelectorAll("[data-freshness]").forEach((n)=>{n.textContent=attr(n,"data-paused")==="1"?"En pause":("Fraîcheur : "+fmtRelativeTime(attr(n,"data-ts")))})},1000);
 }catch(err){state.loading=false;showToast("Initialisation pont MCP App échouée : "+err.message,true)}
 }
 initBridge();

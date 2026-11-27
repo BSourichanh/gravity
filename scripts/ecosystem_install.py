@@ -164,6 +164,58 @@ def _locate_init_env(repos_root: Path) -> Optional[Path]:
     return None
 
 
+def _locate_sync_shared(repos_root: Path) -> Optional[Path]:
+    candidate = repos_root / "gravity" / "scripts" / "sync_shared.py"
+    if candidate.is_file():
+        return candidate
+    fallback = REPO_ROOT / "scripts" / "sync_shared.py"
+    if fallback.is_file():
+        return fallback
+    return None
+
+
+def _run_sync_shared_preflight(
+    repos_root: Path,
+    ordered_repos: Sequence[str],
+) -> tuple[Optional[dict[str, Any]], bool]:
+    ssot_dir = repos_root / "gravity" / "shared" / "gravity_shared"
+    if not ssot_dir.is_dir():
+        return None, True
+
+    sync_script = _locate_sync_shared(repos_root)
+    if sync_script is None:
+        return {"ok": False, "error": "scripts/sync_shared.py not found"}, False
+
+    cmd = [
+        sys.executable,
+        "-B",
+        str(sync_script),
+        "--check",
+        "--repos-root",
+        str(repos_root),
+        "--repos",
+        ",".join(ordered_repos),
+        "--json",
+    ]
+    proc = run_subprocess_no_shell(cmd, cwd=sync_script.parent.parent, timeout=None)
+    parsed: Any = None
+    if proc.stdout.strip():
+        try:
+            parsed = json.loads(proc.stdout)
+        except ValueError:
+            parsed = None
+
+    ok = proc.returncode == 0 and isinstance(parsed, dict) and parsed.get("ok") is True
+    if isinstance(parsed, dict):
+        return parsed, ok
+    return {
+        "ok": False,
+        "returncode": proc.returncode,
+        "stderr": proc.stderr.strip(),
+        "stdout": proc.stdout.strip(),
+    }, False
+
+
 def _run_registry_post_step(
     *,
     repos_root: Path,
@@ -303,6 +355,26 @@ def orchestrate(
             else:
                 pull_results.append(pull_git_repo_ff_only(resolved_root / repo_name, repo_name=repo_name))
 
+    shared_sync_report: Optional[dict[str, Any]] = None
+    if action in ("install", "update", "check"):
+        shared_sync_report, sync_ok = _run_sync_shared_preflight(resolved_root, ordered_repos)
+        if not sync_ok:
+            fail_sync: dict[str, Any] = {
+                "ok": False,
+                "action": action,
+                "dry_run": dry_run,
+                "scope": effective_scope,
+                "method": effective_method,
+                "repos_root": str(resolved_root),
+                "ordered_repos": ordered_repos,
+                "error": "Shared SSOT drift detected (sync_shared.py --check failed).",
+                "shared_sync": shared_sync_report,
+                "results": [],
+            }
+            if pull:
+                fail_sync["pull_results"] = pull_results
+            return fail_sync, 1
+
     installer_args = _build_installer_args(
         action=action,
         dry_run=dry_run,
@@ -343,6 +415,8 @@ def orchestrate(
                 "results": results,
                 "registry": {"status": "skipped", "reason": "aborted after installer failure"},
             }
+            if shared_sync_report is not None:
+                fail_payload["shared_sync"] = shared_sync_report
             if pull:
                 fail_payload["pull_results"] = pull_results
             return fail_payload, 1
@@ -366,6 +440,8 @@ def orchestrate(
         "results": results,
         "registry": registry_info,
     }
+    if shared_sync_report is not None:
+        payload["shared_sync"] = shared_sync_report
     if pull:
         payload["pull_results"] = pull_results
     if not reg_ok:
@@ -395,6 +471,11 @@ def _print_human_report(payload: dict[str, Any]) -> None:
             reason = item.get("reason") or item.get("error") or ""
             suffix = f" ({reason})" if reason else ""
             print(f"  - {item.get('repo')}: {item.get('status')}{suffix}")
+
+    shared_sync = payload.get("shared_sync")
+    if isinstance(shared_sync, dict):
+        tag = "OK" if shared_sync.get("ok") else "FAIL"
+        print(f"\n[{tag}] Shared SSOT check (sync_shared.py --check)")
 
     for res in payload.get("results") or []:
         tag = "OK" if res["ok"] else "FAIL"

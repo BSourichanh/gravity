@@ -2,22 +2,29 @@
 
 from __future__ import annotations
 
-from mcp.ui import APP_JS, METRICS_VIEWS_JS, VIEWS_JS, WIDGET_CSS
-from mcp.ui.charts_js import CHARTS_JS
-from mcp.ui.live_views_js import LIVE_VIEWS_JS
+from mcp import ui as ui_pkg
+
+_JS_FRAGMENT_NAMES = (
+    "VIEWS_JS",
+    "CHARTS_JS",
+    "LIVE_VIEWS_JS",
+    "METRICS_VIEWS_JS",
+    "APP_JS",
+)
 
 
 def render_dashboard_html() -> str:
-    """Return the self-contained SEP-1865 HTML5 dashboard document (< 200 KiB)."""
+    """Return the self-contained SEP-1865 HTML5 dashboard document (< 150 KiB)."""
+    css_text = str(getattr(ui_pkg, "WIDGET_CSS", "") or "").strip()
+    js_fragments = [
+        str(getattr(ui_pkg, name, "") or "").strip()
+        for name in _JS_FRAGMENT_NAMES
+    ]
     script_body = "\n".join(
         [
             "(function () {",
             '  "use strict";',
-            VIEWS_JS.strip(),
-            CHARTS_JS.strip(),
-            LIVE_VIEWS_JS.strip(),
-            METRICS_VIEWS_JS.strip(),
-            APP_JS.strip(),
+            *[frag for frag in js_fragments if frag],
             "})();",
         ]
     )
@@ -29,7 +36,7 @@ def render_dashboard_html() -> str:
         '<meta name="viewport" content="width=device-width, initial-scale=1" />\n'
         "<title>Gravity</title>\n"
         "<style>\n"
-        f"{WIDGET_CSS.strip()}\n"
+        f"{css_text}\n"
         "</style>\n"
         "</head>\n"
         "<body>\n"

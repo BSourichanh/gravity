@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 LIVE_VIEWS_JS = r"""
-function _parseWorkflowProgress(raw){const m=String(raw||"").match(/(\d+)\s*\/\s*(\d+)/);if(!m)return{done:0,total:0,pct:0};const d=Math.max(0,Number(m[1])||0),t=Math.max(1,Number(m[2])||1);return{done:d,total:t,pct:Math.min(100,Math.round((d/t)*100))}}
+function _parseWorkflowProgress(raw,detail){
+if(detail&&typeof detail==="object"&&typeof detail.total==="number"){const d=Math.max(0,Number(detail.done)||0),t=Math.max(0,Number(detail.total)||0);return{done:d,total:t,pct:t>0?Math.min(100,Math.round((d/t)*100)):0}}
+const m=String(raw||"").match(/(\d+)\s*\/\s*(\d+)/);if(!m)return{done:0,total:0,pct:0};
+const d=Math.max(0,Number(m[1])||0),t=Math.max(0,Number(m[2])||0);return{done:d,total:t,pct:t>0?Math.min(100,Math.round((d/t)*100)):0};
+}
 function _aggregateLiveWorkspaces(agents){
 const map=new Map();
 (Array.isArray(agents)?agents:[]).forEach((ag)=>{
@@ -44,10 +48,26 @@ bg.appendChild(makeBadge("Étape : "+String(wf.stage||"idle"),"info"));
 bg.appendChild(makeBadge(String(wf.preset_profile||"standard")+" · "+String(wf.mode||"evo"),""));
 const gOn=String(wf.guard_status||"ON").toUpperCase();bg.appendChild(makeBadge("Garde : "+gOn,gOn==="ON"?"ok":"warn"));
 head.appendChild(bg);p.appendChild(head);
-const prog=_parseWorkflowProgress(wf.progress),bw=el("div","wf-bar"),bh=el("div","ctx-gauge-head");
-bh.appendChild(el("span",null,"Avancement : "+String(wf.progress||"0/0")));bh.appendChild(el("span","mono",fmtPct(prog.pct)));bw.appendChild(bh);
+const pd=(wf.progress_detail&&typeof wf.progress_detail==="object")?wf.progress_detail:null;
+const prog=_parseWorkflowProgress(wf.progress,pd),bw=el("div","wf-bar"),bh=el("div","ctx-gauge-head");
+bh.appendChild(el("span",null,"Avancement : "+String(wf.progress||(pd&&pd.label)||"0/0")));bh.appendChild(el("span","mono",fmtPct(prog.pct)));bw.appendChild(bh);
 const tr=el("div","wf-progress-track",null,{role:"progressbar","aria-valuenow":String(prog.done),"aria-valuemin":"0","aria-valuemax":String(prog.total)}),fl=el("div","wf-progress-fill");
 fl.style.width=prog.pct+"%";tr.appendChild(fl);bw.appendChild(tr);p.appendChild(bw);
+const rawW=(wf.waves!=null?wf.waves:(pd&&pd.waves))||[],rawT=(wf.tasks!=null?wf.tasks:(pd&&pd.tasks))||[];
+const waves=Array.isArray(rawW)?rawW:(rawW&&typeof rawW==="object"?Object.values(rawW):[]);
+const tasks=Array.isArray(rawT)?rawT:(rawT&&typeof rawT==="object"?Object.values(rawT):[]);
+if(waves.length||tasks.length){
+const wp=el("div","pill-list"),doneRe=/^(done|completed|complete|passed|ok|closed|finished)$/i;
+waves.slice(0,6).forEach((w,i)=>{
+if(!w||typeof w!=="object"){wp.appendChild(makeBadge("Vague "+(i+1)+" : "+String(w||""),""));return}
+const nm=String(w.name||w.id||w.wave||("V"+(i+1))),st=String(w.status||"").toLowerCase();
+const ratio=(typeof w.done==="number"&&typeof w.total==="number")?(" "+w.done+"/"+w.total):"";
+const tone=(w.done===true||doneRe.test(st))?"ok":((st==="running"||st==="active"||st==="in_progress")?"info":((st==="error"||st==="failed")?"error":""));
+wp.appendChild(makeBadge(nm+ratio+(st&&!ratio?" : "+st:""),tone));
+});
+if(tasks.length){const td=tasks.filter((t)=>t===true||(typeof t==="string"&&doneRe.test(t.trim()))||(t&&typeof t==="object"&&(t.done===true||doneRe.test(String(t.status||"").trim())))).length;wp.appendChild(makeBadge(td+"/"+tasks.length+" tâche(s)",td===tasks.length?"ok":"info"))}
+p.appendChild(wp);
+}
 const nodes=wf.nodes||{},keys=Object.keys(nodes);
 if(keys.length){
 const pills=el("div","pill-list");

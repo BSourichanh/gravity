@@ -6,8 +6,10 @@ import os
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+from _shared.path_safety import is_symlink_or_junction
 from core.registry import MODULE_ID_RE, discover_modules, resolve_gravity_home, resolve_module_home
-from dashboard.providers import load_modules_snapshot_ro, resolve_provider_kind
+from dashboard.providers import load_modules_snapshot_ro, normalize_plugin_roots, resolve_provider_kind
+from dashboard.providers.spi import extract_module_spi_metadata, invoke_dashboard_provider
 
 MAX_TOP_ENTRIES = 25
 
@@ -27,7 +29,7 @@ def _list_top_entries_ro(storage_dir: Optional[Path]) -> tuple[list[dict[str, An
     entries_out: list[dict[str, Any]] = []
     for entry in dir_entries[:MAX_TOP_ENTRIES]:
         try:
-            if entry.is_symlink():
+            if is_symlink_or_junction(entry.path):
                 entries_out.append({"name": entry.name, "kind": "symlink", "size_bytes": None})
             elif entry.is_dir(follow_symlinks=False):
                 entries_out.append({"name": entry.name, "kind": "dir", "size_bytes": None})
@@ -47,6 +49,8 @@ def get_module_info(
     *,
     gravity_home: Optional[Path] = None,
     plugin_roots: Optional[Sequence[Path]] = None,
+    plugins_dir: Optional[Any] = None,
+    home_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     """Return read-only contract metadata and shallow storage listing for any discovered module."""
     if not isinstance(module_id, str) or not MODULE_ID_RE.match(module_id):
@@ -56,15 +60,17 @@ def get_module_info(
             "error": f"Invalid module_id {module_id!r}: must match {MODULE_ID_RE.pattern}",
         }
 
-    resolved_gravity = resolve_gravity_home(gravity_home)
+    eff_roots = normalize_plugin_roots(plugin_roots, plugins_dir)
+    resolved_gravity = resolve_gravity_home(gravity_home, home_dir=home_dir)
     modules, registry_source, _, _, warnings = load_modules_snapshot_ro(
         resolved_gravity,
-        plugin_roots=plugin_roots,
+        plugin_roots=eff_roots,
+        home_dir=home_dir,
     )
     target_mod = next((m for m in modules if m.get("id") == module_id), None)
 
-    if target_mod is None and registry_source == "modules.json" and plugin_roots is not None:
-        discovered = discover_modules(plugin_roots)
+    if target_mod is None and registry_source == "modules.json" and eff_roots is not None:
+        discovered = discover_modules(eff_roots, home_dir=home_dir)
         target_mod = next((dict(m) for m in discovered if m.get("id") == module_id), None)
 
     if target_mod is None:
@@ -115,7 +121,65 @@ def get_module_info(
             "exists": exists,
         },
         "dedicated_provider": resolve_provider_kind(module_id) != "generic",
+        "spi": extract_module_spi_metadata(target_mod),
         "top_entries": top_entries,
         "top_entries_truncated": truncated,
         "warnings": warnings,
     }
+
+
+def get_generic_view(
+    module_id: str,
+    *,
+    view: str = "",
+    since_signature: str = "",
+    params: Optional[dict[str, Any]] = None,
+    gravity_home: Optional[Path] = None,
+    plugin_roots: Optional[Sequence[Path]] = None,
+    plugins_dir: Optional[Any] = None,
+    home_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Dispatch a generic OCP module view via SPI-1 when configured, else fall back to `get_module_info`."""
+    eff_roots = normalize_plugin_roots(plugin_roots, plugins_dir)
+    info = get_module_info(
+        module_id,
+        gravity_home=gravity_home,
+        plugin_roots=eff_roots,
+        home_dir=home_dir,
+    )
+    if not info.get("found"):
+        return info
+
+    spi_meta = info.get("spi") if isinstance(info.get("spi"), dict) else {}
+    if not spi_meta.get("enabled"):
+        return info
+
+    views = list(spi_meta.get("views") or [])
+    target_view = (view or "").strip()
+    if not target_view:
+        target_view = "overview" if "overview" in views else (views[0] if views else "")
+
+    if not target_view or (views and target_view not in views):
+        return info
+
+    res = invoke_dashboard_provider(
+        module_id,
+        view=target_view,
+        since_signature=since_signature,
+        params=params,
+        gravity_home=gravity_home,
+        plugin_roots=eff_roots,
+        home_dir=home_dir,
+    )
+    if not res.get("spi_fallback"):
+        return res
+
+    fallback = dict(info)
+    fallback["spi_fallback"] = True
+    fallback["warnings"] = list(
+        dict.fromkeys([*(info.get("warnings") or []), *(res.get("warnings") or [])])
+    )
+    return fallback
+
+
+__all__ = ["MAX_TOP_ENTRIES", "get_generic_view", "get_module_info"]

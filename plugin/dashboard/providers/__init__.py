@@ -6,7 +6,6 @@ import hashlib
 import json
 from pathlib import Path
 import re
-import sqlite3
 from typing import Any, Optional, Sequence
 
 DEDICATED_PROVIDERS: tuple[str, ...] = ("core", "workflow", "metrics", "architect")
@@ -192,9 +191,23 @@ def file_uri_if_exists(path: Path) -> str:
     return ""
 
 
+def normalize_plugin_roots(
+    plugin_roots: Optional[Any] = None,
+    plugins_dir: Optional[Any] = None,
+) -> Optional[list[Path]]:
+    """Normalize `plugin_roots` or singular `plugins_dir` alias into a list of Paths (or None)."""
+    raw = plugin_roots if plugin_roots is not None else plugins_dir
+    if raw is None:
+        return None
+    if isinstance(raw, (str, Path)):
+        return [Path(raw)] if str(raw).strip() else None
+    return [Path(p) for p in raw]
+
+
 def load_modules_snapshot_ro(
     gravity_home: Path,
     plugin_roots: Optional[Sequence[Path]] = None,
+    home_dir: Optional[Path] = None,
 ) -> tuple[list[dict[str, Any]], str, bool, Optional[str], list[str]]:
     """Load modules from `<gravity_home>/core/modules.json` or fallback read-only to `discover_modules`."""
     from core.registry import discover_modules
@@ -215,23 +228,8 @@ def load_modules_snapshot_ro(
         if data is not None:
             warnings.append("Invalid structure in core/modules.json; falling back to live module discovery.")
 
-    discovered = [dict(m) for m in discover_modules(plugin_roots)]
+    discovered = [dict(m) for m in discover_modules(plugin_roots, home_dir=home_dir)]
     return discovered, "discovered", registry_exists, None, warnings
-
-
-def open_sqlite_ro(db_path: Path, warnings: list[str]) -> Optional[sqlite3.Connection]:
-    """Open an existing SQLite database strictly read-only (`?mode=ro` + `PRAGMA query_only = ON`)."""
-    try:
-        if db_path.is_symlink() or not db_path.is_file():
-            return None
-        resolved = db_path.resolve()
-        conn = sqlite3.connect(f"{resolved.as_uri()}?mode=ro", uri=True, timeout=1.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA query_only = ON")
-        return conn
-    except (sqlite3.Error, OSError) as exc:
-        warnings.append(f"SQLite read-only open failed for {db_path.name}: {exc}")
-        return None
 
 
 def truncate_preview(text: str, max_chars: int = 160) -> str:
@@ -348,7 +346,7 @@ __all__ = [
     "extract_md_verdict",
     "file_uri_if_exists",
     "load_modules_snapshot_ro",
-    "open_sqlite_ro",
+    "normalize_plugin_roots",
     "read_json_ro",
     "resolve_provider_kind",
     "short_digest",

@@ -24,7 +24,6 @@ def _run_hook(stdin_text: str, *, fake_home: Path, gravity_home: Path) -> subpro
         "GRAVITY_CORE_HOME",
         "GRAVITY_WORKFLOW_HOME",
         "GRAVITY_METRICS_HOME",
-        "GRAVITY_BRIDGE_HOME",
         "GRAVITY_ARCHITECT_HOME",
     ):
         env.pop(key, None)

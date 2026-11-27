@@ -32,7 +32,6 @@ def _isolated_env(fake_home: Path) -> dict[str, str]:
         "GRAVITY_HOME",
         "GRAVITY_CORE_HOME",
         "GRAVITY_METRICS_HOME",
-        "GRAVITY_BRIDGE_HOME",
         "GRAVITY_ARCHITECT_HOME",
         "GRAVITY_WORKFLOW_HOME",
     ):
@@ -80,6 +79,14 @@ class TestBundleExportImport(unittest.TestCase):
             sync_data = json.loads(raw.decode("utf-8"))
             self.assertEqual(sync_data["schema_version"], 1)
             self.assertEqual(Path(sync_data["drive_dir"]), drive_dir.resolve())
+
+            # Human output for --set-drive-dir
+            human_proc = _run_init_env(
+                ["--gravity-home", str(gravity_home), "--set-drive-dir", str(drive_dir)],
+                fake_home=fake_home,
+            )
+            self.assertEqual(human_proc.returncode, 0, msg=human_proc.stderr or human_proc.stdout)
+            self.assertIn("Drive Sync Config", human_proc.stdout)
 
             # Incompatible mode combination rejected
             bad_combo = _run_init_env(
@@ -130,7 +137,9 @@ class TestBundleExportImport(unittest.TestCase):
             (gravity_home / "core" / "sync.lock").write_text("lock", encoding="utf-8")
             (gravity_home / "workflow" / "live_workspaces.json").write_text("{}\n", encoding="utf-8")
             (gravity_home / "metrics" / "session_meta.json").write_text("{}\n", encoding="utf-8")
-            # Residual bridge/ directory (including WAL/logs) must be tolerated and excluded cleanly
+            # Residual legacy WAL db / lock files must be tolerated and excluded cleanly
+            (gravity_home / "metrics" / "legacy.db-wal").write_bytes(b"wal")
+            (gravity_home / "metrics" / "legacy.db-shm").write_bytes(b"shm")
             (gravity_home / "bridge" / "logs").mkdir(parents=True)
             (gravity_home / "bridge" / "logs" / "relay.log").write_text("log\n", encoding="utf-8")
 
@@ -190,13 +199,14 @@ class TestBundleExportImport(unittest.TestCase):
                 self.assertIn("ateliers/studio/tasks/t1.md", names)
                 self.assertIn("ateliers/studio/audits/code/c1.md", names)
 
-                # Strict exclusions and retired bridge assets omitted without error
                 for forbidden in (
                     "core/modules.json",
                     "core/sources.json",
                     "core/sync.lock",
                     "workflow/live_workspaces.json",
                     "metrics/session_meta.json",
+                    "metrics/legacy.db-wal",
+                    "metrics/legacy.db-shm",
                     "bridge/bridge.db",
                     "bridge/logs/relay.log",
                     "bridge/bridge.db-wal",
@@ -216,6 +226,15 @@ class TestBundleExportImport(unittest.TestCase):
             self.assertEqual(imp_proc.returncode, 0, msg=imp_proc.stderr or imp_proc.stdout)
             self.assertTrue((restored_home / "metrics" / "data" / "history.jsonl").is_file())
             self.assertFalse((restored_home / "bridge").exists())
+
+            # Human-readable --export using configured drive_dir from sync.json
+            drive_dir = tmp_path / "drive-sync"
+            drive_dir.mkdir()
+            bundle.set_drive_dir(drive_dir, gravity_home=gravity_home)
+            exp_human = _run_init_env(["--gravity-home", str(gravity_home), "--export"], fake_home=fake_home)
+            self.assertEqual(exp_human.returncode, 0, msg=exp_human.stderr or exp_human.stdout)
+            self.assertIn("Bundle Export", exp_human.stdout)
+            self.assertTrue(list(drive_dir.glob("gravity-backup-*.zip")))
 
     def test_import_dry_run_integrity_remapping_and_human_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -260,7 +279,6 @@ class TestBundleExportImport(unittest.TestCase):
             (src_gravity / "metrics").mkdir(parents=True)
             (src_gravity / "metrics" / "METRICS.md").write_bytes(b"# M\n")
 
-            # Create existing target repo on destination user home to test warning vs existing
             (dst_user / "repos" / "app1").mkdir(parents=True)
 
             bundle_zip = tmp_path / "portable.zip"
@@ -288,22 +306,14 @@ class TestBundleExportImport(unittest.TestCase):
             self.assertIn("Bundle Import (applied)", imp_proc.stdout)
 
             restored_ateliers = json.loads((dst_gravity / "architect" / "ateliers.json").read_text(encoding="utf-8"))
-            self.assertEqual(
-                Path(restored_ateliers["ateliers"][0]["workspace_path"]),
-                (dst_user / "work" / "my-atelier"),
-            )
-            self.assertEqual(
-                Path(restored_ateliers["ateliers"][1]["workspace_path"]),
-                (dst_gravity / "sub"),
-            )
+            self.assertEqual(Path(restored_ateliers["ateliers"][0]["workspace_path"]), (dst_user / "work" / "my-atelier"))
+            self.assertEqual(Path(restored_ateliers["ateliers"][1]["workspace_path"]), (dst_gravity / "sub"))
 
-            restored_projects = json.loads(
-                (dst_gravity / "ateliers" / "my-atelier" / "projects.json").read_text(encoding="utf-8")
-            )
+            restored_projects = json.loads((dst_gravity / "ateliers" / "my-atelier" / "projects.json").read_text(encoding="utf-8"))
             self.assertEqual(Path(restored_projects["projects"][0]["path"]), dst_user / "repos" / "app1")
             self.assertEqual(restored_projects["projects"][1]["path"], "/opt/external/repo")
 
-            # Tampered SHA-256 (same byte length) must fail on --dry-run
+            # Tampered SHA-256 (same byte length) must fail on --dry-run and leave applied files untouched
             tampered_zip = tmp_path / "tampered.zip"
             with zipfile.ZipFile(bundle_zip, "r") as zin, zipfile.ZipFile(tampered_zip, "w") as zout:
                 for item in zin.infolist():
@@ -318,7 +328,13 @@ class TestBundleExportImport(unittest.TestCase):
             self.assertEqual(bad_proc.returncode, 1)
             self.assertIn("SHA-256 mismatch", json.loads(bad_proc.stdout)["error"])
 
-    def test_import_rejects_traversal_absolute_symlink_and_bad_zip(self) -> None:
+            # Non-dry-run import of multi-entry ZIP where 2nd entry fails SHA-256 must perform 0 disk writes (EC-4)
+            atomic_target = tmp_path / "ec4-atomic-target"
+            with self.assertRaises(ValueError):
+                bundle.import_bundle(tampered_zip, gravity_home=atomic_target)
+            self.assertFalse(atomic_target.exists())
+
+    def test_import_rejects_traversal_absolute_symlink_nul_and_bad_zip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             target_home = tmp_path / "target-home"
@@ -328,10 +344,7 @@ class TestBundleExportImport(unittest.TestCase):
             with self.assertRaises(ValueError):
                 bundle.import_bundle(bad_file, gravity_home=target_home)
 
-            manifest = {
-                "schema_version": 1,
-                "entries": [],
-            }
+            manifest = {"schema_version": 1, "entries": []}
             manifest_bytes = json.dumps(manifest).encode("utf-8")
 
             for idx, evil_name in enumerate(("../escape.txt", "/abs/escape.txt", "C:/evil.txt")):
@@ -345,19 +358,18 @@ class TestBundleExportImport(unittest.TestCase):
                     bundle.import_bundle(zpath, gravity_home=target_home)
                 self.assertFalse(target_home.exists())
 
-            bs_zip = tmp_path / "evil_backslash.zip"
-            bad_manifest = {
-                "schema_version": 1,
-                "entries": [
-                    {"arcname": "a/b.txt", "target_rel": "a\\b.txt", "size": 1, "sha256": "0" * 64}
-                ],
-            }
-            with zipfile.ZipFile(bs_zip, "w") as zf:
-                zf.writestr("manifest.json", json.dumps(bad_manifest).encode("utf-8"))
-                zf.writestr("a/b.txt", b"x")
-            with self.assertRaises(ValueError, msg="Expected rejection for backslash target_rel"):
-                bundle.import_bundle(bs_zip, gravity_home=target_home)
-            self.assertFalse(target_home.exists())
+            for idx, evil_rel in enumerate(("a\\b.txt", "a\x00b.txt")):
+                bad_zip = tmp_path / f"evil_rel_{idx}.zip"
+                bad_manifest = {
+                    "schema_version": 1,
+                    "entries": [{"arcname": "a/b.txt", "target_rel": evil_rel, "size": 1, "sha256": "0" * 64}],
+                }
+                with zipfile.ZipFile(bad_zip, "w") as zf:
+                    zf.writestr("manifest.json", json.dumps(bad_manifest).encode("utf-8"))
+                    zf.writestr("a/b.txt", b"x")
+                with self.assertRaises(ValueError, msg=f"Expected rejection for target_rel {evil_rel!r}"):
+                    bundle.import_bundle(bad_zip, gravity_home=target_home)
+                self.assertFalse(target_home.exists())
 
             sym_zip = tmp_path / "symlink.zip"
             with zipfile.ZipFile(sym_zip, "w") as zf:

@@ -24,7 +24,7 @@ L'orchestrateur hors-ligne [`scripts/ecosystem_install.py`](../scripts/ecosystem
 |---|---|---|---|
 | **Palier 1 — *Essentiel*** | `--tier 1` | `gravity`, `gravity-workflow` | Exécution fiable sur un dépôt (garde-fous `PreToolUse`, profils `quick`/`standard`/`deep`, `/caveman`) |
 | **Palier 2 — *Pilotage*** | `--tier 2` | Palier 1 + `gravity-metrics` | Suivi des coûts, tokens, économies de cache, jalons et audits agents |
-| **Palier 3 — *Multi-projets*** | `--tier 3` *(défaut)* | Palier 2 + `gravity-architect` | Atelier de conception Hot/Cold (`specs/`, `tasks/`, `audits/code/`) et exécution multi-dépôts 100 % native (`run_workflow` `wave_runner.py` / `/swarm`) |
+| **Palier 3 — *Multi-projets*** | `--tier 3` *(défaut)* | Palier 2 + `gravity-architect` | Atelier de conception Hot/Cold (`specs/`, `tasks/`, `audits/code/`) et pilotage multi-dépôts |
 
 ---
 
@@ -45,7 +45,6 @@ python scripts/ecosystem_install.py --install --tier 2
 
 # 3. Initialiser ~/.gemini/gravity/core/modules.json et vérifier la santé (lecture seule)
 python plugin/scripts/init_env.py
-python plugin/scripts/init_env.py --overview
 python plugin/scripts/init_env.py --check
 python plugin/scripts/init_env.py --guide
 ```
@@ -62,12 +61,11 @@ python3 scripts/ecosystem_install.py --install --tier 3
 
 # 3. Initialiser ~/.gemini/gravity/core/modules.json et vérifier la santé (lecture seule)
 python3 plugin/scripts/init_env.py
-python3 plugin/scripts/init_env.py --overview
 python3 plugin/scripts/init_env.py --check
 python3 plugin/scripts/init_env.py --guide
 ```
 
-> **Dans le chat Antigravity :** `/gravity` (nu) affiche instantanément la vue d'ensemble à **0 token** (`PreInvocation`), puis vous pouvez lancer `/gravity init`, `/gravity doctor`, `/gravity help` ainsi que `/gravity export` / `/gravity import` pour sauvegarder ou restaurer `$GRAVITY_HOME`.
+> **Dans le chat Antigravity :** vous pouvez lancer directement `/gravity init`, `/gravity doctor` et `/gravity help`.
 
 ---
 
@@ -76,8 +74,8 @@ python3 plugin/scripts/init_env.py --guide
 `gravity` embarque sa propre configuration MCP (`plugin/mcp_config.json`) et le serveur `open_gravity_dashboard` : **aucune édition manuelle de `~/.gemini/config/config.json` n'est requise**.
 
 1. **Depuis le chat :** lancez `/gravity dashboard` (appelle `open_gravity_dashboard` en panneau auxiliaire `aux_pane`).
-2. **Depuis l'interface Antigravity :** ouvrez la **barre latérale gauche (`Gravity`)** ou le **menu `+` du panneau latéral droit** (`0` token interactif).
-3. **Diagnostic CLI lecture seule :** `python plugin/scripts/init_env.py --dashboard` (vérifie `mcp_config.json`, `mcp/server.py`, `dashboard/api.py` et liste les `4` onglets natifs + modules OCP découverts).
+2. **Depuis l'interface Antigravity :** ouvrez **Plugins -> Gravity** (`0` token interactif).
+3. **Diagnostic CLI lecture seule :** `python plugin/scripts/init_env.py --dashboard` (vérifie `mcp_config.json`, `mcp/server.py`, `dashboard/api.py` et liste les onglets découverts).
 
 ---
 
@@ -87,6 +85,6 @@ python3 plugin/scripts/init_env.py --guide
 2. `~/.gemini/gravity/core/modules.json` existe après `/gravity init` et recense tous vos modules (`valid: true`).
 3. `/gravity doctor` (`init_env.py --check`) retourne `0` erreur et signale d'éventuels dossiers legacy sans y toucher.
 4. `/gravity help` (`init_env.py --guide`) affiche la boucle en 3 temps et uniquement les commandes de vos modules installés.
-5. `/gravity dashboard` (ou la **barre latérale gauche (`Gravity`)** ou le **menu `+` du panneau latéral droit**) ouvre le tableau de bord MCP App sans erreur.
+5. `/gravity dashboard` (ou **Plugins -> Gravity**) ouvre le tableau de bord MCP App sans erreur.
 
 **Pour aller plus loin :** [Parcours utilisateur](user-journey.md) · [Aide-mémoire des commandes](command-cheatsheet.md) · [Dépannage & cycle de vie](troubleshooting-and-lifecycle.md)

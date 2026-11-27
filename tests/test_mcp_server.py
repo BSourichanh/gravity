@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 from pathlib import Path
@@ -9,13 +10,16 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_ROOT = REPO_ROOT / "plugin"
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
+from core import registry  # noqa: E402
 from core.registry import write_modules_registry  # noqa: E402
+from dashboard.providers import live_provider  # noqa: E402
 from mcp import server as mcp_server  # noqa: E402
 from mcp.widget_html import render_dashboard_html  # noqa: E402
 
@@ -25,8 +29,10 @@ def _write_fake_plugin(
     *,
     mod_id: str,
     plugin_name: str,
-    version: str = "0.2.0",
+    version: str = "0.3.0",
     ui_mode: str = "none",
+    dashboard_cfg: dict | None = None,
+    provider_script_body: str = "",
 ) -> Path:
     mod_dir = plugins_root / plugin_name
     (mod_dir / "config").mkdir(parents=True, exist_ok=True)
@@ -41,7 +47,7 @@ def _write_fake_plugin(
         "homepage": f"https://github.com/BSourichanh/{plugin_name}",
         "repository": f"https://github.com/BSourichanh/{plugin_name}.git",
     }
-    contract = {
+    contract: dict = {
         "schema_version": 1,
         "id": mod_id,
         "plugin_name": plugin_name,
@@ -55,9 +61,138 @@ def _write_fake_plugin(
         "ui": {"mode": ui_mode, "target": "gravity"},
         "signals": {"produces": [], "consumes": []},
     }
-    (mod_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
-    (mod_dir / "config" / "module.json").write_text(json.dumps(contract), encoding="utf-8")
+    if dashboard_cfg is not None:
+        contract["dashboard"] = dashboard_cfg
+    (mod_dir / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
+    (mod_dir / "config" / "module.json").write_text(json.dumps(contract), encoding="utf-8", newline="\n")
+    if provider_script_body:
+        (mod_dir / "scripts").mkdir(parents=True, exist_ok=True)
+        (mod_dir / "scripts" / "dashboard_provider.py").write_text(
+            provider_script_body,
+            encoding="utf-8",
+            newline="\n",
+        )
     return mod_dir
+
+
+_WF_SPI_SCRIPT = """\
+import argparse, json, pathlib, sys
+p = argparse.ArgumentParser()
+p.add_argument("--view", default="")
+p.add_argument("--since-signature", default="")
+p.add_argument("--json", action="store_true")
+a = p.parse_args()
+req = json.loads(sys.stdin.read() or "{}")
+wf_home = pathlib.Path((req.get("context") or {}).get("workflow_home") or ".")
+ws_hint = str((req.get("params") or {}).get("ws") or "")
+reg = wf_home / "live_workspaces.json"
+if not reg.is_file():
+    print(json.dumps({"available": False, "changed": True, "unchanged": False, "signature": "wf-empty", "stage": "idle", "progress": "0/0"}))
+    sys.exit(0)
+reg_data = json.loads(reg.read_text(encoding="utf-8"))
+first_entry = (reg_data.get("workspaces") or [{}])[0]
+st_path = pathlib.Path(first_entry.get("state_path") or "")
+st_data = json.loads(st_path.read_text(encoding="utf-8")) if st_path.is_file() else {}
+sig = f"wf:{ws_hint}:{st_data.get('stage')}:{st_data.get('progress')}"
+if a.since_signature == sig:
+    print(json.dumps({"changed": False, "unchanged": True, "signature": sig}))
+else:
+    print(json.dumps({"available": True, "changed": True, "unchanged": False, "signature": sig, **st_data}))
+"""
+
+_METRICS_SPI_SCRIPT = """\
+import argparse, json, pathlib, sys
+p = argparse.ArgumentParser()
+p.add_argument("--view", default="")
+p.add_argument("--since-signature", default="")
+p.add_argument("--action", default="")
+p.add_argument("--json", action="store_true")
+a = p.parse_args()
+req = json.loads(sys.stdin.read() or "{}")
+params = req.get("params") or {}
+ctx = req.get("context") or {}
+m_home = pathlib.Path(ctx.get("metrics_home") or ".")
+if a.action:
+    print(json.dumps({"ok": True, "action": a.action, "message": f"Action {a.action} ok", "result": {"argv": [a.action, params.get("target") or ""]}}))
+elif a.view == "session-detail":
+    target = str(params.get("target") or "")
+    rep_json = m_home / "reports" / f"{target}.json"
+    rep_md = m_home / "reports" / f"{target}.md"
+    if not rep_json.is_file():
+        print(json.dumps({"found": False, "target": target, "error": "Not found"}))
+    else:
+        detail = json.loads(rep_json.read_text(encoding="utf-8"))
+        detail.pop("trajectory", None)
+        print(json.dumps({"found": True, "label": detail.get("label", target), "detail": detail, "report_md_uri": rep_md.resolve().as_uri() if rep_md.is_file() else ""}))
+elif a.view == "audit-detail":
+    rel = str(params.get("path") or "")
+    for ad in (ctx.get("audits_dirs") or []):
+        cand = pathlib.Path(ad) / rel
+        if cand.is_file():
+            print(json.dumps({"found": True, "path": rel, "title": cand.name, "content": cand.read_text(encoding="utf-8")}))
+            sys.exit(0)
+    print(json.dumps({"found": False, "path": rel, "error": "Audit not found"}))
+else:
+    audits = []
+    for ad in (ctx.get("audits_dirs") or []):
+        ad_p = pathlib.Path(ad)
+        if ad_p.is_dir():
+            for f in sorted(ad_p.glob("*.md")):
+                audits.append({"audit_id": f.name, "title": f.name, "verdict": "BLOQUANT"})
+    print(json.dumps({
+        "available": True, "changed": True, "unchanged": False, "signature": "met-1",
+        "total_matching": 1, "kpis": {"sessions_count": 1, "useful_tokens": 12000, "cost_usd": 0.42},
+        "records": [{"conversation_id": "11111111-2222-3333-4444-555555555555", "label": "demo-session", "status": "archived"}],
+        "pending_sessions": [], "ignored_sessions": [], "audits": audits,
+    }))
+"""
+
+_ARCHITECT_SPI_SCRIPT = """\
+import argparse, json, pathlib, sys
+p = argparse.ArgumentParser()
+p.add_argument("--view", default="")
+p.add_argument("--since-signature", default="")
+p.add_argument("--json", action="store_true")
+a = p.parse_args()
+req = json.loads(sys.stdin.read() or "{}")
+params = req.get("params") or {}
+ctx = req.get("context") or {}
+atelier_arg = str(params.get("atelier") or "").strip()
+ws_arg = str(params.get("ws") or "").strip()
+arch_home = ctx.get("architect_home")
+ateliers = []
+if arch_home and (pathlib.Path(arch_home) / "ateliers.json").is_file():
+    ateliers = json.loads((pathlib.Path(arch_home) / "ateliers.json").read_text(encoding="utf-8")).get("ateliers") or []
+if atelier_arg:
+    chosen, source = pathlib.Path(atelier_arg), "selected_atelier"
+elif ws_arg and (pathlib.Path(ws_arg) / "projects.json").is_file():
+    chosen, source = pathlib.Path(ws_arg), "ws_hint"
+elif ateliers:
+    chosen, source = pathlib.Path(ateliers[0]["workspace_path"]), "architect_registry"
+else:
+    print(json.dumps({"available": False, "changed": True, "unchanged": False, "signature": "arch-none", "projects": [], "specs": [], "tasks": [], "audits": []}))
+    sys.exit(0)
+if not (chosen / "projects.json").is_file():
+    print(json.dumps({"available": False, "changed": True, "unchanged": False, "signature": "arch-missing", "discovery_source": source, "warnings": [f"Missing atelier: {chosen}"], "projects": [], "specs": [], "tasks": [], "audits": []}))
+    sys.exit(0)
+sig = f"arch:{source}:{chosen.resolve()}"
+if a.since_signature == sig:
+    print(json.dumps({"changed": False, "unchanged": True, "signature": sig}))
+    sys.exit(0)
+audits = []
+code_dir = chosen / "audits" / "code"
+if code_dir.is_dir():
+    for f in sorted(code_dir.glob("*.md")):
+        if f.name != "README.md":
+            audits.append({"audit_id": f.name, "verdict": "PASS"})
+proj_data = json.loads((chosen / "projects.json").read_text(encoding="utf-8"))
+print(json.dumps({
+    "available": True, "changed": True, "unchanged": False, "signature": sig,
+    "atelier_root": str(chosen.resolve()), "discovery_source": source,
+    "ateliers": ateliers, "projects": proj_data.get("projects") or [],
+    "specs": [], "tasks": [], "handoffs": [], "audits": audits,
+}))
+"""
 
 
 class TestMcpServer(unittest.TestCase):
@@ -148,9 +283,9 @@ class TestMcpServer(unittest.TestCase):
             "ui/notifications/host-context-changed",
             "com.google.antigravity/toggle-aux-pane",
             'addEventListener("message"',
-            "renderArchitectView",
             "renderLiveView",
             "renderMetricsUnifiedView",
+            "renderArchitectView",
             "gravity_get_live_session",
             "gravity_metrics_action",
             "gravity_read_audit",
@@ -175,6 +310,10 @@ class TestMcpServer(unittest.TestCase):
             "Tarif 2027",
             "metricsTariff",
             "set-tariff",
+            "0/8",
+            "gravity-studio",
+            "gravity-bridge",
+            "pollInFlight",
         ):
             self.assertNotIn(absent, html_txt)
 
@@ -191,7 +330,7 @@ class TestMcpServer(unittest.TestCase):
         bad_method = mcp_server.handle_jsonrpc_message({"jsonrpc": "2.0", "id": 8, "method": "nope/method"})
         self.assertEqual(bad_method["error"]["code"], -32601)  # type: ignore[index]
 
-    def test_all_seven_tools_with_isolated_ctx(self) -> None:
+    def test_all_ten_tools_with_isolated_ctx(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             g_home = tmp_path / "gravity-home"
@@ -200,7 +339,7 @@ class TestMcpServer(unittest.TestCase):
             plugins_root = tmp_path / "plugins"
             wf_home = g_home / "workflow"
             met_home = g_home / "metrics"
-            atelier_dir = tmp_path / "gravity-studio"
+            atelier_dir = tmp_path / "gravity-workshop"
             (g_home / "core").mkdir(parents=True)
             (wf_home / "workspaces" / "proj-1").mkdir(parents=True)
             (met_home / "data").mkdir(parents=True)
@@ -222,16 +361,12 @@ class TestMcpServer(unittest.TestCase):
                         "ateliers": [
                             {
                                 "workspace_path": str(atelier_dir.resolve()),
-                                "workspace_name": "Studio",
+                                "workspace_name": "Workshop",
                                 "updated_at": "2026-11-23T22:00:00Z",
                             }
                         ],
                     }
                 ),
-                encoding="utf-8",
-            )
-            (atelier_dir / "tracking" / "snapshots" / "delta.md").write_text(
-                "- **Date :** `2026-11-23T22:00:00Z`\n- **Statut éditorial :** `NO_EDITORIAL_CHANGES`\n",
                 encoding="utf-8",
             )
             (atelier_dir / "audits" / "code" / "README.md").write_text("# Code Index\n", encoding="utf-8")
@@ -245,14 +380,31 @@ class TestMcpServer(unittest.TestCase):
             )
 
             _write_fake_plugin(plugins_root, mod_id="core", plugin_name="gravity", ui_mode="core")
-            _write_fake_plugin(plugins_root, mod_id="workflow", plugin_name="gravity-workflow", ui_mode="none")
-            met_plugin = _write_fake_plugin(plugins_root, mod_id="metrics", plugin_name="gravity-metrics", ui_mode="none")
-            (met_plugin / "scripts").mkdir(parents=True)
-            (met_plugin / "scripts" / "cli.py").write_text(
-                "import json, sys\nprint(json.dumps({'ok': True, 'argv': sys.argv[1:]}))\n",
-                encoding="utf-8",
+            _write_fake_plugin(
+                plugins_root,
+                mod_id="workflow",
+                plugin_name="gravity-workflow",
+                dashboard_cfg={"provider_script": "scripts/dashboard_provider.py", "views": ["workflow"], "actions": []},
+                provider_script_body=_WF_SPI_SCRIPT,
             )
-            _write_fake_plugin(plugins_root, mod_id="architect", plugin_name="gravity-architect", ui_mode="none")
+            _write_fake_plugin(
+                plugins_root,
+                mod_id="metrics",
+                plugin_name="gravity-metrics",
+                dashboard_cfg={
+                    "provider_script": "scripts/dashboard_provider.py",
+                    "views": ["metrics", "session-detail", "audit-detail"],
+                    "actions": ["record", "update", "update-meta", "ignore", "unignore", "remove"],
+                },
+                provider_script_body=_METRICS_SPI_SCRIPT,
+            )
+            _write_fake_plugin(
+                plugins_root,
+                mod_id="architect",
+                plugin_name="gravity-architect",
+                dashboard_cfg={"provider_script": "scripts/dashboard_provider.py", "views": ["architect"], "actions": []},
+                provider_script_body=_ARCHITECT_SPI_SCRIPT,
+            )
 
             mods = []
             for mod_id, pname, ui_mode in (
@@ -267,7 +419,7 @@ class TestMcpServer(unittest.TestCase):
                         "plugin_name": pname,
                         "plugin_dir": str(plugins_root / pname),
                         "display_name": pname.title(),
-                        "version": "0.2.0",
+                        "version": "0.3.0",
                         "valid": True,
                         "errors": [],
                         "storage": {"subdir": mod_id, "env_override": f"GRAVITY_{mod_id.upper()}_HOME"},
@@ -322,19 +474,6 @@ class TestMcpServer(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            hist_rec = {
-                "conversation_id": "11111111-2222-3333-4444-555555555555",
-                "label": "demo-session",
-                "detail_slug": "demo-session",
-                "project": "gravity",
-                "status": "archived",
-                "cost_usd": 0.42,
-                "cost_2027_usd": 0.55,
-                "cache_hit_rate_pct": 85.0,
-                "total_tokens": 12000,
-                "llm_calls": 4,
-            }
-            (met_home / "data" / "history.jsonl").write_text(json.dumps(hist_rec) + "\n", encoding="utf-8")
             (met_home / "reports" / "demo-session.json").write_text(
                 json.dumps({"label": "demo-session", "summary": {"cost_usd": {"total": 0.42}}, "trajectory": ["secret"]}),
                 encoding="utf-8",
@@ -348,6 +487,7 @@ class TestMcpServer(unittest.TestCase):
                 "brain_dir": brain_dir,
                 "workflow_home": wf_home,
                 "metrics_home": met_home,
+                "architect_home": g_home / "architect",
                 "audits_dirs": [atelier_dir / "audits" / "agents"],
             }
 
@@ -481,6 +621,7 @@ class TestMcpServer(unittest.TestCase):
             )["result"]  # type: ignore[index]
             self.assertFalse(mod_ok["isError"])
             self.assertEqual(mod_ok["structuredContent"]["top_entries"][0]["name"], "live_workspaces.json")
+            self.assertTrue(mod_ok["structuredContent"]["spi"]["enabled"])
 
             mod_err = mcp_server.handle_jsonrpc_message(
                 {"jsonrpc": "2.0", "id": 19, "method": "tools/call", "params": {"name": "gravity_get_module_info", "arguments": {"module_id": "nonexistent"}}},
@@ -514,7 +655,7 @@ class TestMcpServer(unittest.TestCase):
             )["result"]["structuredContent"]  # type: ignore[index]
             self.assertTrue(arch2["unchanged"])
 
-    def test_architect_mcp_ws_hint_and_atelier_selector_without_bridge(self) -> None:
+    def test_architect_mcp_ws_hint_and_atelier_selector_via_spi(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             g_home = tmp_path / "gravity-home"
@@ -549,13 +690,20 @@ class TestMcpServer(unittest.TestCase):
             )
 
             _write_fake_plugin(plugins_root, mod_id="core", plugin_name="gravity", ui_mode="core")
-            _write_fake_plugin(plugins_root, mod_id="architect", plugin_name="gravity-architect", ui_mode="none")
+            _write_fake_plugin(
+                plugins_root,
+                mod_id="architect",
+                plugin_name="gravity-architect",
+                dashboard_cfg={"provider_script": "scripts/dashboard_provider.py", "views": ["architect"], "actions": []},
+                provider_script_body=_ARCHITECT_SPI_SCRIPT,
+            )
             write_modules_registry(
                 g_home,
                 [
                     {
                         "id": "core",
                         "plugin_name": "gravity",
+                        "plugin_dir": str(plugins_root / "gravity"),
                         "display_name": "Gravity",
                         "version": "0.3.0",
                         "valid": True,
@@ -569,6 +717,7 @@ class TestMcpServer(unittest.TestCase):
                     {
                         "id": "architect",
                         "plugin_name": "gravity-architect",
+                        "plugin_dir": str(plugins_root / "gravity-architect"),
                         "display_name": "Gravity Architect",
                         "version": "0.5.0",
                         "valid": True,
@@ -632,102 +781,6 @@ class TestMcpServer(unittest.TestCase):
             self.assertEqual(bad_res["discovery_source"], "selected_atelier")
             self.assertTrue(bad_res["warnings"])
 
-    def test_architect_ws_hint_preserved_on_refresh_without_registry_or_bridge(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            g_home = tmp_path / "gravity-home"
-            fake_user = tmp_path / "user-home"
-            fake_user.mkdir()
-            plugins_root = tmp_path / "plugins"
-            arch_home = g_home / "architect"
-            (g_home / "core").mkdir(parents=True)
-            arch_home.mkdir(parents=True)
-
-            atelier_dir = tmp_path / "atelier-direct"
-            (atelier_dir / "tracking" / "snapshots").mkdir(parents=True)
-            (atelier_dir / "ECOSYSTEM.md").write_text("# Atelier Direct\n", encoding="utf-8")
-            (atelier_dir / "projects.json").write_text(
-                json.dumps({"schema_version": 5, "workspace_name": "Atelier Direct", "projects": []}),
-                encoding="utf-8",
-            )
-
-            _write_fake_plugin(plugins_root, mod_id="core", plugin_name="gravity", ui_mode="core")
-            _write_fake_plugin(plugins_root, mod_id="architect", plugin_name="gravity-architect", ui_mode="none")
-            write_modules_registry(
-                g_home,
-                [
-                    {
-                        "id": "core",
-                        "plugin_name": "gravity",
-                        "display_name": "Gravity",
-                        "version": "0.3.0",
-                        "valid": True,
-                        "errors": [],
-                        "storage": {"subdir": "core", "env_override": "GRAVITY_CORE_HOME"},
-                        "commands": ["/gravity"],
-                        "capabilities": ["test"],
-                        "ui": {"mode": "core", "target": "gravity"},
-                        "signals": {"produces": [], "consumes": []},
-                    },
-                    {
-                        "id": "architect",
-                        "plugin_name": "gravity-architect",
-                        "display_name": "Gravity Architect",
-                        "version": "0.5.0",
-                        "valid": True,
-                        "errors": [],
-                        "storage": {"subdir": "architect", "env_override": "GRAVITY_ARCHITECT_HOME"},
-                        "commands": ["/gravity-architect"],
-                        "capabilities": ["test"],
-                        "ui": {"mode": "none", "target": "gravity"},
-                        "signals": {"produces": [], "consumes": []},
-                    },
-                ],
-            )
-
-            ctx = {
-                "gravity_home": g_home,
-                "plugin_roots": [plugins_root],
-                "home_dir": fake_user,
-                "architect_home": arch_home,
-            }
-
-            tools_resp = mcp_server.handle_jsonrpc_message(
-                {"jsonrpc": "2.0", "id": 40, "method": "tools/list", "params": {}},
-                ctx=ctx,
-            )["result"]["tools"]  # type: ignore[index]
-            arch_tool = next(t for t in tools_resp if t["name"] == "gravity_get_architect_state")
-            self.assertIn("ws", arch_tool["inputSchema"]["properties"])
-
-            open_res = mcp_server.handle_jsonrpc_message(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 41,
-                    "method": "tools/call",
-                    "params": {"name": "open_gravity_dashboard", "arguments": {"ws": str(atelier_dir)}},
-                },
-                ctx=ctx,
-            )["result"]["structuredContent"]  # type: ignore[index]
-            self.assertEqual(open_res["initial_ws"], str(atelier_dir))
-            self.assertTrue(open_res["architect"]["available"])
-            self.assertEqual(open_res["architect"]["discovery_source"], "ws_hint")
-
-            refresh_res = mcp_server.handle_jsonrpc_message(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 42,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "gravity_get_architect_state",
-                        "arguments": {"ws": str(atelier_dir), "atelier": ""},
-                    },
-                },
-                ctx=ctx,
-            )["result"]["structuredContent"]  # type: ignore[index]
-            self.assertTrue(refresh_res["available"])
-            self.assertEqual(refresh_res["discovery_source"], "ws_hint")
-            self.assertEqual(Path(refresh_res["atelier_root"]), atelier_dir.resolve())
-
     def test_stdio_subprocess_roundtrip_and_parse_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -743,7 +796,6 @@ class TestMcpServer(unittest.TestCase):
                 "GRAVITY_CORE_HOME",
                 "GRAVITY_WORKFLOW_HOME",
                 "GRAVITY_METRICS_HOME",
-                "GRAVITY_BRIDGE_HOME",
                 "GRAVITY_ARCHITECT_HOME",
                 "GRAVITY_ARCHITECT_WORKSPACE",
             ):
@@ -800,11 +852,7 @@ class TestMcpServer(unittest.TestCase):
                     }
                 ],
             )
-            ctx = {
-                "gravity_home": g_home,
-                "plugin_roots": [plugins_root],
-                "home_dir": fake_user,
-            }
+            ctx = {"gravity_home": g_home, "plugin_roots": [plugins_root], "home_dir": fake_user}
 
             def _call_open(req_id: int) -> dict[str, object]:
                 resp = mcp_server.handle_jsonrpc_message(
@@ -819,26 +867,18 @@ class TestMcpServer(unittest.TestCase):
                 assert resp is not None
                 return resp["result"]  # type: ignore[return-value]
 
-            # 1) Without initialize -> no [WARN UI]
             res_uninit = _call_open(100)
             self.assertFalse(res_uninit["isError"])
             self.assertNotIn("[WARN UI]", res_uninit["content"][0]["text"])  # type: ignore[index]
 
-            # 2) initialize without capabilities or with empty capabilities & no clientInfo -> ui_supported=None, no [WARN UI]
-            for idx, params in enumerate(
-                ({}, {"protocolVersion": "2025-06-18"}, {"capabilities": {}}),
-                start=101,
-            ):
+            for idx, params in enumerate(({}, {"protocolVersion": "2025-06-18"}, {"capabilities": {}}), start=101):
                 mcp_server._reset_host_client_state()
-                mcp_server.handle_jsonrpc_message(
-                    {"jsonrpc": "2.0", "id": idx, "method": "initialize", "params": params}
-                )
+                mcp_server.handle_jsonrpc_message({"jsonrpc": "2.0", "id": idx, "method": "initialize", "params": params})
                 self.assertIsNone(mcp_server._HOST_CLIENT_STATE["ui_supported"])
                 res_unknown = _call_open(idx + 10)
                 self.assertFalse(res_unknown["isError"])
                 self.assertNotIn("[WARN UI]", res_unknown["content"][0]["text"])  # type: ignore[index]
 
-            # 3) initialize with MCP Apps capabilities -> ui_supported=True, no [WARN UI]
             for idx, cap_payload in enumerate(
                 (
                     {"extensions": {"io.modelcontextprotocol/ui": {"mimeTypes": ["text/html;profile=mcp-app"]}}},
@@ -855,10 +895,7 @@ class TestMcpServer(unittest.TestCase):
                         "jsonrpc": "2.0",
                         "id": idx,
                         "method": "initialize",
-                        "params": {
-                            "capabilities": cap_payload,
-                            "clientInfo": {"name": "antigravity", "version": "2.35.0"},
-                        },
+                        "params": {"capabilities": cap_payload, "clientInfo": {"name": "antigravity", "version": "2.35.0"}},
                     }
                 )
                 self.assertTrue(mcp_server._HOST_CLIENT_STATE["ui_supported"])
@@ -866,17 +903,13 @@ class TestMcpServer(unittest.TestCase):
                 self.assertFalse(res_ok["isError"])
                 self.assertNotIn("[WARN UI]", res_ok["content"][0]["text"])  # type: ignore[index]
 
-            # 4) initialize with Antigravity < 2.34.0 -> ui_supported=False, [WARN UI] appended, isError=False
             mcp_server._reset_host_client_state()
             mcp_server.handle_jsonrpc_message(
                 {
                     "jsonrpc": "2.0",
                     "id": 150,
                     "method": "initialize",
-                    "params": {
-                        "capabilities": {},
-                        "clientInfo": {"name": "antigravity", "version": "2.33.0"},
-                    },
+                    "params": {"capabilities": {}, "clientInfo": {"name": "antigravity", "version": "2.33.0"}},
                 }
             )
             self.assertIs(mcp_server._HOST_CLIENT_STATE["ui_supported"], False)
@@ -887,17 +920,13 @@ class TestMcpServer(unittest.TestCase):
             self.assertIn("antigravity 2.33.0", txt_old)
             self.assertIn("v2.34.0+", txt_old)
 
-            # 5) initialize with non-UI client (e.g. agy CLI) -> ui_supported=False, [WARN UI] appended
             mcp_server._reset_host_client_state()
             mcp_server.handle_jsonrpc_message(
                 {
                     "jsonrpc": "2.0",
                     "id": 160,
                     "method": "initialize",
-                    "params": {
-                        "capabilities": {"roots": {"listChanged": True}},
-                        "clientInfo": {"name": "agy", "version": "1.0.0"},
-                    },
+                    "params": {"capabilities": {"roots": {"listChanged": True}}, "clientInfo": {"name": "agy", "version": "1.0.0"}},
                 }
             )
             self.assertIs(mcp_server._HOST_CLIENT_STATE["ui_supported"], False)
@@ -907,200 +936,88 @@ class TestMcpServer(unittest.TestCase):
             self.assertIn("[WARN UI]", txt_cli)
             self.assertIn("agy 1.0.0", txt_cli)
 
-    def test_metrics_ui_bundle_dom_renderers_and_actions(self) -> None:
-        import re
-        import shutil
-        from mcp.ui.charts_js import CHARTS_JS
-        from mcp.ui.live_views_js import LIVE_VIEWS_JS
-        from mcp.ui.metrics_views_js import METRICS_VIEWS_JS
-        from mcp.ui.views_js import VIEWS_JS
+    def test_architect_provider_retired(self) -> None:
+        self.assertFalse((PLUGIN_ROOT / "dashboard" / "providers" / "architect_provider.py").exists())
+        with self.assertRaises(ModuleNotFoundError):
+            importlib.import_module("dashboard.providers.architect_provider")
 
-        html = render_dashboard_html()
-        self.assertLess(len(html.encode("utf-8")), 150 * 1024)
-        node_bin = shutil.which("node")
-        if not node_bin:
-            self.skipTest("node binary not available")
-
-        match = re.search(r"<script>\n(.*)\n</script>", html, flags=re.DOTALL)
-        self.assertIsNotNone(match)
-        assert match is not None
-
-        harness = r"""
-function makeNode(tag) {
-  return {
-    tagName: String(tag).toUpperCase(), className: "", textContent: "", attrs: {}, style: {},
-    children: [], listeners: {}, value: "", selected: false, disabled: false, open: false,
-    get firstChild() { return this.children[0] || null; },
-    appendChild(c) { this.children.push(c); return c; },
-    removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); return c; },
-    setAttribute(k, v) { this.attrs[k] = String(v); if (k === "id") this.id = String(v); if (k === "value") this.value = String(v); },
-    getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; },
-    addEventListener(ev, fn) { this.listeners[ev] = this.listeners[ev] || []; this.listeners[ev].push(fn); }
-  };
-}
-function collectText(n) {
-  if (!n) return "";
-  const out = n.textContent ? [n.textContent] : [];
-  for (const ch of (n.children || [])) out.push(collectText(ch));
-  return out.join(" ");
-}
-function findAll(node, pred, acc) {
-  acc = acc || [];
-  if (!node) return acc;
-  if (pred(node)) acc.push(node);
-  for (const ch of (node.children || [])) findAll(ch, pred, acc);
-  return acc;
-}
-const document = { createElement: (t) => makeNode(t), createElementNS: (_ns, t) => makeNode(t), getElementById: () => null };
-const state = {
-  overview: { tabs: [{ id: "live", kind: "live" }, { id: "architect", kind: "architect" }, { id: "metrics", kind: "metrics" }, { id: "overview", kind: "core" }] },
-  live: { selected_session: { conversation_id: "cid-1" }, summary: { llm_calls: 15 } },
-  metricsProject: "", metricsQ: "", metricsSub: "overview", metricsFilter: "recorded", metricsSort: "date",
-  metricsActionInFlight: false, compareOpen: false, compareA: "s-1", compareB: "s-2",
-  sessionTarget: "", sessionDetail: null, sessionDetailLoading: false, sessionDetailSub: "summary",
-  sessionAgentId: "", sessionCollapsed: {},
-  sessionEditOpen: false, sessionDeleteConfirm: false, pendingDeleteTarget: "",
-  auditTarget: "", auditData: null, auditLoading: false, architectSub: "projects",
-  metrics: {
-    projects: ["gravity", "gravity-studio"],
-    workspaces: ["gravity", "gravity-metrics", "gravity-studio"],
-    metrics_md_uri: "file:///tmp/METRICS.md",
-    total_matching: 2,
-    kpis: {
-      sessions_count: 2, archived_count: 2, active_count: 0, useful_tokens: 45000, cache_read_tokens: 120000,
-      total_tokens: 165000, avg_cache_hit_rate_pct: 72.7, total_llm_calls: 20, max_context_tokens: 145000,
-      context_alerts_count: 1, context_critical_count: 0, wall_clock_s: 320, latency_p95_ms: 1850,
-      latency_avg_ms: 920, thinking_est_tokens: 4200, compaction_count: 1, error_steps: 1, avg_error_rate_pct: 5.0,
-      duplicate_spawns: 0, rewind_calls: 1, interrupted_agents: 0
-    },
-    by_workspace: [
-      { workspace: "gravity-studio", kind: "atelier", useful_tokens: 15000, sessions: 1 },
-      { workspace: "gravity", kind: "code", useful_tokens: 30000, sessions: 2 }
-    ],
-    records: [
-      {
-        conversation_id: "cid-1", label: "Session One", detail_slug: "s-1", project: "gravity", status: "archived",
-        primary_model: "gemini-4-neon-high", models: { "gemini-4-neon-high": { calls: 12 } },
-        category_share_pct: { builder: 75, reviewer: 25 }, input_tokens: 20000, output_tokens: 5000,
-        cache_read_tokens: 80000, total_tokens: 105000, cache_hit_rate_pct: 80, max_context_tokens: 145000,
-        llm_calls: 12, tool_calls: 24, latency_p95_ms: 1850, error_steps: 1, error_rate_pct: 8.3,
-        compaction_count: 1, wall_clock_s: 200, cost_usd: 0.25, cache_savings_usd: 0.40,
-        agents: 4, max_depth: 2, current_phase: "build",
-        workspace_share_pct: { gravity: 75, "gravity-studio": 25 },
-        workspace_kinds: { gravity: "code", "gravity-studio": "atelier" },
-        started_at: "2026-11-25T10:00:00Z", ended_at: "2026-11-25T10:03:20Z"
-      },
-      {
-        conversation_id: "cid-2", label: "Session Two", detail_slug: "s-2", project: "gravity-studio", status: "archived",
-        primary_model: "gemini-4-hydrogen-high", input_tokens: 16000, output_tokens: 4000,
-        cache_read_tokens: 40000, total_tokens: 60000, cache_hit_rate_pct: 66.7, max_context_tokens: 90000,
-        llm_calls: 8, tool_calls: 10, latency_p95_ms: 1100, error_steps: 0, error_rate_pct: 0,
-        compaction_count: 0, wall_clock_s: 120, cost_usd: 0.15, cache_savings_usd: 0.20,
-        started_at: "2026-11-25T09:00:00Z", ended_at: "2026-11-25T09:02:00Z"
-      }
-    ],
-    pending_sessions: [{ conversation_id: "cid-pend", label: "Pending Run", project: "gravity", cwd: "/tmp/gravity", updated_at: "2026-11-25T11:00:00Z" }],
-    ignored_sessions: [{ conversation_id: "cid-ign", label: "Noise Run", project: "gravity", ignored_reason: "test", ignored_at: "2026-11-25T08:00:00Z" }],
-    audits: [{ audit_id: "studio:2026-11-25.md", title: "Audit W4", workspace: "gravity-studio", verdict: "PASS", verdict_tone: "ok", date: "2026-11-25", size_bytes: 512, uri: "file:///tmp/a.md" }]
-  }
-};
-"""
-        assertions = r"""
-function assert(c, m) { if (!c) throw new Error("ASSERT: " + m); }
-const box1 = makeNode("div");
-renderMetricsUnifiedView(box1);
-const t1 = collectText(box1);
-assert(t1.includes("Tokens utiles") && t1.includes("Pression contexte") && t1.includes("Atelier") && t1.includes("Code"), "overview technical KPIs & workspaces");
-assert(t1.includes("Répartition par Modèle") && t1.includes("Répartition par Rôle") && t1.includes("Audits Agents (1)"), "model, role breakdown & unified audits");
-assert(t1.includes("gravity-metrics") && !t1.includes("Tarif 2026") && !t1.includes("Tarif 2027"), "workspaces filter & no tariff toggle");
-
-state.metricsSub = "sessions";
-state.compareOpen = true;
-state.sessionTarget = "s-1";
-state.sessionEditOpen = true;
-state.sessionDeleteConfirm = true;
-state.pendingDeleteTarget = "s-1";
-state.sessionDetail = {
-  found: true, source: "report_json", slug: "s-1", conversation_id: "cid-1", label: "Session One",
-  report_md_uri: "file:///tmp/s1.md", record: state.metrics.records[0],
-  detail: {
-    summary: { input_tokens: 20000, output_tokens: 5000, cache_read_tokens: 80000, cache_hit_rate_pct: 80, total_llm_calls: 12, total_tool_calls: 24, wall_clock_s: 200, cost_usd: { total_usd: 0.25, cache_savings_usd: 0.40 } },
-    agents: [
-      { role: "Builder", conversation_id: "cid-root", workspace: "gravity", workspace_kind: "code", model: "gemini-4-neon-high", max_context_tokens: 145000, input_tokens: 20000, output_tokens: 5000, cache_read_tokens: 80000, llm_calls: 12, tool_calls: 24, clean_termination: true },
-      { role: "Verifier", conversation_id: "cid-wf", parent_id: "cid-root", depth: 1, source: "workflow", category: "verification", workspace: "gravity", workspace_kind: "code", by_model: { "gemini-4-hydrogen-high": { calls: 15 } }, max_context_tokens: 60000, input_tokens: 8000, output_tokens: 2000, cache_read_tokens: 30000, llm_calls: 15, tool_calls_total: 37, active_s: 95, clean_termination: false, error_steps: 1, total_anomalies: 2, cost_usd: { total_usd: 0.12 } }
-    ],
-    tool_usage: { by_tool: { edit_file: 10 } }
-  }
-};
-const box2 = makeNode("div");
-renderMetricsUnifiedView(box2);
-const t2 = collectText(box2);
-assert(t2.includes("4 ag.") && t2.includes("prof. N2") && t2.includes("Phase : build") && t2.includes("gravity 75%"), "enriched session cards");
-assert(t2.includes("Mettre à jour (+3 appels)") && t2.includes("Comparateur A/B") && t2.includes("Delta (B - A)"), "freshness badge & A/B comparator");
-assert(t2.includes("Supprimer cette session") && t2.includes("Repère secondaire ($)") && findAll(box2, (n) => n.className === "slide-over").length === 1, "slide-over inline delete confirm & discrete $ footnote");
-
-state.sessionDetailSub = "agents";
-const box2b = makeNode("div");
-renderMetricsUnifiedView(box2b);
-const t2b = collectText(box2b);
-assert(findAll(box2b, (n) => n.className && n.className.includes("tree-row")).length === 2, "agent tree renders 2 rows");
-assert(t2b.includes("Outils les plus utilisés") && t2b.includes("edit_file"), "agents & tools subtab");
-assert(t2b.includes("gemini-4-neon-high") && t2b.includes("Outils : 24"), "legacy agent model & tool_calls fallback");
-
-state.sessionAgentId = "cid-wf";
-const box2b2 = makeNode("div");
-renderMetricsUnifiedView(box2b2);
-const t2b2 = collectText(box2b2);
-assert(t2b2.includes("gemini-4-hydrogen-high") && t2b2.includes("Outils : 37") && t2b2.includes("Workflow") && t2b2.includes("Vérification") && t2b2.includes("Erreur") && t2b2.includes("↳ Builder · N1") && t2b2.includes("Anomalies : 2") && t2b2.includes("$0.1200"), "inspector selected agent details");
-
-state.sessionDetailSub = "diagnostic";
-const box2c = makeNode("div");
-renderMetricsUnifiedView(box2c);
-assert(collectText(box2c).includes("Doublons de rôles") && collectText(box2c).includes("Compactions contexte"), "diagnostic subtab");
-
-state.sessionTarget = "";
-state.metricsSub = "audits";
-state.auditTarget = "studio:2026-11-25.md";
-state.auditData = { found: true, title: "Audit W4", verdict: "PASS", workspace: "gravity-studio", date: "2026-11-25", content: "# Audit Body", uri: "file:///tmp/a.md" };
-const box3 = makeNode("div");
-renderMetricsUnifiedView(box3);
-assert(findAll(box3, (n) => n.className === "slide-over").length === 1 && collectText(box3).includes("# Audit Body") && collectText(box3).includes("Ouvrir .md"), "audits slide-over reader");
-
-state.architectSub = "projects";
-state.architect = {
-  available: true, atelier_root: "/tmp/gravity-studio", discovery_source: "architect_registry",
-  ecosystem: { exists: true, size_bytes: 2048, budget_bytes: 6000, over_budget: false, alerts: [], uri: "file:///tmp/ECO.md" },
-  delta: { exists: true, editorial_status: "NO_EDITORIAL_CHANGES", date: "2026-11-26", hygiene_alerts: [], uri: "file:///tmp/delta.md" },
-  watches_count: 1, archived_specs_count: 1, archived_tasks_count: 2,
-  projects: [{ id: "gravity", name: "Gravity", path: "../gravity", role: "core", main_branch: "main", default_dev_branch: "dev", release_main: "0.3.0", dev_status: "ahead 1", installed_version: "0.3.0", wip_status: "clean", specs_count: 1, tasks_count: 2, audits_count: 1, card_bytes: 1200, card_uri: "file:///tmp/gravity.md" }],
-  specs: [{ filename: "s1.md", title: "Spec v2", target_project: "gravity", status: "validated", status_code: "validated", date: "2026-11-26", size_bytes: 1024, uri: "file:///tmp/s1.md" }],
-  tasks: [{ filename: "t1.md", title: "Task 1", target_project: "gravity", wave: 1, status: "done", status_code: "done", workflow_profile: "quick", expected_branch: "dev", dependencies: ["w0"], spec_source: "specs/s1.md", date: "2026-11-26", uri: "file:///tmp/t1.md" }],
-  waves_summary: { total_tasks: 1, waves_count: 1, waves: [{ wave: 1, tasks_count: 1, projects: ["gravity"], status_counts: { done: 1 } }] },
-  audits: [{ audit_id: "code:a.md", title: "Audit Code", target: "gravity", verdict: "PASS", verdict_tone: "ok", date: "2026-11-26", size_bytes: 512, uri: "file:///tmp/ac.md" }]
-};
-const archP = makeNode("div");
-renderArchitectView(archP);
-const archPTxt = collectText(archP);
-assert(archPTxt.includes("Voir sessions") && archPTxt.includes("Ouvrir fiche") && archPTxt.includes("1 spec(s)") && archPTxt.includes("2 task(s)"), "architect projects cards");
-state.architectSub = "waves";
-const archW = makeNode("div");
-renderArchitectView(archW);
-const archWTxt = collectText(archW);
-assert(archWTxt.includes("Vague 1") && archWTxt.includes("profil: quick") && archWTxt.includes("déps: w0"), "architect waves & tasks");
-console.log(JSON.stringify({ ok: true }));
-"""
+    def test_live_tools_forward_plugin_roots_and_never_leak_to_host(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            bundle = tmp_path / "bundle.js"
-            bundle.write_text(match.group(1), encoding="utf-8")
-            chk = subprocess.run([node_bin, "--check", str(bundle)], capture_output=True, text=True, check=False)
-            self.assertEqual(chk.returncode, 0, msg=chk.stderr or chk.stdout)
+            host_home = tmp_path / "host-home"
+            host_sentinel = tmp_path / "mcp_host_leak.flag"
+            _write_fake_plugin(
+                host_home / ".gemini" / "config" / "plugins",
+                mod_id="metrics",
+                plugin_name="gravity-metrics",
+                dashboard_cfg={"provider_script": "scripts/dashboard_provider.py", "views": ["metrics"], "actions": []},
+                provider_script_body=(
+                    f"import json, pathlib\n"
+                    f"pathlib.Path({str(host_sentinel)!r}).write_text('LEAK', encoding='utf-8')\n"
+                    f"print(json.dumps({{'available': True, 'changed': True, 'unchanged': False, 'signature': 'leak', 'records': []}}))\n"
+                ),
+            )
+            fake_user = tmp_path / "fake-user"
+            fake_user.mkdir()
+            g_home = tmp_path / "gravity-home"
+            bd = tmp_path / "brain"
+            bd.mkdir()
 
-            dom = tmp_path / "metrics_dom.js"
-            dom.write_text("\n".join([harness, VIEWS_JS, CHARTS_JS, LIVE_VIEWS_JS, METRICS_VIEWS_JS, assertions]), encoding="utf-8")
-            run = subprocess.run([node_bin, str(dom)], capture_output=True, text=True, check=False)
-            self.assertEqual(run.returncode, 0, msg=run.stderr or run.stdout)
-            self.assertTrue(json.loads(run.stdout.strip()).get("ok"))
+            iso_plugins = tmp_path / "iso-plugins"
+            _write_fake_plugin(
+                iso_plugins,
+                mod_id="workflow",
+                plugin_name="gravity-workflow",
+                dashboard_cfg={"provider_script": "scripts/dashboard_provider.py", "views": ["workflow"], "actions": []},
+                provider_script_body=(
+                    "import json\n"
+                    "print(json.dumps({'available': True, 'changed': True, 'unchanged': False, 'signature': 'iso', 'stage': 'mcp-iso', 'progress': '1/1'}))\n"
+                ),
+            )
+
+            clean_env = {k: v for k, v in os.environ.items() if k not in ("GRAVITY_HOME", "GRAVITY_PLUGINS_DIR", "GRAVITY_BRAIN_DIR")}
+            calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+            orig_discover = registry.discover_modules
+
+            def _spy_discover(*args: object, **kwargs: object) -> list[dict[str, object]]:
+                calls.append((args, kwargs))
+                return orig_discover(*args, **kwargs)  # type: ignore[arg-type]
+
+            with (
+                mock.patch.dict(os.environ, clean_env, clear=True),
+                mock.patch.object(registry, "safe_home_dir", return_value=host_home),
+                mock.patch.object(live_provider, "safe_home_dir", return_value=host_home),
+                mock.patch.object(registry, "discover_modules", side_effect=_spy_discover),
+            ):
+                empty_ctx = {"gravity_home": g_home, "plugin_roots": [], "home_dir": fake_user, "brain_dir": bd}
+                open_res = mcp_server.handle_jsonrpc_message(
+                    {"jsonrpc": "2.0", "id": 201, "method": "tools/call", "params": {"name": "open_gravity_dashboard", "arguments": {"view": "live"}}},
+                    ctx=empty_ctx,
+                )
+                assert open_res is not None
+                self.assertFalse(open_res["result"]["isError"])
+                self.assertNotIn("tok. utiles", open_res["result"]["content"][0]["text"])
+
+                live_res = mcp_server.handle_jsonrpc_message(
+                    {"jsonrpc": "2.0", "id": 202, "method": "tools/call", "params": {"name": "gravity_get_live_session", "arguments": {}}},
+                    ctx=empty_ctx,
+                )
+                assert live_res is not None
+                self.assertFalse(live_res["result"]["isError"])
+                self.assertFalse(host_sentinel.exists())
+                self.assertTrue(calls)
+                self.assertTrue(all(a and a[0] == [] for a, _ in calls), msg=f"Unexpected discover_modules calls: {calls}")
+
+                calls.clear()
+                iso_ctx = {"gravity_home": g_home, "plugin_roots": [iso_plugins], "home_dir": fake_user, "brain_dir": bd}
+                live_iso = mcp_server.handle_jsonrpc_message(
+                    {"jsonrpc": "2.0", "id": 203, "method": "tools/call", "params": {"name": "gravity_get_live_session", "arguments": {}}},
+                    ctx=iso_ctx,
+                )
+                assert live_iso is not None
+                self.assertEqual(live_iso["result"]["structuredContent"]["workflow"]["stage"], "mcp-iso")
+                self.assertFalse(host_sentinel.exists())
+                self.assertTrue(all(a and a[0] == [iso_plugins] for a, _ in calls), msg=f"Unexpected discover_modules calls: {calls}")
 
 
 if __name__ == "__main__":

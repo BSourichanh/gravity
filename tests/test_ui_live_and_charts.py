@@ -1,4 +1,4 @@
-"""Unit tests for Wave 2 UI design system, charts_js, live_views_js, app_js, and HTML budget."""
+"""Unit tests for Wave W10 UI design system, charts_js, live_views_js, metrics_views_js, and HTML budget."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ PLUGIN_ROOT = REPO_ROOT / "plugin"
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
+from mcp import ui as ui_pkg  # noqa: E402
 from mcp.ui.app_js import APP_JS  # noqa: E402
 from mcp.ui.charts_js import CHARTS_JS  # noqa: E402
 from mcp.ui.live_views_js import LIVE_VIEWS_JS  # noqa: E402
@@ -88,7 +89,7 @@ const state = {
     projects: ["gravity"],
     kpis: { sessions_count: 14, useful_tokens: 57000, cache_read_tokens: 10000, thinking_est_tokens: 500, total_tokens: 67000 },
     by_workspace: [
-      { workspace: "gravity-studio", kind: "atelier", useful_tokens: 12000, sessions: 5, share_pct: 21.1 },
+      { workspace: "gravity-workshop", kind: "atelier", useful_tokens: 12000, sessions: 5, share_pct: 21.1 },
       { workspace: "gravity", kind: "code", useful_tokens: 45000, sessions: 14, share_pct: 78.9 }
     ],
     records: [], pending_sessions: [], ignored_sessions: [], audits: []
@@ -129,14 +130,14 @@ assert(findAll(sb, (n) => n.className === "stack-seg").length === 2, "stacked ba
 assert(collectText(renderStackedBars([])).includes("Aucune consommation"), "stacked bar empty");
 
 const wb = renderWorkspaceBreakdown([
-  { workspace: "gravity-studio", kind: "atelier", useful_tokens: 12000, agents_count: 1 },
+  { workspace: "gravity-workshop", kind: "atelier", useful_tokens: 12000, agents_count: 1 },
   { workspace: "gravity", kind: "code", useful_tokens: 45000, agents_count: 2 }
 ]);
 const wbTxt = collectText(wb);
 assert(wbTxt.includes("Atelier") && wbTxt.includes("Code") && wbTxt.includes("gravity"), "workspace breakdown");
 
 const wbShare = renderWorkspaceBreakdown([
-  { workspace: "gravity-studio", kind: "atelier", useful_tokens: 12000, sessions: 5, share_pct: 21.1 },
+  { workspace: "gravity-workshop", kind: "atelier", useful_tokens: 12000, sessions: 5, share_pct: 21.1 },
   { workspace: "gravity", kind: "code", useful_tokens: 45000, sessions: 14, share_pct: 78.9 }
 ]);
 const wbShareTxt = collectText(wbShare);
@@ -157,8 +158,17 @@ const emptyBox = makeNode("div");
 renderLiveView(emptyBox, { available: false, sessions: [], selected_session: null, agents: [], recent_events: [], workflow: { available: true, is_active: true, stage: "plan", progress: "1/4", mode: "evo", preset_profile: "standard", guard_status: "ON", nodes: { planner: "running" } } }, {});
 assert(collectText(emptyBox).includes("Aucune session active") && collectText(emptyBox).includes("Progression du workflow"), "live empty + active workflow");
 
+const defaultProgBox = makeNode("div");
+renderLiveView(defaultProgBox, { available: false, sessions: [], selected_session: null, agents: [], recent_events: [], workflow: { available: true, is_active: true, stage: "plan", waves: [{ id: "W9", done: 1, total: 1, status: "done" }, { id: "W10", done: 0, total: 1, status: "running" }], tasks: [{ status: "done" }, { status: "running" }], progress_detail: { label: "1/2", done: 1, total: 2, pct: 50 } } }, {});
+const dpTxt = collectText(defaultProgBox);
+assert(dpTxt.includes("W9 1/1") && dpTxt.includes("W10 0/1") && dpTxt.includes("1/2 tâche(s)"), "structured live_progress waves & tasks pills");
+
+const zeroProgBox = makeNode("div");
+renderLiveView(zeroProgBox, { available: false, sessions: [], selected_session: null, agents: [], recent_events: [], workflow: { available: true, is_active: true, stage: "plan" } }, {});
+assert(collectText(zeroProgBox).includes("Avancement : 0/0"), "0/0 default workflow progress");
+
 const idleBox = makeNode("div");
-renderLiveView(idleBox, { available: false, sessions: [], selected_session: null, agents: [], recent_events: [], workflow: { available: true, is_active: false, stage: "idle", progress: "0/8" } }, {});
+renderLiveView(idleBox, { available: false, sessions: [], selected_session: null, agents: [], recent_events: [], workflow: { available: true, is_active: false, stage: "idle", progress: "0/0" } }, {});
 assert(!collectText(idleBox).includes("Progression du workflow"), "idle workflow hidden");
 
 const fullBox = makeNode("div");
@@ -179,12 +189,12 @@ const payload = {
     llm_calls: 14, tool_calls: 32, error_count: 1, duration_s: 185
   },
   workflow: {
-    available: true, is_active: true, stage: "build", progress: "3/8", mode: "evo",
+    available: true, is_active: true, stage: "build", progress: "3/5", mode: "evo",
     preset_profile: "standard", suggested_profile: "quick", guard_status: "ON",
     nodes: { planner: "done", builder: "running", reviewer: "idle" }
   },
   agents: [
-    { id: "coord", role: "Coordinator", status: "active", source: "root", depth: 0, model: "gemini-pro", workspace: "gravity-studio", workspace_kind: "atelier", task_title: "Orchestration", last_tool: "swarm", llm_calls: 6, tool_calls: 12, children_count: 3, context_tokens: 140000, max_context_tokens: 155000, useful_tokens: 40000, cache_hit_pct: 70, started_at: "2026-11-25T13:00:00Z", last_ts: "2026-11-25T13:03:00Z", duration_s: 180, error_count: 0 },
+    { id: "coord", role: "Coordinator", status: "active", source: "root", depth: 0, model: "gemini-pro", workspace: "gravity-workshop", workspace_kind: "atelier", task_title: "Orchestration", last_tool: "swarm", llm_calls: 6, tool_calls: 12, children_count: 3, context_tokens: 140000, max_context_tokens: 155000, useful_tokens: 40000, cache_hit_pct: 70, started_at: "2026-11-25T13:00:00Z", last_ts: "2026-11-25T13:03:00Z", duration_s: 180, error_count: 0 },
     { id: "w1", role: "Builder", status: "waiting", source: "swarm", parent_id: "coord", parent_name: "Coordinator", depth: 1, model: "gemini-flash", workspace: "gravity", workspace_kind: "code", task_title: "UI Live", last_tool: "edit_file", llm_calls: 4, tool_calls: 8, context_tokens: 45000, max_context_tokens: 45000, useful_tokens: 25000, cache_hit_pct: 65, started_at: "2026-11-25T13:00:30Z", last_ts: "2026-11-25T13:02:00Z", duration_s: 90, error_count: 0 },
     { id: "w2", role: "Reviewer", status: "done", source: "subagent", parent_id: "coord", depth: 1, model: "gemini-pro", workspace: "gravity-metrics", workspace_kind: "code", task_title: "Tests", last_tool: "run_command", llm_calls: 2, tool_calls: 5, context_tokens: 30000, max_context_tokens: 30000, useful_tokens: 20000, cache_hit_pct: 60, started_at: "2026-11-25T13:01:00Z", last_ts: "2026-11-25T13:02:00Z", duration_s: 60, error_count: 0 },
     { id: "w3", role: "Checker", status: "error", source: "workflow", parent_id: "w1", depth: 2, model: "gemini-pro", workspace: "gravity", workspace_kind: "code", task_title: "Lint", last_tool: "run_command", llm_calls: 2, tool_calls: 7, context_tokens: 205000, max_context_tokens: 210000, useful_tokens: 10000, cache_hit_pct: 50, started_at: "2026-11-25T13:02:00Z", last_ts: "2026-11-25T13:02:45Z", duration_s: 45, error_count: 2 }
@@ -222,7 +232,7 @@ state.metricsSub = "sessions";
 state.sessionTarget = "s-35";
 state.sessionDetailSub = "agents";
 const manyMetricsAgents = [
-  { conversation_id: "cid-root", role: "root", source: "root", depth: 0, category: "orchestration", workspace: "gravity-studio", workspace_kind: "atelier", by_model: { "gemini-4-neon-high": { calls: 10 } }, tool_calls_total: 41, llm_calls: 10, input_tokens: 15000, output_tokens: 3000, cache_read_tokens: 40000, max_context_tokens: 90000, active_s: 125, clean_termination: true, cost_usd: { total_usd: 0.42 } },
+  { conversation_id: "cid-root", role: "root", source: "root", depth: 0, category: "orchestration", workspace: "gravity-workshop", workspace_kind: "atelier", by_model: { "gemini-4-neon-high": { calls: 10 } }, tool_calls_total: 41, llm_calls: 10, input_tokens: 15000, output_tokens: 3000, cache_read_tokens: 40000, max_context_tokens: 90000, active_s: 125, clean_termination: true, cost_usd: { total_usd: 0.42 } },
   { conversation_id: "cid-intr", role: "Scout", source: "subagent", parent_id: "cid-root", depth: 1, category: "discovery", workspace: "gravity", workspace_kind: "code", by_model: { "gemini-4-hydrogen-high": { calls: 4 } }, tool_calls_total: 11, llm_calls: 4, max_context_tokens: 30000, active_s: 35, clean_termination: false, error_steps: 0 },
   { conversation_id: "cid-err", role: "Audit", source: "workflow", parent_id: "cid-root", depth: 1, category: "verification", workspace: "gravity", workspace_kind: "code", by_model: { "gemini-4-hydrogen-high": { calls: 3 } }, tool_calls_total: 9, llm_calls: 3, max_context_tokens: 40000, active_s: 45, clean_termination: false, error_steps: 2, total_anomalies: 3 }
 ];
@@ -249,7 +259,7 @@ assert(det35Txt.includes("35 agent(s)") && det35Txt.includes("Worker-34") && det
 state.architectSub = "projects";
 state.architect = {
   available: true,
-  atelier_root: "/tmp/gravity-studio",
+  atelier_root: "/tmp/gravity-workshop",
   discovery_source: "architect_registry",
   ecosystem: { exists: true, size_bytes: 2048, budget_bytes: 6000, over_budget: false, alerts: [] },
   delta: { exists: true, editorial_status: "NO_EDITORIAL_CHANGES", date: "2026-11-26", hygiene_alerts: [] },
@@ -281,13 +291,26 @@ console.log(JSON.stringify({ ok: true }));
 
 
 class TestUiLiveAndCharts(unittest.TestCase):
+    def test_ui_exports_and_line_budgets(self) -> None:
+        self.assertEqual(
+            ui_pkg.__all__,
+            ["APP_JS", "CHARTS_JS", "LIVE_VIEWS_JS", "METRICS_VIEWS_JS", "VIEWS_JS", "WIDGET_CSS"],
+        )
+        ui_dir = PLUGIN_ROOT / "mcp" / "ui"
+        self.assertLess(len((ui_dir / "charts_js.py").read_text(encoding="utf-8").splitlines()), 600)
+        self.assertLess(len((ui_dir / "live_views_js.py").read_text(encoding="utf-8").splitlines()), 600)
+        self.assertLess(len((ui_dir / "metrics_views_js.py").read_text(encoding="utf-8").splitlines()), 800)
+
     def test_html_budget_and_security_invariants(self) -> None:
         html = render_dashboard_html()
         html_bytes = len(html.encode("utf-8"))
         self.assertLess(html_bytes, 150 * 1024, msg=f"HTML bundle {html_bytes} B exceeds 150 KiB budget")
-        for forbidden in ("innerHTML", "http://", "https://", "window.confirm", "window.alert", "window.prompt"):
+        for forbidden in (
+            "innerHTML", "http://", "https://", "window.confirm", "window.alert", "window.prompt",
+            "0/8", "gravity-studio", "gravity-bridge",
+        ):
             self.assertNotIn(forbidden, html)
-        for dead in ("renderWorkflowView", "renderArchitectSvgChart"):
+        for dead in ("renderWorkflowView", "renderArchitectSvgChart", "renderBridgeView", "renderBridgeSvgChart"):
             self.assertNotIn(dead, html)
         for css_token in (
             "@container app", ".master-detail", ".agent-card", ".ctx-gauge", ".badge-atelier", ".badge-code",
@@ -298,9 +321,9 @@ class TestUiLiveAndCharts(unittest.TestCase):
             self.assertIn(css_token, WIDGET_CSS)
         for js_symbol in (
             "fmtTokens", "fmtDuration", "fmtPct", "renderContextGauge", "renderStackedBars", "renderWorkspaceBreakdown",
-            "renderMetricKpiCard", "renderLiveView", "resolveAgentModel", "resolveAgentToolCalls", "renderSourceBadge",
-            "renderFiliationLabel", "buildAgentHierarchy", "renderAgentTree", "renderTimelineBar", "navigateTo",
-            "applyHostContext", "openMarkdownFile",
+            "renderMetricKpiCard", "renderLiveView", "renderMetricsUnifiedView", "resolveAgentModel", "resolveAgentToolCalls",
+            "renderSourceBadge", "renderFiliationLabel", "buildAgentHierarchy", "renderAgentTree", "renderTimelineBar",
+            "navigateTo", "applyHostContext", "openMarkdownFile",
         ):
             self.assertIn(js_symbol, html)
 
@@ -310,9 +333,11 @@ class TestUiLiveAndCharts(unittest.TestCase):
             self.assertIn(token, APP_JS)
         self.assertIn("data-freshness", LIVE_VIEWS_JS)
         self.assertNotIn("Actualiser", LIVE_VIEWS_JS)
+        self.assertIn("0/0", LIVE_VIEWS_JS)
         self.assertIn("buildAgentHierarchy", CHARTS_JS)
         self.assertIn("renderAgentTree", CHARTS_JS)
         self.assertIn("renderTimelineBar", CHARTS_JS)
+        self.assertIn("renderMetricsUnifiedView", METRICS_VIEWS_JS)
 
     def test_js_syntax_and_dom_renderers(self) -> None:
         node_bin = shutil.which("node")

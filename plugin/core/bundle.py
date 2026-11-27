@@ -10,11 +10,25 @@ from pathlib import Path, PurePosixPath
 import platform
 import re
 import stat
+import sys
 import tempfile
 from typing import Any, Optional, Sequence
 import zipfile
 
-from core.registry import default_plugin_roots, resolve_gravity_home
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+if str(PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT))
+
+from _shared.atomic_io import write_bytes_atomic, write_json_atomic  # noqa: E402
+from _shared.path_safety import (  # noqa: E402
+    ensure_no_symlink_or_junction_under,
+    ensure_safe_dir,
+    is_symlink_or_junction,
+    is_within_root,
+    safe_home_dir,
+    validate_rel_member_path,
+)
+from core.registry import default_plugin_roots, resolve_gravity_home  # noqa: E402
 
 SYNC_CONFIG_SCHEMA_VERSION = 1
 BUNDLE_SCHEMA_VERSION = 1
@@ -38,47 +52,9 @@ def _utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
 
 
-def _reject_symlink(path: Path, label: str) -> None:
-    if path.is_symlink():
-        raise ValueError(f"{label} must not be a symlink: {path}")
-
-
-def _ensure_no_symlink_under(root: Path, target: Path) -> None:
-    """Verify neither target nor any intermediate component beneath root is a symlink."""
-    _reject_symlink(root, "gravity_home")
-    rel = target.relative_to(root)
-    cur = root
-    for part in rel.parts:
-        cur = cur / part
-        if cur.is_symlink():
-            raise ValueError(f"Refusing symlink target path: {cur}")
-
-
-def _atomic_write_bytes(dest: Path, data: bytes) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path: Optional[Path] = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=str(dest.parent),
-            prefix=f".{dest.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            tmp_path = Path(handle.name)
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(str(tmp_path), str(dest))
-    except Exception:
-        if tmp_path is not None and tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
-        raise
-
-
-def _atomic_write_json(dest: Path, payload: dict[str, Any]) -> None:
-    serialized = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-    _atomic_write_bytes(dest, serialized)
+def _reject_link(path: Path, label: str) -> None:
+    if is_symlink_or_junction(path):
+        raise ValueError(f"{label} must not be a symlink or junction: {path}")
 
 
 def _is_strictly_excluded(rel_posix: str) -> bool:
@@ -87,30 +63,7 @@ def _is_strictly_excluded(rel_posix: str) -> bool:
     if lower in _STRICT_EXCLUDED_EXACT:
         return True
     name = PurePosixPath(lower).name
-    if name.endswith(".lock") or name.endswith(".db-wal") or name.endswith(".db-shm"):
-        return True
-    return False
-
-
-def _validate_rel_member_path(raw_path: str, label: str, *, allow_dir: bool = False) -> str:
-    """Reject NUL, backslashes, drive letters, leading slashes, '.' and '..' segments."""
-    if not isinstance(raw_path, str) or not raw_path:
-        raise ValueError(f"Invalid empty path in {label}.")
-    if "\x00" in raw_path:
-        raise ValueError(f"NUL byte rejected in {label}: {raw_path!r}")
-    if "\\" in raw_path:
-        raise ValueError(f"Backslash rejected in {label}: {raw_path!r}")
-    if raw_path.startswith("/") or _WINDOWS_DRIVE_RE.match(raw_path):
-        raise ValueError(f"Absolute or drive-qualified path rejected in {label}: {raw_path!r}")
-    is_dir = raw_path.endswith("/")
-    trimmed = raw_path.rstrip("/") if (allow_dir and is_dir) else raw_path
-    if not trimmed:
-        raise ValueError(f"Empty path segment rejected in {label}: {raw_path!r}")
-    parts = trimmed.split("/")
-    for part in parts:
-        if part in ("", ".", ".."):
-            raise ValueError(f"Unsafe path traversal segment rejected in {label}: {raw_path!r}")
-    return trimmed + ("/" if (allow_dir and is_dir) else "")
+    return name.endswith((".lock", ".db-wal", ".db-shm"))
 
 
 def set_drive_dir(drive_dir: str | Path, gravity_home: Optional[Path] = None) -> dict[str, Any]:
@@ -118,21 +71,20 @@ def set_drive_dir(drive_dir: str | Path, gravity_home: Optional[Path] = None) ->
     if isinstance(drive_dir, str) and not drive_dir.strip():
         raise ValueError("drive_dir must be a non-empty path.")
     raw_drive = Path(drive_dir).expanduser()
-    _reject_symlink(raw_drive, "drive_dir")
-    if raw_drive.parent.is_symlink():
-        raise ValueError(f"drive_dir parent must not be a symlink: {raw_drive.parent}")
+    _reject_link(raw_drive, "drive_dir")
+    _reject_link(raw_drive.parent, "drive_dir parent")
     if raw_drive.exists() and not raw_drive.is_dir():
         raise ValueError(f"drive_dir must be a directory: {raw_drive}")
     resolved_drive = raw_drive.resolve()
 
     if gravity_home is not None:
-        _reject_symlink(Path(gravity_home).expanduser(), "gravity_home")
+        _reject_link(Path(gravity_home).expanduser(), "gravity_home")
     base = resolve_gravity_home(gravity_home)
-    _reject_symlink(base, "gravity_home")
+    _reject_link(base, "gravity_home")
     core_dir = base / "core"
-    _reject_symlink(core_dir, "core_dir")
+    _reject_link(core_dir, "core_dir")
     sync_path = core_dir / "sync.json"
-    _reject_symlink(sync_path, "sync.json")
+    _reject_link(sync_path, "sync.json")
 
     updated_at = _utc_now_iso()
     payload = {
@@ -140,7 +92,7 @@ def set_drive_dir(drive_dir: str | Path, gravity_home: Optional[Path] = None) ->
         "drive_dir": str(resolved_drive),
         "updated_at": updated_at,
     }
-    _atomic_write_json(sync_path, payload)
+    write_json_atomic(sync_path, payload, indent=2, ensure_ascii=False)
     return {
         "mode": "set-drive-dir",
         "ok": True,
@@ -153,7 +105,7 @@ def set_drive_dir(drive_dir: str | Path, gravity_home: Optional[Path] = None) ->
 
 def _read_sync_drive_dir(base: Path) -> Optional[str]:
     sync_path = base / "core" / "sync.json"
-    if sync_path.is_symlink() or not sync_path.is_file():
+    if is_symlink_or_junction(sync_path) or not sync_path.is_file():
         return None
     try:
         data = json.loads(sync_path.read_text(encoding="utf-8"))
@@ -166,14 +118,14 @@ def _read_sync_drive_dir(base: Path) -> Optional[str]:
 
 
 def _detect_gdrive_plugin(plugins_dirs: Optional[Sequence[Path]] = None) -> bool:
-    roots = [Path(p) for p in plugins_dirs] if plugins_dirs else default_plugin_roots()
+    roots = [Path(p) for p in plugins_dirs] if plugins_dirs is not None else default_plugin_roots()
     for root in roots:
         try:
             resolved_root = root.expanduser().resolve()
         except OSError:
             continue
         gdrive_dir = resolved_root / "gdrive"
-        if not gdrive_dir.is_dir() or gdrive_dir.is_symlink():
+        if not gdrive_dir.is_dir() or is_symlink_or_junction(gdrive_dir):
             continue
         if (gdrive_dir / "plugin.json").is_file() or (gdrive_dir / "skills" / "gdrive" / "SKILL.md").is_file():
             return True
@@ -199,8 +151,8 @@ def _collect_dir_items(
     skipped: list[str],
     seen_targets: set[str],
 ) -> None:
-    if root_dir.is_symlink() or not root_dir.is_dir():
-        if root_dir.is_symlink():
+    if is_symlink_or_junction(root_dir) or not root_dir.is_dir():
+        if is_symlink_or_junction(root_dir):
             skipped.append(f"symlink:{root_dir}")
         return
 
@@ -212,7 +164,7 @@ def _collect_dir_items(
         except OSError:
             continue
         for entry in entries:
-            if entry.is_symlink():
+            if is_symlink_or_junction(entry):
                 skipped.append(f"symlink:{entry}")
                 continue
             if entry.is_dir():
@@ -220,9 +172,7 @@ def _collect_dir_items(
                     continue
                 stack.append(entry)
                 continue
-            if not entry.is_file():
-                continue
-            if entry.suffix.lower() in (".pyc", ".pyo"):
+            if not entry.is_file() or entry.suffix.lower() in (".pyc", ".pyo"):
                 continue
             rel_sub = entry.relative_to(root_dir).as_posix()
             target_rel = f"{rel_prefix}/{rel_sub}" if rel_prefix else rel_sub
@@ -243,7 +193,7 @@ def _collect_single_file(
     skipped: list[str],
     seen_targets: set[str],
 ) -> None:
-    if file_path.is_symlink():
+    if is_symlink_or_junction(file_path):
         skipped.append(f"symlink:{file_path}")
         return
     if not file_path.is_file():
@@ -261,7 +211,7 @@ def _resolve_export_zip_path(out: Optional[str | Path], drive_dir: Optional[str]
     filename = f"gravity-backup-{stamp}.zip"
     if out is not None:
         out_path = Path(out).expanduser()
-        _reject_symlink(out_path, "out")
+        _reject_link(out_path, "out")
         if out_path.suffix.lower() == ".zip" or (out_path.exists() and out_path.is_file()):
             return out_path.resolve()
         if out_path.exists() and not out_path.is_dir():
@@ -269,7 +219,7 @@ def _resolve_export_zip_path(out: Optional[str | Path], drive_dir: Optional[str]
         return (out_path / filename).resolve()
     if drive_dir:
         drive_path = Path(drive_dir).expanduser()
-        _reject_symlink(drive_path, "drive_dir")
+        _reject_link(drive_path, "drive_dir")
         return (drive_path / filename).resolve()
     return (Path.cwd() / filename).resolve()
 
@@ -283,14 +233,15 @@ def export_bundle(
 ) -> dict[str, Any]:
     """Export portable Gravity state and optional ateliers into an atomic verified ZIP bundle."""
     if gravity_home is not None:
-        _reject_symlink(Path(gravity_home).expanduser(), "gravity_home")
+        _reject_link(Path(gravity_home).expanduser(), "gravity_home")
     base = resolve_gravity_home(gravity_home)
-    _reject_symlink(base, "gravity_home")
+    _reject_link(base, "gravity_home")
 
     stamp = _utc_stamp()
     drive_dir = _read_sync_drive_dir(base)
     target_zip = _resolve_export_zip_path(out, drive_dir, stamp)
-    target_zip.parent.mkdir(parents=True, exist_ok=True)
+    _reject_link(target_zip, "target_zip")
+    ensure_safe_dir(target_zip.parent)
 
     collected: list[tuple[str, bytes, str]] = []
     skipped: list[str] = []
@@ -309,9 +260,9 @@ def export_bundle(
         _collect_single_file(base / rel_file, rel_file, "gravity_home", collected, skipped, seen_targets)
 
     wf_root = base / "workflow" / "workspaces"
-    if wf_root.is_dir() and not wf_root.is_symlink():
+    if wf_root.is_dir() and not is_symlink_or_junction(wf_root):
         for ws_dir in sorted(wf_root.iterdir(), key=lambda p: p.name):
-            if ws_dir.is_symlink() or not ws_dir.is_dir():
+            if is_symlink_or_junction(ws_dir) or not ws_dir.is_dir():
                 continue
             _collect_single_file(
                 ws_dir / "profile.json",
@@ -326,7 +277,7 @@ def export_bundle(
     used_slugs: set[str] = set()
     for raw_atelier in include_ateliers:
         ap_raw = Path(raw_atelier).expanduser()
-        _reject_symlink(ap_raw, "atelier")
+        _reject_link(ap_raw, "atelier")
         ap = ap_raw.resolve()
         if not ap.is_dir():
             raise ValueError(f"Atelier directory not found: {ap}")
@@ -353,7 +304,7 @@ def export_bundle(
         "schema_version": BUNDLE_SCHEMA_VERSION,
         "created_at": _utc_now_iso(),
         "source_gravity_home": str(base),
-        "source_user_home": str(Path.home().resolve()),
+        "source_user_home": str(safe_home_dir().resolve()),
         "platform": platform.system().lower(),
         "drive_dir": drive_dir,
         "gdrive_plugin_detected": gdrive_detected,
@@ -377,10 +328,10 @@ def export_bundle(
             for target_rel, data, _ in collected:
                 zf.writestr(target_rel, data)
         os.replace(str(tmp_zip), str(target_zip))
-    except Exception:
+        tmp_zip = None
+    finally:
         if tmp_zip is not None and tmp_zip.exists():
             tmp_zip.unlink(missing_ok=True)
-        raise
 
     return {
         "mode": "export",
@@ -531,18 +482,18 @@ def import_bundle(
     gravity_home: Optional[Path] = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Verify ZIP integrity and safety, remap paths, and restore under target gravity_home."""
+    """Verify ZIP integrity and safety in memory, remap paths, and restore under target gravity_home."""
     raw_zip = Path(zip_path).expanduser()
-    _reject_symlink(raw_zip, "zip_path")
+    _reject_link(raw_zip, "zip_path")
     resolved_zip = raw_zip.resolve()
     if not resolved_zip.is_file():
         raise FileNotFoundError(f"Bundle ZIP not found: {resolved_zip}")
 
     if gravity_home is not None:
-        _reject_symlink(Path(gravity_home).expanduser(), "gravity_home")
+        _reject_link(Path(gravity_home).expanduser(), "gravity_home")
     target_home = resolve_gravity_home(gravity_home)
-    _reject_symlink(target_home, "gravity_home")
-    target_user = Path.home().resolve()
+    _reject_link(target_home, "gravity_home")
+    target_user = safe_home_dir().resolve()
 
     staged: list[tuple[str, bytes]] = []
     ignored_excluded: list[str] = []
@@ -559,7 +510,7 @@ def import_bundle(
             mode = (info.external_attr >> 16) & 0o170000
             if stat.S_ISLNK(mode):
                 raise ValueError(f"Symlink entry rejected in ZIP: {info.filename!r}")
-            _validate_rel_member_path(info.filename, "ZIP member", allow_dir=info.is_dir())
+            validate_rel_member_path(info.filename, label="ZIP member", allow_dir=info.is_dir())
 
         try:
             manifest_raw = zf.read("manifest.json")
@@ -587,8 +538,8 @@ def import_bundle(
         for idx, entry in enumerate(entries):
             if not isinstance(entry, dict):
                 raise ValueError(f"Invalid manifest entry at index {idx}.")
-            arcname = _validate_rel_member_path(str(entry.get("arcname") or ""), f"entries[{idx}].arcname")
-            target_rel = _validate_rel_member_path(str(entry.get("target_rel") or ""), f"entries[{idx}].target_rel")
+            arcname = validate_rel_member_path(str(entry.get("arcname") or ""), label=f"entries[{idx}].arcname")
+            target_rel = validate_rel_member_path(str(entry.get("target_rel") or ""), label=f"entries[{idx}].target_rel")
             if target_rel == "manifest.json":
                 raise ValueError("Refusing to overwrite manifest.json as target entry.")
             if _is_strictly_excluded(target_rel) or _is_strictly_excluded(arcname):
@@ -597,7 +548,7 @@ def import_bundle(
 
             expected_size = entry.get("size")
             expected_sha = entry.get("sha256")
-            if type(expected_size) is not int or not isinstance(expected_sha, str):
+            if type(expected_size) is not int or expected_size < 0 or not isinstance(expected_sha, str):
                 raise ValueError(f"Invalid size/sha256 metadata for entry {target_rel!r}.")
 
             try:
@@ -606,14 +557,10 @@ def import_bundle(
                 raise ValueError(f"Missing ZIP member referenced by manifest: {arcname!r}") from exc
 
             if len(data) != expected_size:
-                raise ValueError(
-                    f"Size mismatch for {arcname!r}: expected {expected_size}, got {len(data)}."
-                )
+                raise ValueError(f"Size mismatch for {arcname!r}: expected {expected_size}, got {len(data)}.")
             actual_sha = hashlib.sha256(data).hexdigest()
             if actual_sha != expected_sha:
-                raise ValueError(
-                    f"SHA-256 mismatch for {arcname!r}: expected {expected_sha}, got {actual_sha}."
-                )
+                raise ValueError(f"SHA-256 mismatch for {arcname!r}: expected {expected_sha}, got {actual_sha}.")
             staged.append((target_rel, data))
 
     prepared: list[tuple[str, bytes]] = []
@@ -632,13 +579,14 @@ def import_bundle(
 
     written_files: list[str] = []
     if not dry_run:
-        target_home.mkdir(parents=True, exist_ok=True)
+        ensure_safe_dir(target_home)
         for target_rel, payload_bytes in prepared:
-            dest = (target_home / target_rel).resolve()
-            if not dest.is_relative_to(target_home):
+            dest_raw = target_home / target_rel
+            ensure_no_symlink_or_junction_under(target_home, dest_raw)
+            dest = dest_raw.resolve()
+            if not is_within_root(target_home, dest):
                 raise ValueError(f"Target path escapes gravity_home: {dest}")
-            _ensure_no_symlink_under(target_home, dest)
-            _atomic_write_bytes(dest, payload_bytes)
+            write_bytes_atomic(dest, payload_bytes)
             written_files.append(str(dest))
 
     return {

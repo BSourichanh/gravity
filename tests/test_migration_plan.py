@@ -23,7 +23,6 @@ def _isolated_env(fake_home: Path, extra: dict[str, str] | None = None) -> dict[
     for var in (
         "GRAVITY_HOME",
         "GRAVITY_CORE_HOME",
-        "GRAVITY_BRIDGE_HOME",
         "GRAVITY_METRICS_HOME",
         "GRAVITY_WORKFLOW_HOME",
         "GRAVITY_ARCHITECT_HOME",

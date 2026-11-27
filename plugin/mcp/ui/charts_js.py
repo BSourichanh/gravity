@@ -146,7 +146,7 @@ ind.appendChild(tog);
 const main=el("div","tree-main"),head=el("div","tree-head");
 head.appendChild(el("span","agent-role",String(ag.role||ag.name||ag.id||"Agent")));head.appendChild(renderStatusBadge(st));
 const srcB=renderSourceBadge(ag.source||(n.depth===0?"root":""));if(srcB)head.appendChild(srcB);
-head.appendChild(renderWorkspaceKindBadge(ag.workspace_kind||(String(ag.workspace||"").toLowerCase().endsWith("-studio")?"atelier":"code")));
+head.appendChild(renderWorkspaceKindBadge(ag.workspace_kind||(/-(workshop|studio)$/.test(String(ag.workspace||"").toLowerCase())?"atelier":"code")));
 if(err>0)head.appendChild(makeBadge(err+" err","error"));main.appendChild(head);
 const meta=el("div","tree-meta"),mod=resolveAgentModel(ag);
 if(mod)meta.appendChild(el("span","pill",mod));if(ag.workspace)meta.appendChild(el("span","mono",String(ag.workspace)));

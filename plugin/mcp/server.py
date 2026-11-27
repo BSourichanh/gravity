@@ -27,11 +27,22 @@ VALID_VIEWS = ("live", "metrics", "architect", "overview", "workflow")
 VALID_METRICS_SUBS = ("overview", "sessions", "pending", "audits", "compare")
 MIN_ANTIGRAVITY_MCP_APP_VERSION = (2, 34, 0)
 
-_HOST_CLIENT_STATE: dict[str, Any] = {
-    "initialized": False,
-    "ui_supported": None,
-    "client_desc": "",
-}
+_BUDGET_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("live", ("recent_events", "agents", "sessions")),
+    ("metrics", ("records", "audits", "pending_sessions", "ignored_sessions")),
+    ("workflow", ("events",)),
+    ("architect", ("audits", "tasks", "specs", "projects")),
+)
+_CTX_PATH_KEYS = (
+    "gravity_home",
+    "home_dir",
+    "brain_dir",
+    "workflow_home",
+    "metrics_home",
+    "architect_home",
+    "architect_workspace",
+)
+_HOST_CLIENT_STATE: dict[str, Any] = {"initialized": False, "ui_supported": None, "client_desc": ""}
 
 
 def _reset_host_client_state() -> None:
@@ -44,65 +55,48 @@ def _reset_host_client_state() -> None:
 def _parse_semver(raw: Any) -> Optional[tuple[int, int, int]]:
     if not isinstance(raw, str):
         return None
-    match = re.search(r"(\d+)\.(\d+)\.(\d+)", raw)
-    if not match:
-        return None
-    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", raw)
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
 
 
 def _inspect_client_ui_support(params: Mapping[str, Any]) -> tuple[Optional[bool], str]:
     """Determine whether the initialized MCP client supports MCP Apps UI."""
     client_info = params.get("clientInfo")
-    client_name = ""
-    client_ver = ""
-    if isinstance(client_info, Mapping):
-        raw_name = client_info.get("name")
-        if isinstance(raw_name, str):
-            client_name = raw_name.strip()
-        raw_ver = client_info.get("version")
-        if isinstance(raw_ver, str):
-            client_ver = raw_ver.strip()
-    client_desc = f"{client_name} {client_ver}".strip() if (client_name or client_ver) else "client inconnu"
+    c_name = str(client_info.get("name") or "").strip() if isinstance(client_info, Mapping) and isinstance(client_info.get("name"), str) else ""
+    c_ver = str(client_info.get("version") or "").strip() if isinstance(client_info, Mapping) and isinstance(client_info.get("version"), str) else ""
+    client_desc = f"{c_name} {c_ver}".strip() if (c_name or c_ver) else "client inconnu"
 
     capabilities = params.get("capabilities")
     if isinstance(capabilities, Mapping):
-        extensions = capabilities.get("extensions")
-        experimental = capabilities.get("experimental")
+        ext = capabilities.get("extensions")
+        exp = capabilities.get("experimental")
         ui_candidates = (
-            extensions.get("io.modelcontextprotocol/ui") if isinstance(extensions, Mapping) else None,
-            experimental.get("io.modelcontextprotocol/ui") if isinstance(experimental, Mapping) else None,
-            extensions.get("com.google.antigravity/ui") if isinstance(extensions, Mapping) else None,
-            experimental.get("com.google.antigravity/ui") if isinstance(experimental, Mapping) else None,
+            ext.get("io.modelcontextprotocol/ui") if isinstance(ext, Mapping) else None,
+            exp.get("io.modelcontextprotocol/ui") if isinstance(exp, Mapping) else None,
+            ext.get("com.google.antigravity/ui") if isinstance(ext, Mapping) else None,
+            exp.get("com.google.antigravity/ui") if isinstance(exp, Mapping) else None,
             capabilities.get("ui"),
         )
         if any(bool(candidate) for candidate in ui_candidates):
             return True, client_desc
 
-    lower_name = client_name.lower()
-    if "antigravity" in lower_name and "cli" not in lower_name:
-        parsed_ver = _parse_semver(client_ver)
+    low = c_name.lower()
+    if "antigravity" in low and "cli" not in low:
+        parsed_ver = _parse_semver(c_ver)
         if parsed_ver is not None and parsed_ver < MIN_ANTIGRAVITY_MCP_APP_VERSION:
             return False, client_desc
 
-    if not isinstance(capabilities, Mapping):
+    if not isinstance(capabilities, Mapping) or (len(capabilities) == 0 and not c_name):
         return None, client_desc
-    if len(capabilities) == 0 and not client_name:
-        return None, client_desc
-
     return False, client_desc
 
 
 def _read_plugin_version() -> str:
-    manifest_path = PLUGIN_ROOT / "plugin.json"
     try:
-        raw = manifest_path.read_bytes()
-        if raw.startswith(b"\xef\xbb\xbf"):
-            raw = raw[3:]
-        data = json.loads(raw.decode("utf-8"))
-        if isinstance(data, dict):
-            ver = data.get("version")
-            if isinstance(ver, str) and ver.strip():
-                return ver.strip()
+        raw = (PLUGIN_ROOT / "plugin.json").read_bytes()
+        data = json.loads((raw[3:] if raw.startswith(b"\xef\xbb\xbf") else raw).decode("utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("version"), str) and data["version"].strip():
+            return data["version"].strip()
     except (OSError, ValueError, UnicodeDecodeError):
         pass
     return "0.3.0"
@@ -114,43 +108,19 @@ SERVER_VERSION = _read_plugin_version()
 def _normalize_ctx(ctx: Optional[Mapping[str, Any]]) -> dict[str, Any]:
     if not ctx:
         return {}
-    out: dict[str, Any] = {}
-    for key in (
-        "gravity_home",
-        "home_dir",
-        "brain_dir",
-        "workflow_home",
-        "metrics_home",
-        "architect_home",
-        "architect_workspace",
-    ):
-        val = ctx.get(key)
-        if val is not None:
-            out[key] = Path(val)
+    out: dict[str, Any] = {k: Path(ctx[k]) for k in _CTX_PATH_KEYS if ctx.get(k) is not None}
     for seq_key in ("plugin_roots", "audits_dirs"):
-        val = ctx.get(seq_key)
-        if val is not None:
-            out[seq_key] = [Path(p) for p in val]
+        if ctx.get(seq_key) is not None:
+            out[seq_key] = [Path(p) for p in ctx[seq_key]]
     return out
 
 
 def _tool_ok(text: str, structured: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "content": [{"type": "text", "text": text}],
-        "structuredContent": structured,
-        "isError": False,
-    }
+    return {"content": [{"type": "text", "text": text}], "structuredContent": structured, "isError": False}
 
 
-def _tool_err(
-    message: str,
-    *,
-    structured: Optional[dict[str, Any]] = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "content": [{"type": "text", "text": message}],
-        "isError": True,
-    }
+def _tool_err(message: str, *, structured: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"content": [{"type": "text", "text": message}], "isError": True}
     if structured is not None:
         payload["structuredContent"] = structured
     return payload
@@ -163,49 +133,27 @@ def _encoded_bytes(obj: Any) -> int:
 def _enforce_trajectory_budget(result: dict[str, Any], initial_view: str) -> dict[str, Any]:
     if _encoded_bytes(result) <= MAX_TRAJECTORY_BYTES:
         return result
-
     sc = result.get("structuredContent")
     if not isinstance(sc, dict):
         return result
 
-    live = sc.get("live")
-    if isinstance(live, dict):
-        for list_key in ("recent_events", "agents", "sessions"):
-            items = live.get(list_key)
+    for sec_key, list_keys in _BUDGET_SECTIONS:
+        sec = sc.get(sec_key)
+        if not isinstance(sec, dict):
+            continue
+        for list_key in list_keys:
+            items = sec.get(list_key)
             while _encoded_bytes(result) > MAX_TRAJECTORY_BYTES and isinstance(items, list) and items:
-                live["truncated"] = True
-                items = items[: max(0, len(items) // 2)]
-                live[list_key] = items
-
-    met = sc.get("metrics")
-    if isinstance(met, dict):
-        for list_key in ("records", "audits", "pending_sessions", "ignored_sessions"):
-            items = met.get(list_key)
-            while _encoded_bytes(result) > MAX_TRAJECTORY_BYTES and isinstance(items, list) and items:
-                met["truncated"] = True
-                items = items[: max(0, len(items) // 2)]
-                met[list_key] = items
-
-    wf = sc.get("workflow")
-    if isinstance(wf, dict):
-        events = wf.get("events")
-        while _encoded_bytes(result) > MAX_TRAJECTORY_BYTES and isinstance(events, list) and events:
-            events = events[len(events) // 2 + 1 :] if len(events) > 1 else []
-            wf["events"] = events
-
-    arch = sc.get("architect")
-    if isinstance(arch, dict):
-        for list_key in ("audits", "tasks", "specs", "projects"):
-            items = arch.get(list_key)
-            while _encoded_bytes(result) > MAX_TRAJECTORY_BYTES and isinstance(items, list) and items:
-                arch["truncated"] = True
-                items = items[: max(0, len(items) // 2)]
-                arch[list_key] = items
+                if sec_key == "workflow":
+                    items = items[len(items) // 2 + 1 :] if len(items) > 1 else []
+                else:
+                    sec["truncated"] = True
+                    items = items[: max(0, len(items) // 2)]
+                sec[list_key] = items
 
     for section in ("workflow", "metrics", "architect", "live"):
         if _encoded_bytes(result) > MAX_TRAJECTORY_BYTES and initial_view != section:
             sc.pop(section, None)
-
     return result
 
 
@@ -215,18 +163,13 @@ def _tool_definitions() -> list[dict[str, Any]]:
 
 def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     raw_view = str(args.get("view") or "live").strip().lower()
-    if raw_view == "workflow":
-        initial_view = "live"
-    elif raw_view in VALID_VIEWS:
-        initial_view = raw_view
-    else:
-        initial_view = "live"
+    initial_view = "live" if raw_view == "workflow" else (raw_view if raw_view in VALID_VIEWS else "live")
     initial_project = str(args.get("project") or "").strip()
     initial_ws = str(args.get("ws") or "").strip()
     initial_atelier = str(args.get("atelier") or "").strip()
     initial_target = str(args.get("target") or "").strip()
-    raw_metrics_sub = str(args.get("metrics_sub") or "").strip().lower()
-    initial_metrics_sub = raw_metrics_sub if raw_metrics_sub in VALID_METRICS_SUBS else ""
+    raw_sub = str(args.get("metrics_sub") or "").strip().lower()
+    initial_metrics_sub = raw_sub if raw_sub in VALID_METRICS_SUBS else ""
     initial_module_id = str(args.get("module_id") or "").strip()
 
     overview = api.get_overview(
@@ -247,6 +190,7 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
             metrics_home=ctx.get("metrics_home"),
             workflow_home=ctx.get("workflow_home"),
             home_dir=ctx.get("home_dir"),
+            plugin_roots=ctx.get("plugin_roots"),
         )
 
     workflow: Optional[dict[str, Any]] = None
@@ -255,6 +199,8 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
             ws=initial_ws,
             gravity_home=ctx.get("gravity_home"),
             workflow_home=ctx.get("workflow_home"),
+            plugin_roots=ctx.get("plugin_roots"),
+            home_dir=ctx.get("home_dir"),
         )
 
     metrics: Optional[dict[str, Any]] = None
@@ -264,6 +210,8 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
             gravity_home=ctx.get("gravity_home"),
             metrics_home=ctx.get("metrics_home"),
             audits_dirs=ctx.get("audits_dirs"),
+            plugin_roots=ctx.get("plugin_roots"),
+            home_dir=ctx.get("home_dir"),
         )
 
     architect: Optional[dict[str, Any]] = None
@@ -274,6 +222,8 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
             gravity_home=ctx.get("gravity_home"),
             architect_home=ctx.get("architect_home"),
             architect_workspace=ctx.get("architect_workspace"),
+            plugin_roots=ctx.get("plugin_roots"),
+            home_dir=ctx.get("home_dir"),
         )
 
     module_info: Optional[dict[str, Any]] = None
@@ -282,30 +232,17 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
             initial_module_id,
             gravity_home=ctx.get("gravity_home"),
             plugin_roots=ctx.get("plugin_roots"),
+            home_dir=ctx.get("home_dir"),
         )
 
     summary = api.build_initial_summary(
-        view=initial_view,
-        project=initial_project,
-        ws=initial_ws,
-        atelier=initial_atelier,
-        module_id=initial_module_id,
-        session_id=initial_target if initial_view == "live" else "",
-        overview=overview,
-        live=live,
-        workflow=workflow,
-        metrics=metrics,
-        architect=architect,
-        module_info=module_info,
-        gravity_home=ctx.get("gravity_home"),
-        plugin_roots=ctx.get("plugin_roots"),
-        home_dir=ctx.get("home_dir"),
-        brain_dir=ctx.get("brain_dir"),
-        workflow_home=ctx.get("workflow_home"),
-        metrics_home=ctx.get("metrics_home"),
-        audits_dirs=ctx.get("audits_dirs"),
-        architect_home=ctx.get("architect_home"),
-        architect_workspace=ctx.get("architect_workspace"),
+        view=initial_view, project=initial_project, ws=initial_ws, atelier=initial_atelier,
+        module_id=initial_module_id, session_id=initial_target if initial_view == "live" else "",
+        overview=overview, live=live, workflow=workflow, metrics=metrics, architect=architect,
+        module_info=module_info, gravity_home=ctx.get("gravity_home"), plugin_roots=ctx.get("plugin_roots"),
+        home_dir=ctx.get("home_dir"), brain_dir=ctx.get("brain_dir"), workflow_home=ctx.get("workflow_home"),
+        metrics_home=ctx.get("metrics_home"), audits_dirs=ctx.get("audits_dirs"),
+        architect_home=ctx.get("architect_home"), architect_workspace=ctx.get("architect_workspace"),
     )
 
     if _HOST_CLIENT_STATE.get("initialized") and _HOST_CLIENT_STATE.get("ui_supported") is False:
@@ -326,24 +263,16 @@ def _handle_open_gravity_dashboard(args: dict[str, Any], ctx: dict[str, Any]) ->
         "initial_module_id": initial_module_id,
         "overview": overview,
     }
-    if live is not None:
-        structured["live"] = live
-    if workflow is not None:
-        structured["workflow"] = workflow
-    if metrics is not None:
-        structured["metrics"] = metrics
-    if architect is not None:
-        structured["architect"] = architect
-    if module_info is not None:
-        structured["module_info"] = module_info
+    for key, val in (("live", live), ("workflow", workflow), ("metrics", metrics), ("architect", architect), ("module_info", module_info)):
+        if val is not None:
+            structured[key] = val
 
     return _enforce_trajectory_budget(_tool_ok(summary, structured), initial_view)
 
 
 def _handle_get_overview(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    since_sig = str(args.get("since_signature") or "").strip()
     data = api.get_overview(
-        since_signature=since_sig,
+        since_signature=str(args.get("since_signature") or "").strip(),
         gravity_home=ctx.get("gravity_home"),
         plugin_roots=ctx.get("plugin_roots"),
         home_dir=ctx.get("home_dir"),
@@ -351,57 +280,46 @@ def _handle_get_overview(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str,
     if data.get("unchanged"):
         return _tool_ok("Inchangé.", data)
     doctor = data.get("doctor") or {}
-    return _tool_ok(
-        f"Overview: {doctor.get('module_count', 0)} module(s), doctor={doctor.get('status', 'unknown')}.",
-        data,
-    )
+    return _tool_ok(f"Overview: {doctor.get('module_count', 0)} module(s), doctor={doctor.get('status', 'unknown')}.", data)
 
 
 def _handle_get_workflow_state(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    ws = str(args.get("ws") or "").strip()
-    since_sig = str(args.get("since_signature") or "").strip()
     data = api.get_workflow_state(
-        ws=ws,
-        since_signature=since_sig,
+        ws=str(args.get("ws") or "").strip(),
+        since_signature=str(args.get("since_signature") or "").strip(),
         gravity_home=ctx.get("gravity_home"),
         workflow_home=ctx.get("workflow_home"),
+        plugin_roots=ctx.get("plugin_roots"),
+        home_dir=ctx.get("home_dir"),
     )
     if data.get("unchanged"):
         return _tool_ok("Inchangé.", data)
-    if data.get("available"):
-        txt = f"Workflow: {data.get('stage', 'idle')} ({data.get('progress', '0/8')})."
-    else:
-        txt = "Workflow: idle."
+    txt = f"Workflow: {data.get('stage', 'idle')} ({data.get('progress', '0/0')})." if data.get("available") else "Workflow: idle."
     return _tool_ok(txt, data)
 
 
 def _handle_get_metrics_state(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    project = str(args.get("project") or "").strip()
-    q = str(args.get("q") or "").strip()
-    since_sig = str(args.get("since_signature") or "").strip()
     raw_limit = args.get("limit", 100)
     try:
         limit = int(raw_limit) if raw_limit is not None else 100
     except (TypeError, ValueError):
         limit = 100
-
     data = api.get_metrics_state(
-        project=project,
+        project=str(args.get("project") or "").strip(),
         limit=limit,
-        q=q,
-        since_signature=since_sig,
+        q=str(args.get("q") or "").strip(),
+        since_signature=str(args.get("since_signature") or "").strip(),
         gravity_home=ctx.get("gravity_home"),
         metrics_home=ctx.get("metrics_home"),
         audits_dirs=ctx.get("audits_dirs"),
+        plugin_roots=ctx.get("plugin_roots"),
+        home_dir=ctx.get("home_dir"),
     )
     if data.get("unchanged"):
         return _tool_ok("Inchangé.", data)
     res = _tool_ok(
-        (
-            f"Metrics: {data.get('total_matching', 0)} session(s), "
-            f"{len(data.get('pending_sessions') or [])} en attente, "
-            f"{len(data.get('audits') or [])} audit(s)."
-        ),
+        f"Metrics: {data.get('total_matching', 0)} session(s), "
+        f"{len(data.get('pending_sessions') or [])} en attente, {len(data.get('audits') or [])} audit(s).",
         data,
     )
     return _enforce_trajectory_budget(res, "metrics")
@@ -415,32 +333,30 @@ def _handle_get_session_detail(args: dict[str, Any], ctx: dict[str, Any]) -> dic
         target,
         gravity_home=ctx.get("gravity_home"),
         metrics_home=ctx.get("metrics_home"),
+        plugin_roots=ctx.get("plugin_roots"),
+        home_dir=ctx.get("home_dir"),
     )
     if not data.get("found"):
         return _tool_err(str(data.get("error") or f"Session introuvable : {target!r}."), structured=data)
-    res = _tool_ok(f"Détail session '{data.get('label') or target}' chargé.", data)
-    return _enforce_trajectory_budget(res, "metrics")
+    return _enforce_trajectory_budget(_tool_ok(f"Détail session '{data.get('label') or target}' chargé.", data), "metrics")
 
 
 def _handle_get_architect_state(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    atelier = str(args.get("atelier") or "").strip()
-    ws = str(args.get("ws") or "").strip()
-    since_sig = str(args.get("since_signature") or "").strip()
     data = api.get_architect_state(
-        since_signature=since_sig,
-        atelier=atelier,
-        ws=ws,
+        since_signature=str(args.get("since_signature") or "").strip(),
+        atelier=str(args.get("atelier") or "").strip(),
+        ws=str(args.get("ws") or "").strip(),
         gravity_home=ctx.get("gravity_home"),
         architect_home=ctx.get("architect_home"),
         architect_workspace=ctx.get("architect_workspace"),
+        plugin_roots=ctx.get("plugin_roots"),
+        home_dir=ctx.get("home_dir"),
     )
     if data.get("unchanged"):
         return _tool_ok("Inchangé.", data)
     txt = (
-        f"Architect: {len(data.get('projects') or [])} projet(s), "
-        f"{len(data.get('specs') or [])} spec(s), "
-        f"{len(data.get('tasks') or [])} task(s), "
-        f"{len(data.get('audits') or [])} audit(s) code."
+        f"Architect: {len(data.get('projects') or [])} projet(s), {len(data.get('specs') or [])} spec(s), "
+        f"{len(data.get('tasks') or [])} task(s), {len(data.get('audits') or [])} audit(s) code."
         if data.get("available")
         else "Architect: atelier non détecté."
     )
@@ -451,34 +367,24 @@ def _handle_get_module_info(args: dict[str, Any], ctx: dict[str, Any]) -> dict[s
     module_id = str(args.get("module_id") or "").strip()
     if not module_id:
         return _tool_err("Le paramètre 'module_id' est requis.")
-    data = api.get_module_info(
-        module_id,
-        gravity_home=ctx.get("gravity_home"),
-        plugin_roots=ctx.get("plugin_roots"),
-    )
+    data = api.get_module_info(module_id, gravity_home=ctx.get("gravity_home"), plugin_roots=ctx.get("plugin_roots"), home_dir=ctx.get("home_dir"))
     if not data.get("found"):
         return _tool_err(str(data.get("error") or f"Module introuvable : {module_id!r}."), structured=data)
-    return _tool_ok(
-        f"Module '{data.get('module_id')}' ({data.get('plugin_name')}) chargé.",
-        data,
-    )
+    return _tool_ok(f"Module '{data.get('module_id')}' ({data.get('plugin_name')}) chargé.", data)
 
 
 def _handle_get_live_session(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
-    session_id = str(args.get("session_id") or "").strip()
-    ws = str(args.get("ws") or "").strip()
-    since_sig = str(args.get("since_signature") or "").strip()
-    include_events = bool(args.get("include_events", True))
     data = api.get_live_session_state(
-        session_id=session_id,
-        since_signature=since_sig,
-        include_events=include_events,
-        ws=ws,
+        session_id=str(args.get("session_id") or "").strip(),
+        since_signature=str(args.get("since_signature") or "").strip(),
+        include_events=bool(args.get("include_events", True)),
+        ws=str(args.get("ws") or "").strip(),
         gravity_home=ctx.get("gravity_home"),
         brain_dir=ctx.get("brain_dir"),
         metrics_home=ctx.get("metrics_home"),
         workflow_home=ctx.get("workflow_home"),
         home_dir=ctx.get("home_dir"),
+        plugin_roots=ctx.get("plugin_roots"),
     )
     if data.get("unchanged"):
         return _tool_ok("Inchangé.", data)
@@ -508,11 +414,12 @@ def _handle_metrics_action(args: dict[str, Any], ctx: dict[str, Any]) -> dict[st
         purge_reports=bool(args.get("purge_reports", True)),
         gravity_home=ctx.get("gravity_home"),
         plugin_roots=ctx.get("plugin_roots"),
+        home_dir=ctx.get("home_dir"),
         metrics_home=ctx.get("metrics_home"),
         brain_dir=ctx.get("brain_dir"),
     )
     if not data.get("ok"):
-        return _tool_err(str(data.get("message") or "Action Metrics échouée."), structured=data)
+        return _tool_err(str(data.get("message") or data.get("error") or "Action Metrics échouée."), structured=data)
     return _tool_ok(str(data.get("message") or f"Action {action} exécutée."), data)
 
 
@@ -525,6 +432,8 @@ def _handle_read_audit(args: dict[str, Any], ctx: dict[str, Any]) -> dict[str, A
         gravity_home=ctx.get("gravity_home"),
         metrics_home=ctx.get("metrics_home"),
         audits_dirs=ctx.get("audits_dirs"),
+        plugin_roots=ctx.get("plugin_roots"),
+        home_dir=ctx.get("home_dir"),
     )
     if not data.get("found"):
         return _tool_err(str(data.get("error") or f"Audit introuvable : {target!r}."), structured=data)
@@ -545,55 +454,33 @@ _TOOL_DISPATCH = {
 }
 
 
+def _rpc_err(req_id: Any, code: int, message: str) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+
+
 def handle_jsonrpc_message(
-    msg: Any,
-    *,
-    ctx: Optional[Mapping[str, Any]] = None,
+    msg: Any, *, ctx: Optional[Mapping[str, Any]] = None
 ) -> Optional[dict[str, Any]]:
     """Process one MCP JSON-RPC 2.0 request or notification (None returned for notifications)."""
     if not isinstance(msg, dict):
-        return {
-            "jsonrpc": "2.0",
-            "id": None,
-            "error": {"code": -32600, "message": "Invalid Request"},
-        }
-
+        return _rpc_err(None, -32600, "Invalid Request")
     req_id = msg.get("id")
-    has_id = "id" in msg and req_id is not None
-    method = msg.get("method")
-    params = msg.get("params")
-    if not isinstance(params, dict):
-        params = {}
-
-    if not has_id:
+    if "id" not in msg or req_id is None:
         return None
-
+    method = msg.get("method")
     if not isinstance(method, str):
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "error": {"code": -32600, "message": "Invalid Request"},
-        }
-
+        return _rpc_err(req_id, -32600, "Invalid Request")
+    params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
     norm_ctx = _normalize_ctx(ctx)
 
     try:
         if method == "initialize":
             ui_supported, client_desc = _inspect_client_ui_support(params)
-            _HOST_CLIENT_STATE["initialized"] = True
-            _HOST_CLIENT_STATE["ui_supported"] = ui_supported
-            _HOST_CLIENT_STATE["client_desc"] = client_desc
-            client_proto = str(params.get("protocolVersion") or DEFAULT_PROTOCOL_VERSION)
+            _HOST_CLIENT_STATE.update({"initialized": True, "ui_supported": ui_supported, "client_desc": client_desc})
             result: dict[str, Any] = {
-                "protocolVersion": client_proto,
-                "capabilities": {
-                    "tools": {"listChanged": False},
-                    "resources": {"subscribe": False, "listChanged": False},
-                },
-                "serverInfo": {
-                    "name": SERVER_NAME,
-                    "version": SERVER_VERSION,
-                },
+                "protocolVersion": str(params.get("protocolVersion") or DEFAULT_PROTOCOL_VERSION),
+                "capabilities": {"tools": {"listChanged": False}, "resources": {"subscribe": False, "listChanged": False}},
+                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
             }
         elif method == "ping":
             result = {}
@@ -601,74 +488,41 @@ def handle_jsonrpc_message(
             result = {"tools": _tool_definitions()}
         elif method == "tools/call":
             tool_name = str(params.get("name") or "")
-            tool_args = params.get("arguments")
-            if not isinstance(tool_args, dict):
-                tool_args = {}
+            tool_args = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
             handler = _TOOL_DISPATCH.get(tool_name)
             if handler is None:
-                return {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": {"code": -32602, "message": f"Unknown tool: {tool_name}"},
-                }
+                return _rpc_err(req_id, -32602, f"Unknown tool: {tool_name}")
             try:
                 result = handler(tool_args, norm_ctx)
             except Exception as exc:
                 result = _tool_err(str(exc))
         elif method == "resources/list":
             result = {
-                "resources": [
-                    {
-                        "uri": APP_URI,
-                        "name": "gravity_dashboard",
-                        "title": "Gravity",
-                        "description": "Tableau de bord unifié Gravity (Core, Workflow Live, Metrics, modules OCP).",
-                        "mimeType": APP_MIME,
-                        "_meta": {"ui": {"prefersBorder": False}},
-                    }
-                ]
+                "resources": [{
+                    "uri": APP_URI, "name": "gravity_dashboard", "title": "Gravity",
+                    "description": "Tableau de bord unifié Gravity (Core, Workflow Live, Metrics, modules OCP).",
+                    "mimeType": APP_MIME, "_meta": {"ui": {"prefersBorder": False}},
+                }]
             }
         elif method == "resources/templates/list":
             result = {"resourceTemplates": []}
         elif method == "resources/read":
             uri = str(params.get("uri") or "")
             if uri != APP_URI:
-                return {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": {"code": -32002, "message": f"Resource not found: {uri}"},
-                }
-            result = {
-                "contents": [
-                    {
-                        "uri": APP_URI,
-                        "mimeType": APP_MIME,
-                        "text": render_dashboard_html(),
-                        "_meta": {"ui": {"prefersBorder": False}},
-                    }
-                ]
-            }
+                return _rpc_err(req_id, -32002, f"Resource not found: {uri}")
+            result = {"contents": [{"uri": APP_URI, "mimeType": APP_MIME, "text": render_dashboard_html(), "_meta": {"ui": {"prefersBorder": False}}}]}
         elif method == "prompts/list":
             result = {"prompts": []}
         else:
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {"code": -32601, "message": f"Method not found: {method}"},
-            }
+            return _rpc_err(req_id, -32601, f"Method not found: {method}")
     except Exception as exc:
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "error": {"code": -32603, "message": str(exc)},
-        }
+        return _rpc_err(req_id, -32603, str(exc))
 
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
 def _write_jsonrpc(payload: dict[str, Any]) -> None:
-    line = json.dumps(payload, ensure_ascii=False) + "\n"
-    sys.stdout.buffer.write(line.encode("utf-8"))
+    sys.stdout.buffer.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
     sys.stdout.buffer.flush()
 
 
@@ -683,13 +537,7 @@ def main() -> int:
         try:
             msg = json.loads(text)
         except (json.JSONDecodeError, ValueError):
-            _write_jsonrpc(
-                {
-                    "jsonrpc": "2.0",
-                    "id": None,
-                    "error": {"code": -32700, "message": "Parse error"},
-                }
-            )
+            _write_jsonrpc(_rpc_err(None, -32700, "Parse error"))
             continue
         response = handle_jsonrpc_message(msg)
         if response is not None:
