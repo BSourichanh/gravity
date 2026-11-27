@@ -288,9 +288,23 @@ def get_live_session_state(
     home_dir: Optional[Path] = None,
     plugin_roots: Optional[Sequence[Path]] = None,
     plugins_dir: Optional[Any] = None,
+    architect_state: Optional[dict[str, Any]] = None,
     **_: Any,
 ) -> dict[str, Any]:
     """Return live session state via lazy import of `dashboard.providers.live_provider`."""
+    clean_sid = str(session_id or "").strip()
+    if clean_sid and ("\x00" in clean_sid or "/" in clean_sid or "\\" in clean_sid or ".." in clean_sid):
+        return {
+            "available": False,
+            "changed": True,
+            "unchanged": False,
+            "agents": [],
+            "sessions": [],
+            "selected_session": None,
+            "recent_events": [],
+            "summary": {"total_agents": 0, "active_agents": 0},
+            "warnings": ["Invalid session_id identifier."],
+        }
     try:
         from dashboard.providers.live_provider import get_live_session_state as _impl
     except ImportError:
@@ -300,16 +314,17 @@ def get_live_session_state(
             "unchanged": False,
             "agents": [],
             "sessions": [],
+            "selected_session": None,
             "recent_events": [],
             "summary": {"total_agents": 0, "active_agents": 0},
             "warnings": ["live_provider is not available."],
         }
     eff_roots = normalize_plugin_roots(plugin_roots, plugins_dir)
     return _impl(
-        session_id=session_id,
-        since_signature=since_signature,
-        include_events=include_events,
-        ws=ws,
+        session_id=clean_sid,
+        since_signature=str(since_signature or "").strip(),
+        include_events=bool(include_events),
+        ws=str(ws or "").strip(),
         gravity_home=gravity_home,
         brain_dir=brain_dir,
         metrics_home=metrics_home,
@@ -317,6 +332,7 @@ def get_live_session_state(
         registry_path=registry_path,
         home_dir=home_dir,
         plugin_roots=eff_roots,
+        architect_state=architect_state,
     )
 
 

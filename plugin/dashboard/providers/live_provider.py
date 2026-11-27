@@ -23,7 +23,7 @@ from dashboard.providers import (
 from dashboard.providers.live_progress import (
     build_live_phases, build_live_progress, classify_agent_phase, collect_descendant_sig_tokens,
     collect_wf_refs_from_obj, discover_live_tree, find_cycle_root_overrides, normalize_phase_id,
-    parse_wf_agent_refs, update_termination_acc,
+    parse_wf_agent_refs, project_session_detail_to_live, resolve_session_phases, update_termination_acc,
 )
 from dashboard.providers.spi import invoke_dashboard_provider, resolve_dashboard_provider
 
@@ -72,6 +72,8 @@ def get_live_cache_stats() -> dict[str, int]:
 
 
 def _cache_put(cache: dict[Any, Any], key: Any, val: Any) -> None:
+    if key in cache:
+        cache.pop(key, None)
     while len(cache) >= MAX_CACHE_ENTRIES:
         cache.pop(next(iter(cache)), None)
     cache[key] = val
@@ -123,6 +125,7 @@ def _read_json_cached(path: Path) -> Any:
     key = str(path)
     cached = _JSON_CACHE.get(key)
     if cached and cached["inode"] == st.st_ino and cached["size"] == st.st_size and cached["mtime_ns"] == st.st_mtime_ns:
+        _JSON_CACHE[key] = _JSON_CACHE.pop(key)
         _CACHE_STATS["cache_hits"] += 1
         return cached["data"]
     data, _ = read_json_ro(path)
@@ -147,21 +150,13 @@ def _new_transcript_acc() -> dict[str, Any]:
         "last_non_sys_type": "", "last_non_sys_status": "", "last_non_sys_shell_nonzero": False,
         "last_planner_status": "", "last_planner_has_tools": False, "last_planner_terminal_tool": "",
         "trailing_after_planner_count": 0, "trailing_after_planner_all_clean_generic": False, "wf_child_refs": {},
-        "phase_signals": {
-            "conception": False, "planification": False, "production": False, "validation": False,
-            "last_phase": "", "has_session": False,
-        },
+        "phase_signals": {"conception": False, "planification": False, "production": False, "validation": False, "last_phase": "", "has_session": False},
     }
 
 
 def _record_phase_signal(acc: dict[str, Any], phase: str) -> None:
-    if not phase:
-        return
-    ps = acc.setdefault("phase_signals", {
-        "conception": False, "planification": False, "production": False, "validation": False,
-        "last_phase": "", "has_session": False,
-    })
     if phase in ("conception", "planification", "production", "validation"):
+        ps = acc.setdefault("phase_signals", {"conception": False, "planification": False, "production": False, "validation": False, "last_phase": "", "has_session": False})
         ps[phase] = True
         ps["last_phase"] = phase
 
@@ -369,6 +364,7 @@ def _collect_wf_children_from_file(path: Path, parent_cid: str, *, is_msg_json: 
     key, fp = str(path), (int(st.st_ino), int(st.st_size), int(st.st_mtime_ns))
     cached = _WF_CHILD_CACHE.get(key)
     if cached and cached[:3] == fp:
+        _WF_CHILD_CACHE[key] = _WF_CHILD_CACHE.pop(key)
         return cached[3]
     try:
         raw = path.read_text(encoding="utf-8", errors="replace")
@@ -392,6 +388,7 @@ def _collect_wf_children_from_transcript(path: Path, parent_cid: str) -> frozens
     key, fp = f"tr::{path}", (int(st.st_ino), int(st.st_size), int(st.st_mtime_ns))
     cached = _WF_CHILD_CACHE.get(key)
     if cached and cached[:3] == fp:
+        _WF_CHILD_CACHE[key] = _WF_CHILD_CACHE.pop(key)
         return cached[3]
     is_inc = bool(cached and cached[0] == int(st.st_ino) and int(st.st_size) >= int(cached[4]))
     offset, partial, found_set = (int(cached[4]), bytes(cached[5]), set(cached[3])) if (is_inc and cached) else (0, b"", set())
@@ -421,22 +418,31 @@ def _collect_wf_children_from_transcript(path: Path, parent_cid: str) -> frozens
     return frozen
 
 
+def _max_item_epoch(item: dict[str, Any], fallback_ts: str = "") -> Optional[float]:
+    epochs = [dt.timestamp() for key in ("ended_at", "archived_at", "updated_at") if (dt := parse_iso_ts(item.get(key))) is not None]
+    if epochs:
+        return max(epochs)
+    dt_fb = parse_iso_ts(fallback_ts)
+    return dt_fb.timestamp() if dt_fb is not None else None
+
+
 def _ingest_archived_item(out: dict[str, tuple[str, Optional[float]]], item: Any, fallback_ts: str = "") -> None:
     if isinstance(item, str) and item.strip():
-        dt = parse_iso_ts(fallback_ts)
-        out[item.strip()] = ("archived", dt.timestamp() if dt is not None else None)
-    elif isinstance(item, dict):
-        cid = str(item.get("conversation_id") or item.get("cid") or "").strip()
-        if cid:
-            dt = parse_iso_ts(item.get("ended_at") or item.get("updated_at") or fallback_ts)
-            out[cid] = (str(item.get("status") or "archived").strip().lower(), dt.timestamp() if dt is not None else None)
+        cid, dt = item.strip(), parse_iso_ts(fallback_ts)
+        ep = dt.timestamp() if dt is not None else None
+        prev = out.get(cid)
+        if prev is None or (ep is not None and (prev[1] is None or ep > prev[1])):
+            out[cid] = ("archived", ep)
+    elif isinstance(item, dict) and (cid := str(item.get("conversation_id") or item.get("cid") or "").strip()):
+        st, ep, prev = (str(item.get("status") or "archived").strip().lower() or "archived"), _max_item_epoch(item, fallback_ts), out.get(cid)
+        if prev is None or (1 if st == "archived" else 0) > (1 if prev[0] == "archived" else 0) or ((1 if st == "archived" else 0) == (1 if prev[0] == "archived" else 0) and ep is not None and (prev[1] is None or ep > prev[1])):
+            out[cid] = (st, ep)
 
 
 def _load_archived_status_ro(
-    *, gravity_home: Optional[Path], metrics_home: Optional[Path],
-    plugin_roots: Optional[Sequence[Path]] = None, home_dir: Optional[Path] = None,
+    *, gravity_home: Optional[Path], recorded_by_cid: Optional[dict[str, Any]] = None, recent_archived: Optional[Sequence[Any]] = None,
 ) -> tuple[dict[str, tuple[str, Optional[float]]], list[Any]]:
-    """Load archived session status from `_shared.signal_bus` (`session-metrics`) and optional metrics SPI-1."""
+    """Load archived session status from `_shared.signal_bus` (`session-metrics`) and `live-meta`."""
     out: dict[str, tuple[str, Optional[float]]] = {}
     sig_tokens: list[Any] = []
     try:
@@ -459,13 +465,12 @@ def _load_archived_status_ro(
                     _ingest_archived_item(out, entry, emitted)
         if payload.get("conversation_id"):
             _ingest_archived_item(out, payload, emitted)
-
-    if resolve_dashboard_provider("metrics", gravity_home=gravity_home, plugin_roots=plugin_roots, home_dir=home_dir).get("ok"):
-        spi_res = invoke_dashboard_provider("metrics", view="metrics", params={"limit": 100}, ctx={"metrics_home": metrics_home}, gravity_home=gravity_home, plugin_roots=plugin_roots, home_dir=home_dir)
-        if not spi_res.get("spi_fallback") and isinstance(spi_res.get("records"), list):
-            sig_tokens.append(("spi", spi_res.get("signature", ""), len(spi_res["records"])))
-            for rec in spi_res["records"]:
-                _ingest_archived_item(out, rec)
+    if isinstance(recorded_by_cid, dict):
+        for cid, meta in recorded_by_cid.items():
+            _ingest_archived_item(out, {"conversation_id": cid, **(meta if isinstance(meta, dict) else {})})
+    if isinstance(recent_archived, Sequence) and not isinstance(recent_archived, (str, bytes)):
+        for entry in recent_archived:
+            _ingest_archived_item(out, entry)
     return out, sig_tokens
 
 
@@ -494,95 +499,123 @@ def _read_first_transcript_ts(brain_root: Path, cid: str) -> str:
     return ""
 
 
+def _synthetic_archive_root(cid: str, entry: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    meta = entry if isinstance(entry, dict) else {}
+    ep = _max_item_epoch(meta)
+    return {"cid": cid, "dir": None, "sg": None, "mtime_ns": int(ep * 1e9) if ep is not None else 0, "archived": True, "archive_only": True, "category": "archived", "rec_meta": meta}
+
+
+def _append_explicit_root(combined: list[dict[str, Any]], item: dict[str, Any]) -> list[dict[str, Any]]:
+    if any(r["cid"] == item["cid"] for r in combined):
+        return combined
+    return [*(combined[: MAX_ROOT_SESSIONS - 1] if len(combined) >= MAX_ROOT_SESSIONS else combined), item]
+
+
 def _discover_brain_sessions(
-    brain_root: Path, active_captures: dict[str, Any], session_meta: dict[str, Any],
-    archived_map: dict[str, tuple[str, Optional[float]]], *, explicit_cid: str = "",
-) -> list[dict[str, Any]]:
-    if is_symlink_or_junction(brain_root) or not brain_root.is_dir():
-        return []
+    brain_root: Path, active_captures: dict[str, Any], session_meta: dict[str, Any], archived_map: dict[str, tuple[str, Optional[float]]], *,
+    recent_archived: Sequence[dict[str, Any]] = (), recorded_by_cid: Optional[dict[str, Any]] = None, explicit_cid: str = "",
+) -> tuple[list[dict[str, Any]], Optional[dict[str, Any]]]:
     child_cids: set[str] = set()
     strong_child_cids: set[str] = set()
     edges: dict[str, set[str]] = {}
     candidates: list[dict[str, Any]] = []
-    try:
-        entries = list(brain_root.iterdir())
-    except OSError:
-        return []
-    for entry in entries:
-        if is_symlink_or_junction(entry) or not entry.is_dir() or not _UUID_LIKE_RE.match(entry.name):
-            continue
-        cid, sg = entry.name, entry / ".system_generated"
-        if is_symlink_or_junction(sg) or not sg.is_dir():
-            continue
-        node_edges = edges.setdefault(cid, set())
-        if (sg / "subagents").is_dir() and not is_symlink_or_junction(sg / "subagents"):
-            for sf in (sg / "subagents").iterdir():
-                if sf.suffix == ".json" and not is_symlink_or_junction(sf):
-                    sdata = _read_json_cached(sf)
-                    scid = str((sdata or {}).get("conversationId") or sf.stem).strip() if isinstance(sdata, dict) else ""
-                    if scid and scid != cid:
-                        child_cids.add(scid); strong_child_cids.add(scid); node_edges.add(scid)
-        members_file = sg / "swarm" / "members.json"
-        mdata = _read_json_cached(members_file) if members_file.is_file() and not is_symlink_or_junction(members_file) else None
-        for m_info in (mdata.get("members") if isinstance(mdata, dict) and isinstance(mdata.get("members"), dict) else {}).values():
-            if isinstance(m_info, dict) and str(m_info.get("conversation_id") or "").strip() not in ("", cid):
-                mcid = str(m_info["conversation_id"]).strip()
-                child_cids.add(mcid); strong_child_cids.add(mcid); node_edges.add(mcid)
-        for sub_name, is_msg, pred in (
-            ("tasks", False, lambda p: p.name.lower().startswith("task-") and p.suffix.lower() == ".log"),
-            ("messages", True, lambda p: p.suffix.lower() == ".json" and p.name.lower() != "read.json"),
-        ):
-            sub_dir = sg / sub_name
-            if sub_dir.is_dir() and not is_symlink_or_junction(sub_dir):
-                try:
-                    for fp in sub_dir.iterdir():
-                        if not is_symlink_or_junction(fp) and pred(fp):
-                            wf_ids = _collect_wf_children_from_file(fp, cid, is_msg_json=is_msg).keys()
-                            child_cids.update(wf_ids); node_edges.update(wf_ids)
-                except OSError:
-                    pass
-        tpath = sg / "logs" / "transcript.jsonl"
-        has_transcript = tpath.is_file() and not is_symlink_or_junction(tpath)
-        if has_transcript:
-            tr_ids = _collect_wf_children_from_transcript(tpath, cid)
-            child_cids.update(tr_ids); node_edges.update(tr_ids)
-        if has_transcript or cid in active_captures:
-            mtime_ns = max((p.stat().st_mtime_ns for p in (tpath, members_file, sg / "swarm" / "board.jsonl", entry) if p.exists()), default=0)
-            candidates.append({"cid": cid, "dir": entry, "sg": sg, "mtime_ns": mtime_ns})
+    if not is_symlink_or_junction(brain_root) and brain_root.is_dir():
+        try:
+            entries = list(brain_root.iterdir())
+        except OSError:
+            entries = []
+        for entry in entries:
+            if is_symlink_or_junction(entry) or not entry.is_dir() or not _UUID_LIKE_RE.match(entry.name):
+                continue
+            cid, sg = entry.name, entry / ".system_generated"
+            if is_symlink_or_junction(sg) or not sg.is_dir():
+                continue
+            node_edges = edges.setdefault(cid, set())
+            if (sg / "subagents").is_dir() and not is_symlink_or_junction(sg / "subagents"):
+                for sf in (sg / "subagents").iterdir():
+                    if sf.suffix == ".json" and not is_symlink_or_junction(sf):
+                        sdata = _read_json_cached(sf)
+                        scid = str((sdata or {}).get("conversationId") or sf.stem).strip() if isinstance(sdata, dict) else ""
+                        if scid and scid != cid:
+                            child_cids.add(scid); strong_child_cids.add(scid); node_edges.add(scid)
+            members_file = sg / "swarm" / "members.json"
+            mdata = _read_json_cached(members_file) if members_file.is_file() and not is_symlink_or_junction(members_file) else None
+            for m_info in (mdata.get("members") if isinstance(mdata, dict) and isinstance(mdata.get("members"), dict) else {}).values():
+                if isinstance(m_info, dict) and (mcid := str(m_info.get("conversation_id") or "").strip()) not in ("", cid):
+                    child_cids.add(mcid); strong_child_cids.add(mcid); node_edges.add(mcid)
+            for sub_name, is_msg, pred in (("tasks", False, lambda p: p.name.lower().startswith("task-") and p.suffix.lower() == ".log"), ("messages", True, lambda p: p.suffix.lower() == ".json" and p.name.lower() != "read.json")):
+                if (sub_dir := sg / sub_name).is_dir() and not is_symlink_or_junction(sub_dir):
+                    try:
+                        for fp in sub_dir.iterdir():
+                            if not is_symlink_or_junction(fp) and pred(fp):
+                                wf_ids = _collect_wf_children_from_file(fp, cid, is_msg_json=is_msg).keys()
+                                child_cids.update(wf_ids); node_edges.update(wf_ids)
+                    except OSError:
+                        pass
+            tpath = sg / "logs" / "transcript.jsonl"
+            has_transcript = tpath.is_file() and not is_symlink_or_junction(tpath)
+            if has_transcript:
+                tr_ids = _collect_wf_children_from_transcript(tpath, cid)
+                child_cids.update(tr_ids); node_edges.update(tr_ids)
+            if has_transcript or cid in active_captures:
+                mtime_ns = max((p.stat().st_mtime_ns for p in (tpath, members_file, sg / "swarm" / "board.jsonl", entry) if p.exists()), default=0)
+                candidates.append({"cid": cid, "dir": entry, "sg": sg, "mtime_ns": mtime_ns})
 
-    q_cid = explicit_cid.strip().lower()
-    if q_cid:
-        match = next((r for r in candidates if r["cid"].lower() == q_cid), None) or next(
-            (r for r in sorted(candidates, key=lambda c: (-int(c["mtime_ns"]), c["cid"])) if r["cid"].lower().startswith(q_cid)), None
-        )
-        if match is None:
-            return []
-        match["archived"] = _is_candidate_archived(match["cid"], int(match["mtime_ns"]), active_captures, archived_map)
-        return [match]
     if any(c in edges for cs in edges.values() for c in cs):
         child_cids -= find_cycle_root_overrides(edges, strong_child_cids, lambda c: _read_first_transcript_ts(brain_root, c))
     roots = sorted([
         it for it in candidates
-        if it["cid"] not in child_cids and not (
-            it["cid"] not in active_captures and is_worktree_path((session_meta.get(it["cid"]) or {}).get("cwd"))
-            and not (it["sg"] / "swarm").is_dir() and not (it["sg"] / "subagents").is_dir()
-        )
+        if it["cid"] not in child_cids and not (it["cid"] not in active_captures and is_worktree_path((session_meta.get(it["cid"]) or {}).get("cwd")) and not (it["sg"] / "swarm").is_dir() and not (it["sg"] / "subagents").is_dir())
     ], key=lambda r: (-int(r["mtime_ns"]), r["cid"]))
     now_s = datetime.now(timezone.utc).timestamp()
     for r in roots:
         r["archived"] = _is_candidate_archived(r["cid"], int(r["mtime_ns"]), active_captures, archived_map)
-    return (
-        [r for r in roots if not r["archived"] and r["cid"] in active_captures]
-        + [r for r in roots if not r["archived"] and r["cid"] not in active_captures and r["mtime_ns"] > 0 and (now_s - (r["mtime_ns"] / 1e9)) <= LIVE_RECENT_WINDOW_S]
-    )[:MAX_ROOT_SESSIONS]
+
+    recent_arch_map = {str(e.get("conversation_id") or "").strip(): e for e in recent_archived if isinstance(e, dict) and str(e.get("conversation_id") or "").strip()}
+    candidates_by_cid = {c["cid"]: c for c in candidates}
+    active_roots = [{**r, "category": "active", "archive_only": False} for r in roots if not r["archived"] and r["cid"] in active_captures]
+    recent_roots = [{**r, "category": "recent", "archive_only": False} for r in roots if not r["archived"] and r["cid"] not in active_captures and r["mtime_ns"] > 0 and (now_s - (r["mtime_ns"] / 1e9)) <= LIVE_RECENT_WINDOW_S]
+    seen_live = {r["cid"] for r in active_roots} | {r["cid"] for r in recent_roots}
+    archived_roots = [{**r, "category": "archived", "archive_only": False} for r in roots if r["archived"] and r["cid"] not in seen_live and (r["cid"] in recent_arch_map or (r["mtime_ns"] > 0 and (now_s - (r["mtime_ns"] / 1e9)) <= LIVE_RECENT_WINDOW_S))]
+    seen_arch = {r["cid"] for r in archived_roots}
+    for rcid, entry in recent_arch_map.items():
+        if rcid in seen_live or rcid in seen_arch:
+            continue
+        cand = candidates_by_cid.get(rcid)
+        if cand is None:
+            archived_roots.append(_synthetic_archive_root(rcid, entry)); seen_arch.add(rcid)
+        elif _is_candidate_archived(rcid, int(cand["mtime_ns"]), active_captures, archived_map):
+            archived_roots.append({**cand, "archived": True, "archive_only": False, "category": "archived"}); seen_arch.add(rcid)
+    archived_roots.sort(key=lambda r: (-max(int(r.get("mtime_ns") or 0), int((_max_item_epoch(recent_arch_map.get(r["cid"]) or {}) or 0) * 1e9)), r["cid"]))
+    combined = (active_roots + recent_roots + archived_roots)[:MAX_ROOT_SESSIONS]
+
+    q_cid = explicit_cid.strip().lower()
+    if not q_cid:
+        return combined, (combined[0] if combined else None)
+    match = next((r for r in combined if r["cid"].lower() == q_cid), None) or next((r for r in combined if r["cid"].lower().startswith(q_cid)), None)
+    if match is not None:
+        return combined, match
+    disk_match = next((c for c in candidates if c["cid"].lower() == q_cid), None) or next((c for c in sorted(candidates, key=lambda it: (-int(it["mtime_ns"]), it["cid"])) if c["cid"].lower().startswith(q_cid)), None)
+    if disk_match is not None:
+        is_arch = _is_candidate_archived(disk_match["cid"], int(disk_match["mtime_ns"]), active_captures, archived_map)
+        enriched = {**disk_match, "archived": is_arch, "archive_only": False, "category": "archived" if is_arch else ("active" if disk_match["cid"] in active_captures else "recent")}
+        return _append_explicit_root(combined, enriched), enriched
+    if isinstance(recorded_by_cid, dict):
+        rec_hit = next(((str(rcid), rm) for rcid, rm in recorded_by_cid.items() if isinstance(rm, dict) and (str(rcid).lower() == q_cid or str(rm.get("detail_slug") or "").strip().lower() == q_cid)), None)
+        if rec_hit is None:
+            prefs = sorted(((str(rcid), rm) for rcid, rm in recorded_by_cid.items() if isinstance(rm, dict) and str(rcid).lower().startswith(q_cid)), key=lambda kv: (-(_max_item_epoch(kv[1]) or float("-inf")), kv[0]))
+            rec_hit = prefs[0] if prefs else None
+        if rec_hit is not None:
+            syn = _synthetic_archive_root(rec_hit[0], rec_hit[1])
+            return _append_explicit_root(combined, syn), syn
+    return combined, None
 
 
 def get_live_session_state(
     session_id: str = "", since_signature: str = "", include_events: bool = True, *,
     ws: str = "", gravity_home: Optional[Path] = None, brain_dir: Optional[Path] = None,
-    metrics_home: Optional[Path] = None, workflow_home: Optional[Path] = None,
-    registry_path: Optional[Path] = None, home_dir: Optional[Path] = None,
-    plugin_roots: Optional[Sequence[Path]] = None, plugins_dir: Optional[Any] = None,
+    metrics_home: Optional[Path] = None, workflow_home: Optional[Path] = None, registry_path: Optional[Path] = None,
+    home_dir: Optional[Path] = None, plugin_roots: Optional[Sequence[Path]] = None, plugins_dir: Optional[Any] = None,
     architect_state: Optional[dict[str, Any]] = None, **_: Any,
 ) -> dict[str, Any]:
     """Return incremental read-only live session state from brain/ and Gravity Workflow."""
@@ -595,79 +628,103 @@ def get_live_session_state(
     else:
         env_b = os.environ.get("GRAVITY_BRAIN_DIR", "").strip()
         b_dir = Path(env_b).expanduser().resolve() if env_b else (safe_home_dir() / ".gemini" / "antigravity" / "brain").resolve()
-    meta_res = invoke_dashboard_provider(
-        "metrics",
-        view="live-meta",
-        ctx={"metrics_home": metrics_home} if metrics_home is not None else None,
-        gravity_home=eff_gravity,
-        plugin_roots=eff_roots,
-        home_dir=home_dir,
-    )
-    if (
-        isinstance(meta_res, dict)
-        and not meta_res.get("spi_fallback")
-        and meta_res.get("ok") is not False
-        and not meta_res.get("error")
-    ):
-        raw_caps = meta_res.get("active_captures")
-        raw_meta = meta_res.get("session_meta")
-        active_captures = raw_caps if isinstance(raw_caps, dict) else {}
-        session_meta = raw_meta if isinstance(raw_meta, dict) else {}
+    m_ctx = {"metrics_home": metrics_home} if metrics_home is not None else None
+    meta_res = invoke_dashboard_provider("metrics", view="live-meta", ctx=m_ctx, gravity_home=eff_gravity, plugin_roots=eff_roots, home_dir=home_dir)
+    if isinstance(meta_res, dict) and not meta_res.get("spi_fallback") and meta_res.get("ok") is not False and not meta_res.get("error"):
+        active_captures = meta_res.get("active_captures") if isinstance(meta_res.get("active_captures"), dict) else {}
+        session_meta = meta_res.get("session_meta") if isinstance(meta_res.get("session_meta"), dict) else {}
+        recorded_by_cid = meta_res.get("recorded_by_cid") if isinstance(meta_res.get("recorded_by_cid"), dict) else {}
+        recent_archived = meta_res.get("recent_archived") if isinstance(meta_res.get("recent_archived"), list) else []
         live_meta_sig = str(meta_res.get("signature") or "")
     else:
-        active_captures, session_meta, live_meta_sig = {}, {}, ""
-    archived_map, archived_sig_tokens = _load_archived_status_ro(gravity_home=eff_gravity, metrics_home=metrics_home, plugin_roots=eff_roots, home_dir=home_dir)
+        active_captures, session_meta, recorded_by_cid, recent_archived, live_meta_sig = {}, {}, {}, [], ""
+    archived_map, archived_sig_tokens = _load_archived_status_ro(gravity_home=eff_gravity, recorded_by_cid=recorded_by_cid, recent_archived=recent_archived)
     q_cid = session_id.strip().lower()
-    roots = _discover_brain_sessions(b_dir, active_captures, session_meta, archived_map, explicit_cid=q_cid)
-    selected = roots[0] if roots else None
-    sel_meta: dict[str, Any] = (session_meta.get(selected["cid"]) or {}) if selected is not None else {}
-    sel_cap: Optional[dict[str, Any]] = active_captures.get(selected["cid"]) if selected is not None else None
+    roots, selected = _discover_brain_sessions(b_dir, active_captures, session_meta, archived_map, recent_archived=recent_archived, recorded_by_cid=recorded_by_cid, explicit_cid=q_cid)
+
+    detail_res: Optional[dict[str, Any]] = None
+    extra_warnings: list[str] = []
+    if (q_cid and selected is None) or (selected is not None and selected.get("archive_only")):
+        target_arg = session_id.strip() if selected is None else selected["cid"]
+        cand_det = invoke_dashboard_provider("metrics", view="session-detail", params={"target": target_arg}, ctx=m_ctx, gravity_home=eff_gravity, plugin_roots=eff_roots, home_dir=home_dir)
+        if isinstance(cand_det, dict) and not cand_det.get("spi_fallback") and cand_det.get("found"):
+            detail_res = cand_det
+            if selected is None:
+                res_cid = str(cand_det.get("conversation_id") or target_arg).strip()
+                selected = next((r for r in roots if r["cid"] == res_cid), None)
+                if selected is None:
+                    selected = _synthetic_archive_root(res_cid, cand_det.get("record") if isinstance(cand_det.get("record"), dict) else {})
+                    roots = _append_explicit_root(roots, selected)
+        elif selected is None:
+            extra_warnings.append(f"Session '{target_arg}' introuvable dans brain/ et dans l'historique.")
+
+    sel_cid_str = selected["cid"] if selected is not None else ""
+    sel_rec = (recorded_by_cid.get(sel_cid_str) or {}) if (selected is not None and isinstance(recorded_by_cid.get(sel_cid_str), dict)) else {}
+    sel_meta = (session_meta.get(sel_cid_str) or {}) if selected is not None else {}
+    sel_cap = active_captures.get(sel_cid_str) if selected is not None else None
     root_cwd = str(sel_meta.get("cwd") or "").strip() if selected is not None else ""
-    root_ws = str((sel_cap or {}).get("project") or sel_meta.get("project") or _normalize_repo_name(root_cwd) or "workspace") if selected is not None else ""
+    root_ws = str((sel_cap or {}).get("project") or sel_rec.get("project") or sel_meta.get("project") or _normalize_repo_name(root_cwd) or "workspace") if selected is not None else ""
     effective_ws = ws.strip() or (root_cwd or (root_ws if root_ws and root_ws != "workspace" else ""))
 
-    wf_state: dict[str, Any] = {
-        "available": False,
-        "stage": "idle",
-        "progress": "0/0",
-        "wave_name": "",
-        "tasks": [],
-        "events": [],
-        "signature": "",
-    }
-    if resolve_dashboard_provider("workflow", gravity_home=eff_gravity, plugin_roots=eff_roots, home_dir=home_dir).get("ok"):
+    now_s = datetime.now(timezone.utc).timestamp()
+    current_live_cid = roots[0]["cid"] if (roots and not roots[0].get("archived") and not roots[0].get("archive_only")) else ""
+    if selected is None:
+        allow_wf_state = not bool(q_cid)
+    else:
+        is_stale_untracked = (sel_cid_str not in active_captures) and (int(selected.get("mtime_ns") or 0) <= 0 or (now_s - (int(selected["mtime_ns"]) / 1e9)) > LIVE_RECENT_WINDOW_S)
+        allow_wf_state = (not selected.get("archived")) and (not selected.get("archive_only")) and (not is_stale_untracked) and (not q_cid or sel_cid_str == current_live_cid)
+
+    wf_state: dict[str, Any] = {"available": False, "stage": "idle", "progress": "0/0", "wave_name": "", "tasks": [], "events": [], "signature": ""}
+    if allow_wf_state and resolve_dashboard_provider("workflow", gravity_home=eff_gravity, plugin_roots=eff_roots, home_dir=home_dir).get("ok"):
         cand_wf = invoke_dashboard_provider("workflow", view="workflow", params={"ws": effective_ws}, ctx={"workflow_home": workflow_home}, gravity_home=eff_gravity, plugin_roots=eff_roots, home_dir=home_dir)
         if isinstance(cand_wf, dict) and not cand_wf.get("spi_fallback"):
             wf_state = cand_wf
 
     progress_info = build_live_progress(wf_state)
     wf_slim = {k: wf_state.get(k) for k in ("available", "stage", "progress", "mode", "level", "preset_profile", "suggested_profile", "guard_status", "nodes", "selected_workspace")}
-    wf_slim["progress"], wf_slim["progress_detail"] = progress_info["label"], progress_info
-    wf_slim["is_active"] = str(wf_slim.get("stage") or "").strip().lower() not in ("", "idle")
+    wf_slim["progress"], wf_slim["progress_detail"], wf_slim["is_active"] = progress_info["label"], progress_info, str(wf_slim.get("stage") or "").strip().lower() not in ("", "idle")
 
     sig_parts: list[Any] = [
-        str(b_dir), q_cid, bool(include_events), live_meta_sig, archived_sig_tokens, wf_state.get("signature", ""),
-        wf_state.get("stage", ""), progress_info["label"], json.dumps(wf_state.get("nodes") or {}, sort_keys=True),
-        json.dumps(architect_state or {}, sort_keys=True) if architect_state else "", "phases_v1",
-        [(r["cid"], r["mtime_ns"], bool(r.get("archived"))) for r in roots],
+        str(b_dir), q_cid, sel_cid_str, bool(selected and selected.get("archive_only")), bool(include_events), live_meta_sig, archived_sig_tokens,
+        wf_state.get("signature", ""), wf_state.get("stage", ""), progress_info["label"], json.dumps(wf_state.get("nodes") or {}, sort_keys=True),
+        json.dumps(architect_state or {}, sort_keys=True) if architect_state else "", "phases_v2",
+        [(r["cid"], r["mtime_ns"], bool(r.get("archived")), bool(r.get("archive_only"))) for r in roots],
+        (detail_res.get("slug", ""), detail_res.get("source", "")) if isinstance(detail_res, dict) else "",
     ]
     root_task_logs_count = 0
-    if selected is not None:
+    if selected is not None and not selected.get("archive_only"):
         desc_tokens, root_task_logs_count = collect_descendant_sig_tokens(
-            b_dir, selected["cid"], read_json_fn=_read_json_cached,
+            b_dir, sel_cid_str, read_json_fn=_read_json_cached,
             collect_wf_file_fn=lambda p, pcid, is_msg: _collect_wf_children_from_file(p, pcid, is_msg_json=is_msg),
             collect_transcript_wf_fn=_collect_wf_children_from_transcript, stat_token_fn=stat_token,
         )
         sig_parts.extend(desc_tokens)
-
     sig = short_digest(sig_parts)
     if since_signature and since_signature == sig:
         return unchanged_response(sig)
 
-    sessions_list = [{"conversation_id": r["cid"], "label": str((active_captures.get(r["cid"]) or {}).get("label") or f"session-{r['cid'][:8]}"), "project": str((active_captures.get(r["cid"]) or {}).get("project") or (session_meta.get(r["cid"]) or {}).get("project") or _normalize_repo_name(str((session_meta.get(r["cid"]) or {}).get("cwd") or ""))), "captured": r["cid"] in active_captures, "archived": bool(r.get("archived")), "updated_at": str((active_captures.get(r["cid"]) or {}).get("updated_at") or (session_meta.get(r["cid"]) or {}).get("updated_at") or (datetime.fromtimestamp(r["mtime_ns"] / 1e9, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if r["mtime_ns"] else ""))} for r in roots]
+    sessions_list = [
+        {
+            "conversation_id": r["cid"],
+            "label": str((active_captures.get(r["cid"]) or {}).get("label") or (recorded_by_cid.get(r["cid"]) or r.get("rec_meta") or {}).get("label") or f"session-{r['cid'][:8]}"),
+            "project": str((active_captures.get(r["cid"]) or {}).get("project") or (recorded_by_cid.get(r["cid"]) or r.get("rec_meta") or {}).get("project") or (session_meta.get(r["cid"]) or {}).get("project") or _normalize_repo_name(str((session_meta.get(r["cid"]) or {}).get("cwd") or ""))),
+            "captured": r["cid"] in active_captures, "archived": bool(r.get("archived")),
+            "recorded": bool(r["cid"] in recorded_by_cid or r.get("archived") or r.get("archive_only")),
+            "detail_slug": str((recorded_by_cid.get(r["cid"]) or r.get("rec_meta") or {}).get("detail_slug") or ""),
+            "archive_only": bool(r.get("archive_only")), "is_live": not bool(r.get("archived")) and not bool(r.get("archive_only")),
+            "category": str(r.get("category") or ("archived" if r.get("archived") else ("active" if r["cid"] in active_captures else "recent"))),
+            "updated_at": str((active_captures.get(r["cid"]) or {}).get("updated_at") or (recorded_by_cid.get(r["cid"]) or r.get("rec_meta") or {}).get("archived_at") or (recorded_by_cid.get(r["cid"]) or r.get("rec_meta") or {}).get("ended_at") or (session_meta.get(r["cid"]) or {}).get("updated_at") or (datetime.fromtimestamp(r["mtime_ns"] / 1e9, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if r["mtime_ns"] else "")),
+        }
+        for r in roots
+    ]
     if selected is None:
         empty_phases = build_live_phases(wf_state, architect_state=architect_state)
-        return {"changed": True, "unchanged": False, "signature": sig, "available": False, "brain_dir": str(b_dir), "sessions": sessions_list, "selected_session": None, "session_started_at": "", "session_last_ts": "", "agents": [], "recent_events": [], "summary": {"total_agents": 0, "active_agents": 0, "waiting_agents": 0, "done_agents": 0, "error_agents": 0, "session_started_at": "", "session_last_ts": ""}, "workflow": wf_slim, "phases": empty_phases["phases"], "current_phase": empty_phases["current_phase"]}
+        resp = {"changed": True, "unchanged": False, "signature": sig, "available": False, "brain_dir": str(b_dir), "sessions": sessions_list, "selected_session": None, "session_started_at": "", "session_last_ts": "", "agents": [], "recent_events": [], "summary": {"total_agents": 0, "active_agents": 0, "waiting_agents": 0, "done_agents": 0, "error_agents": 0, "session_started_at": "", "session_last_ts": ""}, "workflow": wf_slim, "phases": empty_phases["phases"], "current_phase": empty_phases["current_phase"]}
+        if extra_warnings:
+            resp["warnings"] = extra_warnings
+        return resp
+    if selected.get("archive_only"):
+        return enforce_payload_budget(project_session_detail_to_live(detail_res, fallback_entry=selected.get("rec_meta") or sel_rec, cid=sel_cid_str, sessions_list=sessions_list, brain_dir=str(b_dir), signature=sig, wf_slim=wf_slim, architect_state=architect_state), ("recent_events", "agents", "sessions"), max_bytes=MAX_PAYLOAD_BYTES)
 
     sel_cid, sg = selected["cid"], selected["sg"]
     root_parent = Path(strip_file_uri(root_cwd)).parent if root_cwd else None
@@ -676,41 +733,43 @@ def get_live_session_state(
     members_map = {str(k): v for k, v in members_raw["members"].items() if isinstance(v, dict)} if isinstance(members_raw, dict) and isinstance(members_raw.get("members"), dict) else {}
     plan_tasks = plan_raw.get("tasks") if isinstance(plan_raw, dict) and isinstance(plan_raw.get("tasks"), dict) else {}
     goal_title = str((plan_raw.get("goal") or {}).get("title") or "").strip() if isinstance(plan_raw, dict) and isinstance(plan_raw.get("goal"), dict) else ""
-
     coord_member = members_map.get("coordinator")
     root_aid = "coordinator" if coord_member is not None else f"root-{sel_cid[:8]}"
     root_acc = _read_jsonl_incremental(sg / "logs" / "transcript.jsonl", _TRANSCRIPT_CACHE, _new_transcript_acc, lambda a, o: _apply_transcript_obj(a, o, root_aid, parent_cid=sel_cid))
     r_ws, r_kind = _resolve_agent_workspace(root_acc, uris=[], meta_cwd=root_cwd, root_ws=root_ws, root_parent=root_parent)
-
+    is_arch = bool(selected.get("archived"))
     agents, all_events = discover_live_tree(
         b_dir, sel_cid, root_aid=root_aid, root_role="Coordinator" if coord_member else "Session racine",
         root_type="coordinator" if coord_member else "root", root_acc=root_acc, coord_member=coord_member,
         root_model_hint=str((coord_member or {}).get("applied_model") or (coord_member or {}).get("model") or ""),
         root_ws=r_ws, root_ws_kind=r_kind, root_task_title=goal_title or swarm_title, root_parent=root_parent,
-        plan_tasks=plan_tasks, session_meta=session_meta, is_archived=bool(selected.get("archived")),
-        read_json_fn=_read_json_cached, collect_wf_file_fn=lambda p, pcid, is_msg: _collect_wf_children_from_file(p, pcid, is_msg_json=is_msg),
+        plan_tasks=plan_tasks, session_meta=session_meta, is_archived=is_arch, read_json_fn=_read_json_cached,
+        collect_wf_file_fn=lambda p, pcid, is_msg: _collect_wf_children_from_file(p, pcid, is_msg_json=is_msg),
         read_transcript_fn=lambda c_cid, c_aid: _read_jsonl_incremental(b_dir / c_cid / ".system_generated" / "logs" / "transcript.jsonl", _TRANSCRIPT_CACHE, _new_transcript_acc, lambda a, o, _id=c_aid, _cid=c_cid: _apply_transcript_obj(a, o, _id, parent_cid=_cid)),
         resolve_ws_fn=_resolve_agent_workspace, build_entry_fn=_build_agent_entry, include_events=include_events,
     )
-    root_signals = dict(root_acc.get("phase_signals") or {})
-    root_signals["has_session"] = True
-    is_arch = bool(selected.get("archived"))
-    phases_info = build_live_phases(wf_state, architect_state=architect_state, agents=agents, signals=root_signals, is_archived=is_arch)
-    if agents and (agents[0].get("depth") == 0 or agents[0].get("source") == "root"):
-        agents[0]["phase"] = phases_info["current_phase"]
-        phases_info = build_live_phases(wf_state, architect_state=architect_state, agents=agents, signals=root_signals, is_archived=is_arch)
+    root_signals = {**(root_acc.get("phase_signals") or {}), "has_session": True}
+    phases_info = resolve_session_phases(wf_state, architect_state=architect_state, agents=agents, signals=root_signals, is_archived=is_arch)
     if include_events:
         all_events = sorted([*all_events, *_read_board_events(sg / "swarm" / "board.jsonl", sg / "swarm" / "board.json")], key=lambda ev: str(ev.get("ts") or ""), reverse=True)[:MAX_RECENT_EVENTS]
 
     sc, tot_in, tot_cache = Counter(a["status"] for a in agents), sum(a["useful_tokens"] for a in agents), sum(a["cache_read_tokens"] for a in agents)
-    start_ts_list = [str(a["started_at"]) for a in agents if a.get("started_at")]
-    last_ts_list = [str(a["last_ts"]) for a in agents if a.get("last_ts")]
+    start_ts_list, last_ts_list = [str(a["started_at"]) for a in agents if a.get("started_at")], [str(a["last_ts"]) for a in agents if a.get("last_ts")]
     session_started_at = min(start_ts_list, key=lambda s: (parse_iso_ts(s) or datetime.max.replace(tzinfo=timezone.utc), s)) if start_ts_list else root_acc["first_ts"]
     session_last_ts = max(last_ts_list, key=lambda s: (parse_iso_ts(s) or datetime.min.replace(tzinfo=timezone.utc), s)) if last_ts_list else root_acc["last_ts"]
+    sel_updated_at = str((sel_cap or {}).get("updated_at") or sel_rec.get("archived_at") or sel_rec.get("ended_at") or sel_meta.get("updated_at") or session_last_ts or "")
     payload: dict[str, Any] = {
-        "changed": True, "unchanged": False, "signature": sig, "available": True, "brain_dir": str(b_dir), "sessions": sessions_list,
+        "changed": True, "unchanged": False, "signature": sig, "available": True, "archive_only": False, "brain_dir": str(b_dir), "sessions": sessions_list,
         "session_started_at": session_started_at, "session_last_ts": session_last_ts,
-        "selected_session": {"conversation_id": sel_cid, "label": str((sel_cap or {}).get("label") or swarm_title or goal_title or f"session-{sel_cid[:8]}"), "project": root_ws, "workspace_kind": r_kind, "captured": sel_cap is not None, "start_step": (sel_cap or {}).get("start_step"), "swarm_title": swarm_title, "goal_title": goal_title, "last_step_index": root_acc["last_step_index"], "started_at": session_started_at, "session_started_at": session_started_at, "session_last_ts": session_last_ts, "last_ts": root_acc["last_ts"], "phases": phases_info["phases"], "current_phase": phases_info["current_phase"]},
+        "selected_session": {
+            "conversation_id": sel_cid, "label": str((sel_cap or {}).get("label") or sel_rec.get("label") or swarm_title or goal_title or f"session-{sel_cid[:8]}"),
+            "project": root_ws, "workspace_kind": r_kind, "captured": sel_cap is not None, "archived": is_arch, "recorded": bool(sel_rec or is_arch),
+            "detail_slug": str(sel_rec.get("detail_slug") or ""), "is_live": not is_arch, "archive_only": False,
+            "category": str(selected.get("category") or ("archived" if is_arch else ("active" if sel_cap is not None else "recent"))),
+            "updated_at": sel_updated_at, "start_step": (sel_cap or {}).get("start_step"), "swarm_title": swarm_title, "goal_title": goal_title,
+            "last_step_index": root_acc["last_step_index"], "started_at": session_started_at, "session_started_at": session_started_at,
+            "session_last_ts": session_last_ts, "last_ts": root_acc["last_ts"], "phases": phases_info["phases"], "current_phase": phases_info["current_phase"],
+        },
         "agents": agents, "recent_events": all_events if include_events else [],
         "summary": {"total_agents": len(agents), "active_agents": sc["active"], "waiting_agents": sc["waiting"], "done_agents": sc["done"], "error_agents": sc["error"], "useful_tokens": tot_in, "cache_read_tokens": tot_cache, "cache_hit_pct": round((tot_cache / (tot_in + tot_cache)) * 100.0, 2) if (tot_in + tot_cache) > 0 else 0.0, "max_context_tokens": max((a["max_context_tokens"] for a in agents), default=0), "context_tokens": agents[0]["context_tokens"], "thinking_est_tokens": sum(a["thinking_est_tokens"] for a in agents), "llm_calls": sum(a["llm_calls"] for a in agents), "tool_calls": sum(a["tool_calls"] for a in agents), "error_count": sum(a["error_count"] for a in agents), "duration_s": max((a["duration_s"] for a in agents), default=0.0), "session_started_at": session_started_at, "session_last_ts": session_last_ts, "background_tasks": root_task_logs_count},
         "workflow": wf_slim, "phases": phases_info["phases"], "current_phase": phases_info["current_phase"],

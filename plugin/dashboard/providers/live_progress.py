@@ -6,7 +6,7 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 import re
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from _shared.path_safety import is_symlink_or_junction
 from _shared.transcript_reader import extract_shell_nonzero_code, parse_iso_ts
@@ -16,49 +16,28 @@ TERMINAL_ERROR_STATUSES: frozenset[str] = frozenset({"ERROR", "INVALID", "FAILED
 WF_AGENT_REF_RE = re.compile(
     r"\[agent:([^\]]+)\]\s*([^\n]*?)\s*\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)"
 )
-_WF_STATUS_WORDS: frozenset[str] = frozenset(
-    {
-        "started", "start", "running", "run", "waiting", "wait", "done",
-        "completed", "complete", "finished", "finish", "error", "failed",
-        "fail", "killed", "stopped", "stop", "idle",
-    }
-)
+_WF_STATUS_WORDS: frozenset[str] = frozenset({
+    "started", "start", "running", "run", "waiting", "wait", "done", "completed", "complete",
+    "finished", "finish", "error", "failed", "fail", "killed", "stopped", "stop", "idle",
+})
 _WF_ALLOWED_TRANSCRIPT_TYPES: frozenset[str] = frozenset({"SYSTEM_MESSAGE", "GENERIC"})
 _WF_IGNORED_OUTPUT_MARKERS: tuple[str, ...] = ("Showing lines ", "Command output:", "Command exited with code ")
 _PROGRESS_RATIO_RE = re.compile(r"^\s*(\d+)\s*/\s*(\d+)\s*$")
 _DONE_STATES: frozenset[str] = frozenset({"done", "completed", "complete", "passed", "ok", "closed", "finished"})
 
-CYCLE_PHASES: tuple[tuple[str, str], ...] = (
-    ("conception", "Conception"),
-    ("planification", "Planification"),
-    ("production", "Production"),
-    ("validation", "Validation"),
-)
+CYCLE_PHASES: tuple[tuple[str, str], ...] = (("conception", "Conception"), ("planification", "Planification"), ("production", "Production"), ("validation", "Validation"))
 PHASE_IDS: tuple[str, ...] = ("conception", "planification", "production", "validation")
 _PHASE_INDEX: dict[str, int] = {pid: idx for idx, pid in enumerate(PHASE_IDS)}
 _PHASE_ALIASES: dict[str, str] = {
-    "conception": "conception", "concept": "conception", "spec": "conception", "specs": "conception",
-    "design": "conception", "discovery": "conception", "research": "conception",
+    "conception": "conception", "concept": "conception", "spec": "conception", "specs": "conception", "design": "conception", "discovery": "conception", "research": "conception",
     "planification": "planification", "plan": "planification", "planning": "planification",
     "production": "production", "prod": "production", "build": "production", "building": "production",
-    "validation": "validation", "val": "validation", "verify": "validation", "verif": "validation",
-    "verification": "validation", "review": "validation", "cloture": "validation",
+    "validation": "validation", "val": "validation", "verify": "validation", "verif": "validation", "verification": "validation", "review": "validation", "cloture": "validation",
 }
-_CONCEPTION_TOKENS: frozenset[str] = frozenset({
-    "research", "discovery", "discover", "explore", "explorer", "conception",
-    "spec_miner", "teamwork_explorer", "teamwork_spec_miner",
-})
-_PLAN_TOKENS: frozenset[str] = frozenset({
-    "planner", "plan", "planning", "planification", "interviewer", "teamwork_interviewer",
-})
-_VALIDATION_TOKENS: frozenset[str] = frozenset({
-    "reviewer", "review", "verifier", "verify", "verification", "auditor", "audit",
-    "validation", "validate", "challenger", "code_review", "qa", "tester",
-    "teamwork_reviewer", "teamwork_challenger", "teamwork_auditor",
-})
-_PRODUCTION_TOKENS: frozenset[str] = frozenset({
-    "builder", "build", "coder", "implementer", "developer", "producer", "production",
-})
+_CONCEPTION_TOKENS: frozenset[str] = frozenset({"research", "discovery", "discover", "explore", "explorer", "conception", "spec_miner", "teamwork_explorer", "teamwork_spec_miner"})
+_PLAN_TOKENS: frozenset[str] = frozenset({"planner", "plan", "planning", "planification", "interviewer", "teamwork_interviewer"})
+_VALIDATION_TOKENS: frozenset[str] = frozenset({"reviewer", "review", "verifier", "verify", "verification", "auditor", "audit", "validation", "validate", "challenger", "code_review", "qa", "tester", "teamwork_reviewer", "teamwork_challenger", "teamwork_auditor"})
+_PRODUCTION_TOKENS: frozenset[str] = frozenset({"builder", "build", "coder", "implementer", "developer", "producer", "production"})
 _TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9_]+")
 
 
@@ -400,17 +379,12 @@ def discover_live_tree(
 
     return [
         build_entry_fn(
-            agent_id=n["aid"], cid=n["cid"], role=n["role"], type_name=n["type_name"], status=n["status"],
-            acc=n["acc"], model_hint=n["model_hint"], workspace=n["ws_name"], workspace_kind=n["ws_kind"],
-            task_title=n["task_title"], parent_id=n["parent_id"], parent_name=n["parent_name"],
-            depth=n["depth"], source=n["source"], spawn_step=n["spawn_step"],
-            clean_termination=n["clean_termination"], children_count=len(n["child_indices"]),
+            agent_id=n["aid"], cid=n["cid"], role=n["role"], type_name=n["type_name"], status=n["status"], acc=n["acc"],
+            model_hint=n["model_hint"], workspace=n["ws_name"], workspace_kind=n["ws_kind"], task_title=n["task_title"],
+            parent_id=n["parent_id"], parent_name=n["parent_name"], depth=n["depth"], source=n["source"],
+            spawn_step=n["spawn_step"], clean_termination=n["clean_termination"], children_count=len(n["child_indices"]),
             phase=classify_agent_phase(
-                {
-                    "id": n["aid"], "role": n["role"], "type_name": n["type_name"],
-                    "source": n["source"], "depth": n["depth"],
-                    "phase_signals": n["acc"].get("phase_signals"),
-                },
+                {"id": n["aid"], "role": n["role"], "type_name": n["type_name"], "source": n["source"], "depth": n["depth"], "phase_signals": n["acc"].get("phase_signals")},
                 default="conception" if n["depth"] == 0 else "production",
             ),
         )
@@ -418,9 +392,7 @@ def discover_live_tree(
     ], all_events
 
 
-def find_cycle_root_overrides(
-    edges: dict[str, set[str]], strong_child_cids: set[str], first_ts_fn: Callable[[str], str]
-) -> set[str]:
+def find_cycle_root_overrides(edges: dict[str, set[str]], strong_child_cids: set[str], first_ts_fn: Callable[[str], str]) -> set[str]:
     """Break top-level parent-child cycles by selecting the earliest root in each source SCC."""
     nodes = set(edges.keys()) | {dst for targets in edges.values() for dst in targets}
     if not nodes:
@@ -430,20 +402,13 @@ def find_cycle_root_overrides(
         if start in indices:
             continue
         call_stack: list[tuple[str, list[str], int]] = [(start, sorted(edges.get(start) or ()), 0)]
-        indices[start] = lowlink[start] = index_counter
-        index_counter += 1
-        on_stack.add(start)
-        stack.append(start)
+        indices[start] = lowlink[start] = index_counter; index_counter += 1; on_stack.add(start); stack.append(start)
         while call_stack:
             v, nbrs, pos = call_stack[-1]
             if pos < len(nbrs):
-                w = nbrs[pos]
-                call_stack[-1] = (v, nbrs, pos + 1)
+                w = nbrs[pos]; call_stack[-1] = (v, nbrs, pos + 1)
                 if w not in indices:
-                    indices[w] = lowlink[w] = index_counter
-                    index_counter += 1
-                    on_stack.add(w)
-                    stack.append(w)
+                    indices[w] = lowlink[w] = index_counter; index_counter += 1; on_stack.add(w); stack.append(w)
                     call_stack.append((w, sorted(edges.get(w) or ()), 0))
                 elif w in on_stack:
                     lowlink[v] = min(lowlink[v], indices[w])
@@ -452,12 +417,9 @@ def find_cycle_root_overrides(
                 if call_stack:
                     lowlink[call_stack[-1][0]] = min(lowlink[call_stack[-1][0]], lowlink[v])
                 if lowlink[v] == indices[v]:
-                    comp: list[str] = []
-                    w = ""
+                    comp, w = [], ""
                     while w != v:
-                        w = stack.pop()
-                        on_stack.remove(w)
-                        comp.append(w)
+                        w = stack.pop(); on_stack.remove(w); comp.append(w)
                     sccs.append(comp)
     overrides: set[str] = set()
     for comp in sccs:
@@ -472,17 +434,14 @@ def _is_item_done(item: Any) -> bool:
         return True
     if isinstance(item, str):
         return item.strip().lower() in _DONE_STATES
-    if isinstance(item, dict):
-        return item.get("done") is True or str(item.get("status") or "").strip().lower() in _DONE_STATES
-    return False
+    return isinstance(item, dict) and (item.get("done") is True or str(item.get("status") or "").strip().lower() in _DONE_STATES)
 
 
 def build_live_progress(wf_state: Optional[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate structured `waves`/`tasks` progress or parse `progress` string, defaulting to `'0/0'`."""
     if not isinstance(wf_state, dict):
         return {"label": "0/0", "done": 0, "total": 0, "pct": 0, "waves": [], "tasks": []}
-    done, total = 0, 0
-    raw_tasks, raw_waves = wf_state.get("tasks"), wf_state.get("waves")
+    done, total, raw_tasks, raw_waves = 0, 0, wf_state.get("tasks"), wf_state.get("waves")
     if isinstance(raw_tasks, (list, dict)) and raw_tasks:
         items = raw_tasks if isinstance(raw_tasks, list) else list(raw_tasks.values())
         total, done = len(items), sum(1 for it in items if _is_item_done(it))
@@ -493,25 +452,18 @@ def build_live_progress(wf_state: Optional[dict[str, Any]]) -> dict[str, Any]:
             wt = w.get("tasks")
             if isinstance(wt, (list, dict)) and wt:
                 items = wt if isinstance(wt, list) else list(wt.values())
-                total += len(items)
-                done += sum(1 for it in items if _is_item_done(it))
+                total += len(items); done += sum(1 for it in items if _is_item_done(it))
             elif isinstance(w.get("total"), int) and isinstance(w.get("done"), int) and w["total"] > 0:
-                total += w["total"]
-                done += max(0, min(w["done"], w["total"]))
+                total += w["total"]; done += max(0, min(w["done"], w["total"]))
             else:
-                total += 1
-                done += 1 if _is_item_done(w) else 0
+                total += 1; done += 1 if _is_item_done(w) else 0
     elif isinstance(raw_waves, dict) and raw_waves:
         total, done = len(raw_waves), sum(1 for it in raw_waves.values() if _is_item_done(it))
-    if total == 0:
-        m = _PROGRESS_RATIO_RE.match(str(wf_state.get("progress") or ""))
-        if m:
-            done, total = int(m.group(1)), int(m.group(2))
+    if total == 0 and (m := _PROGRESS_RATIO_RE.match(str(wf_state.get("progress") or ""))):
+        done, total = int(m.group(1)), int(m.group(2))
     return {
-        "label": f"{done}/{total}", "done": done, "total": total,
-        "pct": round((done / total) * 100) if total > 0 else 0,
-        "waves": raw_waves if isinstance(raw_waves, (list, dict)) else [],
-        "tasks": raw_tasks if isinstance(raw_tasks, (list, dict)) else [],
+        "label": f"{done}/{total}", "done": done, "total": total, "pct": round((done / total) * 100) if total > 0 else 0,
+        "waves": raw_waves if isinstance(raw_waves, (list, dict)) else [], "tasks": raw_tasks if isinstance(raw_tasks, (list, dict)) else [],
     }
 
 
@@ -545,58 +497,38 @@ def classify_agent_phase(agent_or_meta: Optional[dict[str, Any]] = None, *, defa
             tokens.add(field)
             tokens.update(t for t in _TOKEN_SPLIT_RE.split(field) if t)
 
-    for token_set, phase_id in (
-        (_VALIDATION_TOKENS, "validation"),
-        (_PLAN_TOKENS, "planification"),
-        (_CONCEPTION_TOKENS, "conception"),
-        (_PRODUCTION_TOKENS, "production"),
-    ):
+    for token_set, phase_id in ((_VALIDATION_TOKENS, "validation"), (_PLAN_TOKENS, "planification"), (_CONCEPTION_TOKENS, "conception"), (_PRODUCTION_TOKENS, "production")):
         if tokens & token_set:
             return phase_id
-
     sigs = meta.get("phase_signals")
     if isinstance(sigs, dict):
-        if sigs.get("production"):
-            return "production"
-        if sigs.get("validation"):
-            return "validation"
-        if sigs.get("planification"):
-            return "planification"
-        if sigs.get("conception"):
-            return "conception"
-
+        for pid in ("production", "validation", "planification", "conception"):
+            if sigs.get(pid):
+                return pid
     return normalize_phase_id(default) or "production"
 
 
-def _ingest_wf_phase_signals(
-    wf_state: Optional[dict[str, Any]],
-    reached: list[bool],
-    active_hint: list[bool],
-    done_hint: list[bool],
-    error_hint: list[bool],
-) -> bool:
+def _ingest_wf_phase_signals(wf_state: Optional[dict[str, Any]], reached: list[bool], active_hint: list[bool], done_hint: list[bool], error_hint: list[bool]) -> bool:
     if not isinstance(wf_state, dict):
         return False
     stage = str(wf_state.get("stage") or "").strip().lower()
     wf_active = wf_state.get("is_active") if isinstance(wf_state.get("is_active"), bool) else (stage not in ("", "idle"))
     wf_all_done = False
-
     if stage not in ("", "idle"):
         if stage in ("done", "completed", "workflow:done"):
             wf_all_done = True
             for i in range(4):
                 reached[i] = done_hint[i] = True
-        elif any(tok in stage for tok in ("refused", "timeout", "escalated", "unsafe_done")) or stage in ("error", "failed"):
+        elif any(t in stage for t in ("refused", "timeout", "escalated", "unsafe_done")) or stage in ("error", "failed"):
             reached[3] = error_hint[3] = True
-        elif any(tok in stage for tok in ("review", "remediation", "verif", "validat")):
+        elif any(t in stage for t in ("review", "remediation", "verif", "validat")):
             reached[3] = active_hint[3] = True
-        elif any(tok in stage for tok in ("build", "prod", "swarm", "execut")):
+        elif any(t in stage for t in ("build", "prod", "swarm", "execut")):
             reached[2] = active_hint[2] = True
         elif "plan" in stage:
             reached[1] = active_hint[1] = True
-        elif any(tok in stage for tok in ("spec", "concept", "design", "quickstart")):
+        elif any(t in stage for t in ("spec", "concept", "design", "quickstart")):
             reached[0] = active_hint[0] = True
-
     nodes = wf_state.get("nodes")
     if isinstance(nodes, dict):
         node_map = {"planner": 1, "builder": 2, "reviewer": 3, "verifier": 3}
@@ -611,69 +543,43 @@ def _ingest_wf_phase_signals(
                 reached[idx] = done_hint[idx] = True
             elif st in ("error", "failed"):
                 reached[idx] = error_hint[idx] = True
-
     if wf_active and not any(reached):
         reached[0] = active_hint[0] = True
     return wf_all_done
 
 
-def _ingest_architect_phase_signals(
-    architect_state: Optional[dict[str, Any]],
-    reached: list[bool],
-    active_hint: list[bool],
-    done_hint: list[bool],
-    error_hint: list[bool],
-) -> None:
+def _ingest_architect_phase_signals(architect_state: Optional[dict[str, Any]], reached: list[bool], active_hint: list[bool], done_hint: list[bool], error_hint: list[bool]) -> None:
     if not isinstance(architect_state, dict):
         return
-    c_phases = architect_state.get("cycle_phases")
-    if isinstance(c_phases, list):
-        for item in c_phases:
-            if not isinstance(item, dict):
-                continue
-            pid = normalize_phase_id(item.get("id"))
-            if not pid:
-                continue
-            idx = _PHASE_INDEX[pid]
-            st = str(item.get("status") or "").strip().lower()
-            if st in ("", "pending"):
-                continue
-            reached[idx] = True
-            if st == "active":
-                active_hint[idx] = True
-            elif st in _DONE_STATES:
-                done_hint[idx] = True
-            elif st in ("error", "failed"):
-                error_hint[idx] = True
-    if any(reached):
-        cur_arch = normalize_phase_id(architect_state.get("current_phase"))
-        if cur_arch:
-            reached[_PHASE_INDEX[cur_arch]] = True
+    for item in (architect_state.get("cycle_phases") if isinstance(architect_state.get("cycle_phases"), list) else ()):
+        if not isinstance(item, dict):
+            continue
+        pid, st = normalize_phase_id(item.get("id")), str(item.get("status") or "").strip().lower()
+        if not pid or st in ("", "pending"):
+            continue
+        idx = _PHASE_INDEX[pid]
+        reached[idx] = True
+        if st == "active":
+            active_hint[idx] = True
+        elif st in _DONE_STATES:
+            done_hint[idx] = True
+        elif st in ("error", "failed"):
+            error_hint[idx] = True
+    if any(reached) and (cur_arch := normalize_phase_id(architect_state.get("current_phase"))):
+        reached[_PHASE_INDEX[cur_arch]] = True
 
 
 def build_live_phases(
-    wf_state: Optional[dict[str, Any]] = None,
-    *,
-    architect_state: Optional[dict[str, Any]] = None,
-    agents: Sequence[dict[str, Any]] = (),
-    signals: Optional[dict[str, Any]] = None,
-    is_archived: bool = False,
+    wf_state: Optional[dict[str, Any]] = None, *, architect_state: Optional[dict[str, Any]] = None,
+    agents: Sequence[dict[str, Any]] = (), signals: Optional[dict[str, Any]] = None, is_archived: bool = False,
 ) -> dict[str, Any]:
     """Compute ordered 4-phase progress (`conception`, `planification`, `production`, `validation`)."""
-    reached = [False, False, False, False]
-    active_hint = [False, False, False, False]
-    done_hint = [False, False, False, False]
-    error_hint = [False, False, False, False]
-
+    reached, active_hint, done_hint, error_hint = [False] * 4, [False] * 4, [False] * 4, [False] * 4
     if isinstance(signals, dict):
         last_sig_phase = normalize_phase_id(signals.get("last_phase"))
         for pid, idx in _PHASE_INDEX.items():
-            if not signals.get(pid):
-                continue
-            if pid == "validation" and last_sig_phase == "production":
-                continue
-            reached[idx] = True
-
+            if signals.get(pid) and not (pid == "validation" and last_sig_phase == "production"):
+                reached[idx] = True
     wf_all_done = _ingest_wf_phase_signals(wf_state, reached, active_hint, done_hint, error_hint)
     _ingest_architect_phase_signals(architect_state, reached, active_hint, done_hint, error_hint)
 
@@ -684,11 +590,9 @@ def build_live_phases(
         is_root = ag.get("depth") == 0 or str(ag.get("source") or "") == "root"
         ag_st = str(ag.get("status") or "").strip().lower()
         if is_root:
-            if ag_st == "error":
-                root_error = True
+            root_error = root_error or (ag_st == "error")
             continue
-        ag_phase = normalize_phase_id(ag.get("phase")) or classify_agent_phase(ag)
-        idx = _PHASE_INDEX[ag_phase]
+        idx = _PHASE_INDEX[normalize_phase_id(ag.get("phase")) or classify_agent_phase(ag)]
         reached[idx] = True
         if ag_st in ("active", "waiting"):
             active_hint[idx] = True
@@ -699,64 +603,177 @@ def build_live_phases(
 
     has_session = bool(agents) or bool((signals or {}).get("has_session"))
     if is_archived or (wf_all_done and not any(active_hint) and not any(error_hint)):
-        cur_idx = 3
-        statuses = ["done", "done", "done", "done"]
+        cur_idx, statuses = 3, ["done", "done", "done", "done"]
     elif any(reached):
         cur_idx = max(i for i, flag in enumerate(reached) if flag)
-        statuses = []
-        for i in range(4):
-            if i < cur_idx:
-                statuses.append("done")
-            elif i == cur_idx:
-                if (error_hint[i] or root_error) and not active_hint[i]:
-                    statuses.append("error")
-                elif wf_all_done and done_hint[i] and not active_hint[i]:
-                    statuses.append("done")
-                else:
-                    statuses.append("active")
-            else:
-                statuses.append("pending")
+        statuses = [
+            "done" if i < cur_idx else (
+                "pending" if i > cur_idx else (
+                    "error" if ((error_hint[i] or root_error) and not active_hint[i])
+                    else ("done" if (wf_all_done and done_hint[i] and not active_hint[i]) else "active")
+                )
+            )
+            for i in range(4)
+        ]
     elif has_session:
-        cur_idx = 0
-        statuses = ["error" if root_error else "active", "pending", "pending", "pending"]
+        cur_idx, statuses = 0, ["error" if root_error else "active", "pending", "pending", "pending"]
     else:
-        cur_idx = 0
-        statuses = ["pending", "pending", "pending", "pending"]
+        cur_idx, statuses = 0, ["pending", "pending", "pending", "pending"]
 
     current_phase = PHASE_IDS[cur_idx]
     buckets: list[dict[str, Any]] = [
-        {
-            "id": pid,
-            "label": label,
-            "status": statuses[idx],
-            "tokens": 0,
-            "useful_tokens": 0,
-            "agents": 0,
-            "duration_s": 0.0,
-        }
+        {"id": pid, "label": label, "status": statuses[idx], "tokens": 0, "useful_tokens": 0, "agents": 0, "duration_s": 0.0}
         for idx, (pid, label) in enumerate(CYCLE_PHASES)
     ]
-
     for ag in agents:
         if not isinstance(ag, dict):
             continue
         is_root = ag.get("depth") == 0 or str(ag.get("source") or "") == "root"
         ag_phase = normalize_phase_id(ag.get("phase"))
         if not ag_phase:
-            ag_phase = current_phase if is_root else classify_agent_phase(ag)
+            ag_phase = classify_agent_phase(ag, default="conception") if (is_root and is_archived) else (current_phase if is_root else classify_agent_phase(ag))
         bucket = buckets[_PHASE_INDEX[ag_phase]]
         useful = max(0, int(ag.get("useful_tokens") or 0))
-        if ag.get("total_tokens") is not None:
-            tot = max(0, int(ag.get("total_tokens") or 0))
-        else:
-            tot = useful + max(0, int(ag.get("cache_read_tokens") or 0))
-        dur = max(0.0, float(ag.get("duration_s") or 0.0))
+        tot = max(0, int(ag.get("total_tokens") or 0)) if ag.get("total_tokens") is not None else (useful + max(0, int(ag.get("cache_read_tokens") or 0)))
         bucket["agents"] += 1
         bucket["useful_tokens"] += useful
         bucket["tokens"] += tot
-        bucket["duration_s"] = round(bucket["duration_s"] + dur, 1)
-
+        bucket["duration_s"] = round(bucket["duration_s"] + max(0.0, float(ag.get("duration_s") or 0.0)), 1)
     return {"phases": buckets, "current_phase": current_phase}
+
+
+def resolve_session_phases(
+    wf_state: Optional[dict[str, Any]] = None, *, architect_state: Optional[dict[str, Any]] = None,
+    agents: Sequence[dict[str, Any]] = (), signals: Optional[dict[str, Any]] = None, is_archived: bool = False,
+) -> dict[str, Any]:
+    """Compute 4-phase progress and sync root agent phase only when the session is not archived."""
+    phases_info = build_live_phases(wf_state, architect_state=architect_state, agents=agents, signals=signals, is_archived=is_archived)
+    if not is_archived and agents and isinstance(agents[0], dict) and (agents[0].get("depth") == 0 or agents[0].get("source") == "root"):
+        agents[0]["phase"] = phases_info["current_phase"]
+        phases_info = build_live_phases(wf_state, architect_state=architect_state, agents=agents, signals=signals, is_archived=is_archived)
+    return phases_info
+
+
+_DETAIL_CAT_PHASE: dict[str, str] = {"exploration": "conception", "planning": "planification", "build": "production", "testing": "validation", "verification": "validation"}
+
+
+def _project_detail_agent(raw_ag: dict[str, Any], idx: int, sel_cid: str, project: str, fallback_model: str) -> dict[str, Any]:
+    ag_cid = str(raw_ag.get("conversation_id") or "").strip() or sel_cid
+    raw_depth = raw_ag.get("depth")
+    depth = int(raw_depth) if isinstance(raw_depth, int) and not isinstance(raw_depth, bool) else (0 if (idx == 0 or ag_cid == sel_cid) else 1)
+    is_root = depth == 0 or ag_cid == sel_cid
+    type_name = str(raw_ag.get("type_name") or ("root" if is_root else "worker")).strip()
+    ag_id = str(raw_ag.get("agent_id") or raw_ag.get("id") or ("coordinator" if (is_root and type_name == "coordinator") else (f"root-{ag_cid[:8]}" if is_root else f"ag-{ag_cid[:8]}"))).strip()
+    role, source = str(raw_ag.get("role") or ("Session racine" if is_root else ag_id)).strip(), str(raw_ag.get("source") or ("root" if is_root else "subagent")).strip()
+    in_t, out_t, cache_t = max(0, int(raw_ag.get("input_tokens") or 0)), max(0, int(raw_ag.get("output_tokens") or 0)), max(0, int(raw_ag.get("cache_read_tokens") or 0))
+    useful = max(0, int(raw_ag.get("useful_tokens") if raw_ag.get("useful_tokens") is not None else (in_t + out_t)))
+    tot = max(0, int(raw_ag.get("total_tokens") if raw_ag.get("total_tokens") is not None else (useful + cache_t)))
+    by_model = raw_ag.get("by_model") if isinstance(raw_ag.get("by_model"), dict) else {}
+    model = str(raw_ag.get("primary_model") or raw_ag.get("model") or (next(iter(by_model), "") if by_model else "") or fallback_model or "unknown").strip() or "unknown"
+    err_cnt = max(0, int(raw_ag.get("total_anomalies") if raw_ag.get("total_anomalies") is not None else (raw_ag.get("error_steps") or 0)))
+    clean_term = bool(raw_ag.get("clean_termination", True))
+    cat_phase = _DETAIL_CAT_PHASE.get(str(raw_ag.get("category") or "").strip().lower(), "")
+    phase = normalize_phase_id(raw_ag.get("phase")) or cat_phase or classify_agent_phase({"id": ag_id, "role": role, "type_name": type_name, "source": source, "depth": depth}, default="conception" if is_root else "production")
+    prompt_t = in_t + cache_t
+    cache_hit = float(raw_ag["cache_hit_rate_pct"]) if raw_ag.get("cache_hit_rate_pct") is not None else (round((cache_t / prompt_t) * 100.0, 2) if prompt_t > 0 else 0.0)
+    dur_raw = raw_ag.get("lifespan_s") if raw_ag.get("lifespan_s") is not None else (raw_ag.get("duration_s") or 0.0)
+    return {
+        "id": ag_id, "conversation_id": ag_cid, "role": role, "type_name": type_name,
+        "status": "error" if (err_cnt > 0 and not clean_term) else "done", "phase": phase,
+        "parent_id": None if is_root else (str(raw_ag.get("parent_id") or "").strip() or None), "parent_name": None,
+        "depth": 0 if is_root else depth, "source": "root" if is_root else source, "spawn_step": raw_ag.get("spawn_step_index"),
+        "clean_termination": clean_term, "children_count": 0, "model": model,
+        "workspace": str(raw_ag.get("workspace") or project).strip() or project, "workspace_kind": str(raw_ag.get("workspace_kind") or "code").strip() or "code",
+        "task_title": str(raw_ag.get("task_title") or "").strip(), "last_tool": "",
+        "context_tokens": max(0, int(raw_ag.get("max_context_tokens") or 0)), "max_context_tokens": max(0, int(raw_ag.get("max_context_tokens") or 0)),
+        "useful_tokens": useful, "total_tokens": tot, "cache_read_tokens": cache_t, "thinking_est_tokens": max(0, int(raw_ag.get("thinking_est_tokens") or 0)),
+        "cache_hit_pct": cache_hit, "llm_calls": max(0, int(raw_ag.get("llm_calls") or 0)),
+        "tool_calls": max(0, int(raw_ag.get("tool_calls_total") if raw_ag.get("tool_calls_total") is not None else (raw_ag.get("tool_calls") or 0))),
+        "duration_s": round(max(0.0, float(dur_raw)), 1), "error_count": err_cnt, "error_steps": err_cnt,
+        "started_at": str(raw_ag.get("first_ts") or raw_ag.get("started_at") or "").strip(), "last_ts": str(raw_ag.get("last_ts") or "").strip(),
+    }
+
+
+def project_session_detail_to_live(
+    detail_res: Optional[dict[str, Any]], *, fallback_entry: Optional[dict[str, Any]] = None, cid: str = "",
+    sessions_list: Sequence[dict[str, Any]] = (), brain_dir: str = "", signature: str = "",
+    wf_slim: Optional[dict[str, Any]] = None, architect_state: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Project an archived `session-detail` SPI-1 payload (or `live-meta` entry) into a read-only Live state (`archive_only=True`)."""
+    dres = detail_res if isinstance(detail_res, dict) else {}
+    detail = dres.get("detail") if isinstance(dres.get("detail"), dict) else {}
+    record = dres.get("record") if isinstance(dres.get("record"), dict) else {}
+    fb = fallback_entry if isinstance(fallback_entry, dict) else {}
+    sel_cid = str(dres.get("conversation_id") or detail.get("root_conversation_id") or record.get("conversation_id") or fb.get("conversation_id") or cid).strip()
+    label = str(dres.get("label") or detail.get("label") or record.get("label") or fb.get("label") or f"session-{sel_cid[:8]}").strip()
+    project = str(detail.get("project") or record.get("project") or fb.get("project") or "workspace").strip() or "workspace"
+    detail_slug = str(dres.get("slug") or record.get("detail_slug") or fb.get("detail_slug") or "").strip()
+    raw_agents = detail.get("agents") if isinstance(detail.get("agents"), list) else []
+    summary_only = bool(dres.get("summary_only")) or not bool(raw_agents)
+    fb_model = str(record.get("primary_model") or fb.get("primary_model") or "unknown").strip() or "unknown"
+
+    if raw_agents:
+        agents = [_project_detail_agent(ag, i, sel_cid, project, fb_model) for i, ag in enumerate(raw_agents) if isinstance(ag, dict)]
+        agents.sort(key=lambda a: (0 if a["conversation_id"] == sel_cid or a["depth"] == 0 else 1, a["depth"], a["started_at"] or "~", a["id"]))
+        by_cid_node = {a["conversation_id"]: a for a in agents}
+        for a in agents:
+            p_raw = a.get("parent_id")
+            if p_raw and p_raw in by_cid_node and p_raw != a["conversation_id"]:
+                a["parent_id"], a["parent_name"] = by_cid_node[p_raw]["id"], by_cid_node[p_raw]["role"]
+                by_cid_node[p_raw]["children_count"] += 1
+            elif a["depth"] > 0 and agents and agents[0]["conversation_id"] != a["conversation_id"]:
+                a["parent_id"], a["parent_name"] = agents[0]["id"], agents[0]["role"]
+                agents[0]["children_count"] += 1
+    else:
+        useful = max(0, int(record.get("useful_tokens") or fb.get("useful_tokens") or (int(record.get("input_tokens") or 0) + int(record.get("output_tokens") or 0))))
+        tot = max(0, int(record.get("total_tokens") or fb.get("total_tokens") or useful))
+        cache_t = max(0, int(record.get("cache_read_tokens") or max(0, tot - useful)))
+        agents = [_project_detail_agent({
+            "conversation_id": sel_cid, "agent_id": f"root-{sel_cid[:8]}", "role": "Session archivée", "type_name": "root",
+            "depth": 0, "source": "root", "phase": record.get("current_phase") or fb.get("current_phase") or "conception",
+            "useful_tokens": useful, "total_tokens": tot, "cache_read_tokens": cache_t, "primary_model": fb_model,
+            "workspace": project, "task_title": label, "llm_calls": record.get("llm_calls") or 0, "tool_calls": record.get("tool_calls") or 0,
+            "duration_s": record.get("duration_s") or 0.0, "first_ts": record.get("started_at") or "",
+            "last_ts": record.get("ended_at") or record.get("archived_at") or fb.get("ended_at") or fb.get("archived_at") or "",
+        }, 0, sel_cid, project, fb_model)]
+
+    phases_info = build_live_phases(None, architect_state=architect_state, agents=agents, signals={"has_session": True}, is_archived=True)
+    d_sum = detail.get("summary") if isinstance(detail.get("summary"), dict) else {}
+    starts, ends = [str(a["started_at"]) for a in agents if a.get("started_at")], [str(a["last_ts"]) for a in agents if a.get("last_ts")]
+    session_started_at = str(d_sum.get("first_ts") or (min(starts) if starts else "") or record.get("started_at") or "").strip()
+    session_last_ts = str(d_sum.get("last_ts") or (max(ends) if ends else "") or record.get("ended_at") or record.get("archived_at") or fb.get("ended_at") or fb.get("archived_at") or "").strip()
+    updated_at = str(record.get("archived_at") or record.get("ended_at") or fb.get("archived_at") or fb.get("ended_at") or session_last_ts or "").strip()
+    tot_in, tot_cache = sum(a["useful_tokens"] for a in agents), sum(a["cache_read_tokens"] for a in agents)
+    win = detail.get("window") if isinstance(detail.get("window"), dict) else {}
+    last_step = max((int(ag.get("last_step_index") or -1) for ag in raw_agents if isinstance(ag, dict)), default=-1)
+    selected_session = {
+        "conversation_id": sel_cid, "label": label, "project": project, "workspace_kind": agents[0]["workspace_kind"] if agents else "code",
+        "captured": False, "archived": True, "recorded": True, "detail_slug": detail_slug, "is_live": False, "archive_only": True,
+        "summary_only": summary_only, "category": "archived", "updated_at": updated_at,
+        "start_step": win.get("start_step_index") if win else record.get("window_start_step"), "swarm_title": "", "goal_title": label,
+        "last_step_index": last_step, "started_at": session_started_at, "session_started_at": session_started_at,
+        "session_last_ts": session_last_ts, "last_ts": session_last_ts, "phases": phases_info["phases"], "current_phase": phases_info["current_phase"],
+    }
+    neutral_wf = wf_slim if isinstance(wf_slim, dict) else {"available": False, "stage": "idle", "progress": "0/0", "progress_detail": build_live_progress(None), "is_active": False}
+    return {
+        "changed": True, "unchanged": False, "signature": signature, "available": True, "archive_only": True,
+        "brain_dir": brain_dir, "sessions": list(sessions_list), "session_started_at": session_started_at, "session_last_ts": session_last_ts,
+        "selected_session": selected_session, "agents": agents, "recent_events": [],
+        "summary": {
+            "total_agents": len(agents), "active_agents": 0, "waiting_agents": 0,
+            "done_agents": sum(1 for a in agents if a["status"] == "done"), "error_agents": sum(1 for a in agents if a["status"] == "error"),
+            "useful_tokens": tot_in, "cache_read_tokens": tot_cache,
+            "cache_hit_pct": round((tot_cache / (tot_in + tot_cache)) * 100.0, 2) if (tot_in + tot_cache) > 0 else 0.0,
+            "max_context_tokens": max((a["max_context_tokens"] for a in agents), default=0),
+            "context_tokens": agents[0]["context_tokens"] if agents else 0, "thinking_est_tokens": sum(a["thinking_est_tokens"] for a in agents),
+            "llm_calls": sum(a["llm_calls"] for a in agents), "tool_calls": sum(a["tool_calls"] for a in agents),
+            "error_count": sum(a["error_count"] for a in agents),
+            "duration_s": round(max((float(d_sum.get("wall_clock_s") or 0.0), *(a["duration_s"] for a in agents))), 1) if agents else 0.0,
+            "session_started_at": session_started_at, "session_last_ts": session_last_ts, "background_tasks": 0,
+        },
+        "workflow": neutral_wf, "phases": phases_info["phases"], "current_phase": phases_info["current_phase"],
+        "warnings": list(dres.get("warnings") or []) if isinstance(dres.get("warnings"), list) else [],
+    }
 
 
 __all__ = [
@@ -764,5 +781,6 @@ __all__ = [
     "build_live_phases", "build_live_progress", "classify_agent_phase", "collect_descendant_sig_tokens",
     "collect_wf_refs_from_obj", "compute_termination_flags", "derive_agent_status", "discover_live_tree",
     "extract_shell_nonzero_code", "find_cycle_root_overrides", "merge_wf_ref", "normalize_phase_id",
-    "parse_iso_ts", "parse_wf_agent_refs", "update_termination_acc",
+    "parse_iso_ts", "parse_wf_agent_refs", "project_session_detail_to_live", "resolve_session_phases",
+    "update_termination_acc",
 ]

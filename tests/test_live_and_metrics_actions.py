@@ -402,7 +402,8 @@ class TestLiveProvider(unittest.TestCase):
             st = api.get_live_session_state(
                 session_id=root_cid, gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
             )
-            self.assertEqual([s["conversation_id"] for s in st["sessions"]], [root_cid])
+            self.assertEqual({s["conversation_id"] for s in st["sessions"]}, {read_json_cid, root_cid})
+            self.assertEqual(st["selected_session"]["conversation_id"], root_cid)
             agent_cids = {a["conversation_id"] for a in st["agents"]}
             self.assertEqual(agent_cids, {root_cid, wf_task_cid, wf_msg_cid})
             self.assertNotIn(read_json_cid, agent_cids)
@@ -480,30 +481,262 @@ class TestLiveProvider(unittest.TestCase):
             st1 = api.get_live_session_state(
                 gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root]
             )
-            self.assertEqual([s["conversation_id"] for s in st1["sessions"]], [cap_stale_cid, fresh_cid])
+            self.assertEqual([s["conversation_id"] for s in st1["sessions"]], [cap_stale_cid, fresh_cid, arch_cid])
+            self.assertEqual([s["category"] for s in st1["sessions"]], ["active", "recent", "archived"])
             self.assertFalse(st1["sessions"][0]["archived"])
             self.assertFalse(st1["sessions"][1]["archived"])
+            self.assertTrue(st1["sessions"][2]["archived"])
 
             (m_home / "active_captures.json").write_text(json.dumps({"schema_version": 1, "captures": {}}), encoding="utf-8")
             st_fresh = api.get_live_session_state(
                 gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root]
             )
-            self.assertEqual([s["conversation_id"] for s in st_fresh["sessions"]], [fresh_cid])
+            self.assertEqual([s["conversation_id"] for s in st_fresh["sessions"]], [fresh_cid, arch_cid])
             self.assertFalse(st_fresh["sessions"][0]["archived"])
+            self.assertTrue(st_fresh["sessions"][1]["archived"])
 
             st_exp = api.get_live_session_state(
                 session_id=arch_cid, gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root]
             )
-            self.assertEqual([s["conversation_id"] for s in st_exp["sessions"]], [arch_cid])
-            self.assertTrue(st_exp["sessions"][0]["archived"])
+            self.assertEqual([s["conversation_id"] for s in st_exp["sessions"]], [fresh_cid, arch_cid])
+            self.assertEqual(st_exp["selected_session"]["conversation_id"], arch_cid)
+            self.assertTrue(st_exp["selected_session"]["archived"])
+            self.assertTrue(st_exp["selected_session"]["recorded"])
+            self.assertFalse(st_exp["selected_session"]["is_live"])
 
-            os.utime(brain / fresh_cid / ".system_generated" / "logs" / "transcript.jsonl", ns=(old_ns, old_ns))
-            os.utime(brain / fresh_cid, ns=(old_ns, old_ns))
+            for cid_age in (fresh_cid, arch_cid):
+                os.utime(brain / cid_age / ".system_generated" / "logs" / "transcript.jsonl", ns=(old_ns, old_ns))
+                os.utime(brain / cid_age, ns=(old_ns, old_ns))
             st_none = api.get_live_session_state(
                 gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root]
             )
             self.assertFalse(st_none["available"])
             self.assertEqual(st_none["sessions"], [])
+
+    def test_multi_category_selection_archive_only_wf_isolation_and_zero_metrics_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            brain = tmp_path / "brain"
+            g_home = tmp_path / "gravity"
+            m_home = g_home / "metrics"
+            wf_home = g_home / "workflow"
+            m_home.mkdir(parents=True)
+            wf_home.mkdir(parents=True)
+
+            active_cid = "11111111-aaaa-0000-0000-000000000001"
+            recent_cid = "22222222-aaaa-0000-0000-000000000002"
+            arch_disk_cid = "33333333-aaaa-0000-0000-000000000003"
+            purged_cid = "44444444-aaaa-0000-0000-000000000004"
+            purged_child_cid = "55555555-aaaa-0000-0000-000000000005"
+            summary_only_cid = "66666666-aaaa-0000-0000-000000000006"
+
+            for cid, path_arg in (
+                (active_cid, "/tmp/gravity/plugin/app.py"),
+                (recent_cid, "/tmp/gravity/plugin/other.py"),
+                (arch_disk_cid, "/tmp/gravity/plugin/archived_work.py"),
+            ):
+                _write_jsonl(
+                    brain / cid / ".system_generated" / "logs" / "transcript.jsonl",
+                    [
+                        {"step_index": 0, "type": "USER_INPUT", "status": "DONE", "created_at": "2026-11-27T09:00:00Z", "content": cid},
+                        {
+                            "step_index": 1, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-27T09:05:00Z",
+                            "model": "gemini-4-neon-high", "input_tokens": 300, "cache_read_tokens": 700, "output_tokens": 100,
+                            "tool_calls": [{"name": "edit_file", "args": {"Path": path_arg}}],
+                        },
+                    ],
+                )
+            arch_tp = brain / arch_disk_cid / ".system_generated" / "logs" / "transcript.jsonl"
+            arch_mtime_s = arch_tp.stat().st_mtime_ns / 1e9
+            # ended_at older than mtime - 120s, archived_at >= mtime -> must use max(ended_at, archived_at)
+            ended_old = datetime.fromtimestamp(arch_mtime_s - 300, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            archived_now = datetime.fromtimestamp(arch_mtime_s + 5, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            purged_ts = datetime.fromtimestamp(arch_mtime_s - 120, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            (m_home / "active_captures.json").write_text(
+                json.dumps({"schema_version": 1, "captures": {active_cid: {"label": "Active Run", "project": "gravity", "updated_at": archived_now}}}),
+                encoding="utf-8",
+            )
+            (m_home / "session_meta.json").write_text(
+                json.dumps({"schema_version": 1, "sessions": {active_cid: {"cwd": "/tmp/gravity", "project": "gravity"}, recent_cid: {"cwd": "/tmp/gravity", "project": "gravity"}}}),
+                encoding="utf-8",
+            )
+            (m_home / "live_index.json").write_text(
+                json.dumps({
+                    "recorded_by_cid": {
+                        arch_disk_cid: {
+                            "conversation_id": arch_disk_cid, "label": "Arch Disk", "project": "gravity", "status": "archived",
+                            "detail_slug": "arch-disk", "ended_at": ended_old, "archived_at": archived_now,
+                            "total_tokens": 1100, "useful_tokens": 400, "agents": 1, "primary_model": "gemini-4-neon-high", "current_phase": "production",
+                        },
+                        purged_cid: {
+                            "conversation_id": purged_cid, "label": "Purged Run", "project": "gravity", "status": "archived",
+                            "detail_slug": "purged-run", "ended_at": purged_ts, "archived_at": purged_ts,
+                            "total_tokens": 2000, "useful_tokens": 800, "agents": 2, "primary_model": "gemini-4-neon-high", "current_phase": "validation",
+                        },
+                        summary_only_cid: {
+                            "conversation_id": summary_only_cid, "label": "Summary Only", "project": "gravity", "status": "archived",
+                            "detail_slug": "summary-only", "ended_at": ended_old, "archived_at": ended_old,
+                            "total_tokens": 500, "useful_tokens": 200, "agents": 1, "primary_model": "gemini-4-hydrogen-high", "current_phase": "conception",
+                        },
+                    },
+                    "recent_archived": [
+                        {
+                            "conversation_id": arch_disk_cid, "label": "Arch Disk", "project": "gravity", "status": "archived",
+                            "detail_slug": "arch-disk", "ended_at": ended_old, "archived_at": archived_now,
+                        },
+                        {
+                            "conversation_id": purged_cid, "label": "Purged Run", "project": "gravity", "status": "archived",
+                            "detail_slug": "purged-run", "ended_at": purged_ts, "archived_at": purged_ts,
+                        },
+                    ],
+                    "details": {
+                        purged_cid: {
+                            "found": True, "source": "report_json", "summary_only": False, "slug": "purged-run",
+                            "conversation_id": purged_cid, "label": "Purged Run",
+                            "record": {"conversation_id": purged_cid, "label": "Purged Run", "project": "gravity", "detail_slug": "purged-run", "archived_at": purged_ts},
+                            "detail": {
+                                "root_conversation_id": purged_cid, "label": "Purged Run", "project": "gravity",
+                                "summary": {"first_ts": "2026-11-26T10:00:00Z", "last_ts": "2026-11-26T10:05:00Z", "wall_clock_s": 300.0},
+                                "agents": [
+                                    {"conversation_id": purged_child_cid, "agent_id": "sub-rev", "role": "Reviewer", "type_name": "reviewer", "depth": 1, "parent_id": purged_cid, "source": "subagent", "input_tokens": 200, "cache_read_tokens": 400, "output_tokens": 50, "llm_calls": 1, "tool_calls_total": 1, "clean_termination": True, "first_ts": "2026-11-26T10:02:00Z", "last_ts": "2026-11-26T10:05:00Z", "lifespan_s": 180.0, "by_model": {"gemini-4-neon-high": {"calls": 1}}},
+                                    {"conversation_id": purged_cid, "agent_id": "coordinator", "role": "Coordinator", "type_name": "coordinator", "category": "build", "depth": 0, "source": "root", "input_tokens": 400, "cache_read_tokens": 800, "output_tokens": 150, "llm_calls": 2, "tool_calls_total": 3, "clean_termination": True, "first_ts": "2026-11-26T10:00:00Z", "last_ts": "2026-11-26T10:04:00Z", "lifespan_s": 240.0, "by_model": {"gemini-4-neon-high": {"calls": 2}}},
+                                ],
+                            },
+                            "warnings": [],
+                        },
+                        summary_only_cid: {
+                            "found": True, "source": "history_fallback", "summary_only": True, "slug": "summary-only",
+                            "conversation_id": summary_only_cid, "label": "Summary Only",
+                            "record": {"conversation_id": summary_only_cid, "label": "Summary Only", "project": "gravity", "detail_slug": "summary-only", "total_tokens": 500, "useful_tokens": 200, "primary_model": "gemini-4-hydrogen-high", "current_phase": "conception", "ended_at": ended_old, "archived_at": ended_old},
+                            "detail": {"conversation_id": summary_only_cid, "label": "Summary Only", "project": "gravity"},
+                            "warnings": ["Rapport JSON détaillé absent ; résumé history_fallback."],
+                        },
+                    },
+                }),
+                encoding="utf-8",
+            )
+
+            wf_state_file = wf_home / "workspaces" / "gravity" / "live_state.json"
+            wf_state_file.parent.mkdir(parents=True)
+            wf_state_file.write_text(json.dumps({"stage": "build", "progress": "2/4"}), encoding="utf-8")
+            (wf_home / "live_workspaces.json").write_text(
+                json.dumps({"workspaces": [{"workspace_path": "/tmp/gravity", "state_path": str(wf_state_file)}]}),
+                encoding="utf-8",
+            )
+
+            spi_script = """\
+import argparse, json, os, pathlib, sys
+p = argparse.ArgumentParser()
+p.add_argument("--view", default="")
+p.add_argument("--since-signature", default="")
+p.add_argument("--json", action="store_true")
+a = p.parse_args()
+req = json.loads(sys.stdin.read() or "{}")
+ctx = req.get("context") or {}
+m_home = pathlib.Path(ctx.get("metrics_home") or os.environ.get("GRAVITY_METRICS_HOME") or ".")
+with (m_home / "views_called.log").open("a", encoding="utf-8") as fh:
+    fh.write(a.view + "\\n")
+idx = json.loads((m_home / "live_index.json").read_text(encoding="utf-8"))
+if a.view == "live-meta":
+    cap_f, meta_f = m_home / "active_captures.json", m_home / "session_meta.json"
+    caps = json.loads(cap_f.read_text(encoding="utf-8")).get("captures", {}) if cap_f.is_file() else {}
+    meta = json.loads(meta_f.read_text(encoding="utf-8")).get("sessions", {}) if meta_f.is_file() else {}
+    print(json.dumps({"ok": True, "active_captures": caps, "session_meta": meta, "recorded_by_cid": idx["recorded_by_cid"], "recent_archived": idx["recent_archived"], "signature": "lm-1"}))
+elif a.view == "session-detail":
+    target = str((req.get("params") or {}).get("target") or "").strip()
+    det = idx["details"].get(target)
+    print(json.dumps(det if det else {"found": False, "target": target, "error": "not found"}))
+else:
+    print(json.dumps({"error": f"unexpected view {a.view}"}))
+"""
+            plugins_root = tmp_path / "plugins"
+            _write_spi_plugin(plugins_root, mod_id="metrics", plugin_name="gravity-metrics", script_body=spi_script, views=["metrics", "live-meta", "session-detail"], actions=[])
+            _write_spi_plugin(plugins_root, mod_id="workflow", plugin_name="gravity-workflow", script_body=_WF_LIVE_SPI_SCRIPT, views=["workflow"], actions=[])
+
+            # 1. Default selection -> active_cid gets workflow state, full 4-session list, 0 view="metrics"
+            st_def = api.get_live_session_state(gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root])
+            self.assertEqual([s["conversation_id"] for s in st_def["sessions"]], [active_cid, recent_cid, arch_disk_cid, purged_cid])
+            self.assertEqual(st_def["selected_session"]["conversation_id"], active_cid)
+            self.assertEqual(st_def["selected_session"]["category"], "active")
+            self.assertTrue(st_def["selected_session"]["is_live"])
+            self.assertEqual(st_def["workflow"]["stage"], "build")
+
+            # 2. Explicit recent_cid -> keeps all 4 sessions, isolates wf_state from active_cid
+            st_rec = api.get_live_session_state(session_id=recent_cid, gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root])
+            self.assertEqual([s["conversation_id"] for s in st_rec["sessions"]], [active_cid, recent_cid, arch_disk_cid, purged_cid])
+            self.assertEqual(st_rec["selected_session"]["conversation_id"], recent_cid)
+            self.assertEqual(st_rec["selected_session"]["category"], "recent")
+            self.assertFalse(st_rec["workflow"]["available"])
+            self.assertEqual(st_rec["workflow"]["stage"], "idle")
+
+            # 3. Explicit archived on disk -> metadata complete, wf_state isolated, root phase NOT overwritten to validation
+            st_arch = api.get_live_session_state(session_id=arch_disk_cid, gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root])
+            self.assertEqual(len(st_arch["sessions"]), 4)
+            sel_arch = st_arch["selected_session"]
+            self.assertEqual((sel_arch["archived"], sel_arch["recorded"], sel_arch["detail_slug"], sel_arch["is_live"], sel_arch["archive_only"], sel_arch["category"], sel_arch["label"], sel_arch["project"]), (True, True, "arch-disk", False, False, "archived", "Arch Disk", "gravity"))
+            self.assertEqual(sel_arch["updated_at"], archived_now)
+            self.assertFalse(st_arch["workflow"]["available"])
+            self.assertEqual(st_arch["agents"][0]["phase"], "production")
+
+            # 4. Purged session (brain/<cid> absent) -> SPI-1 session-detail projection with archive_only=True
+            st_ao = api.get_live_session_state(session_id=purged_cid, gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root])
+            self.assertTrue(st_ao["available"])
+            self.assertTrue(st_ao["archive_only"])
+            self.assertEqual(len(st_ao["sessions"]), 4)
+            sel_ao = st_ao["selected_session"]
+            self.assertEqual((sel_ao["archived"], sel_ao["recorded"], sel_ao["detail_slug"], sel_ao["is_live"], sel_ao["archive_only"], sel_ao["category"]), (True, True, "purged-run", False, True, "archived"))
+            self.assertEqual(st_ao["agents"][0]["conversation_id"], purged_cid)
+            self.assertEqual(st_ao["agents"][0]["phase"], "production")
+            self.assertEqual(st_ao["agents"][1]["phase"], "validation")
+            self.assertFalse(st_ao["workflow"]["available"])
+            self.assertTrue(api.get_live_session_state(session_id=purged_cid, since_signature=st_ao["signature"], gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root])["unchanged"])
+
+            # 5. Summary-only history_fallback via recorded_by_cid (beyond recent_archived)
+            st_sum = api.get_live_session_state(session_id=summary_only_cid, gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root])
+            self.assertTrue(st_sum["available"])
+            self.assertTrue(st_sum["selected_session"]["archive_only"])
+            self.assertTrue(st_sum["selected_session"]["summary_only"])
+            self.assertEqual(st_sum["agents"][0]["phase"], "conception")
+            self.assertEqual(len(st_sum["sessions"]), 5)
+
+            # 6. Unknown session_id -> non-blocking warning while preserving all discovered sessions
+            st_miss = api.get_live_session_state(session_id="99999999-missing", gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root])
+            self.assertFalse(st_miss["available"])
+            self.assertIsNone(st_miss["selected_session"])
+            self.assertEqual(len(st_miss["sessions"]), 4)
+            self.assertTrue(st_miss.get("warnings"))
+
+            # 7. Path-traversal session_id rejected in api.py
+            st_bad = api.get_live_session_state(session_id="../etc/passwd", gravity_home=g_home, brain_dir=brain, plugin_roots=[plugins_root])
+            self.assertFalse(st_bad["available"])
+            self.assertTrue(st_bad.get("warnings"))
+
+            # 8. Assert ZERO view="metrics" calls were ever made
+            called_views = (m_home / "views_called.log").read_text(encoding="utf-8").splitlines()
+            self.assertNotIn("metrics", called_views)
+            self.assertIn("live-meta", called_views)
+
+    def test_wf_child_cache_lru_and_archived_phases_preservation(self) -> None:
+        live_provider.reset_live_cache()
+        for i in range(live_provider.MAX_CACHE_ENTRIES):
+            live_provider._cache_put(live_provider._WF_CHILD_CACHE, f"k{i}", i)
+        # Touch k0 so k1 becomes least recently used
+        live_provider._cache_put(live_provider._WF_CHILD_CACHE, "k0", 0)
+        live_provider._cache_put(live_provider._WF_CHILD_CACHE, "k_new", 999)
+        self.assertIn("k0", live_provider._WF_CHILD_CACHE)
+        self.assertNotIn("k1", live_provider._WF_CHILD_CACHE)
+        self.assertIn("k_new", live_provider._WF_CHILD_CACHE)
+
+        agents = [
+            {"id": "root-1", "depth": 0, "source": "root", "phase": "production", "status": "done", "useful_tokens": 500, "cache_read_tokens": 500, "duration_s": 5.0},
+        ]
+        res = live_progress.resolve_session_phases(None, agents=agents, signals={"has_session": True}, is_archived=True)
+        self.assertEqual(agents[0]["phase"], "production")
+        self.assertEqual([p["status"] for p in res["phases"]], ["done", "done", "done", "done"])
+        by_id = {p["id"]: p for p in res["phases"]}
+        self.assertEqual(by_id["production"]["agents"], 1)
+        self.assertEqual(by_id["validation"]["agents"], 0)
 
     def test_subagent_alive_clean_termination_and_coordinator_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
