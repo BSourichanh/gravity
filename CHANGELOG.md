@@ -5,6 +5,8 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-27
+
 ### Fixed
 - **[TASK-GRV-06b] Propagation `brain_dir`, UI orphelins/suppression pending & refresh résilient (`SPEC-MET-06`) :**
   - `plugin/dashboard/api.py` & `plugin/mcp/server.py` : acceptation et propagation de `brain_dir` dans `ctx` vers le provider SPI-1 pour `get_metrics_state` (`_handle_open_gravity_dashboard`, `_handle_get_metrics_state`, `build_initial_summary`), et repli sécurisé de `target` sur `conversation_id` ou `slug` valide (`_SAFE_TARGET_RE`) dans `run_metrics_cli_action`.

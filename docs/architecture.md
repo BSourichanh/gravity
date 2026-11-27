@@ -8,10 +8,10 @@ L'écosystème **Gravity** repose sur quatre plugins **Google Antigravity** auto
 
 | `id` | Plugin | Commande(s) | Responsabilité unique |
 |---|---|---|---|
-| `core` | `gravity` (`v0.3.0`) | `/gravity` | Initialisation de `$GRAVITY_HOME`, découverte/validation `config/module.json`, registre `core/modules.json`, hôte UI unifié (`SPI-1`) et projection `_shared/` (`SPI-4`) |
-| `architect` | `gravity-architect` (`v0.5.1`) | `/gravity-architect` | Atelier Hot/Cold générique, intégrité écosystème, veille plateforme et audit de mise à niveau |
-| `workflow` | `gravity-workflow` (`v0.4.0`) | `/gravity-workflow`, `/caveman` | Harnais multi-agents, workflows orchestrateurs, garde-fous `PreToolUse` fail-closed, evals et routage adaptatif (`evo`) |
-| `metrics` | `gravity-metrics` (`v0.5.1`) | `/gravity-metrics` | Collecte des métriques de sessions Antigravity, analytics tokens/coûts et émission de signaux (`SPI-3`) |
+| `core` | `gravity` (`v0.4.0`) | `/gravity` | Initialisation de `$GRAVITY_HOME`, découverte/validation `config/module.json`, registre `core/modules.json`, hôte UI unifié (`SPI-1`) et projection `_shared/` (`SPI-4`) |
+| `architect` | `gravity-architect` (`v0.6.0`) | `/gravity-architect` | Atelier Hot/Cold générique, intégrité écosystème, veille plateforme et audit de mise à niveau |
+| `workflow` | `gravity-workflow` (`v0.5.0`) | `/gravity-workflow`, `/caveman` | Harnais multi-agents, workflows orchestrateurs, garde-fous `PreToolUse` fail-closed, evals et routage adaptatif (`evo`) |
+| `metrics` | `gravity-metrics` (`v0.6.0`) | `/gravity-metrics` | Collecte des métriques de sessions Antigravity, analytics tokens/coûts et émission de signaux (`SPI-3`) |
 
 ---
 
@@ -71,7 +71,7 @@ La boucle **`metrics -> workflow evo`** permet à `gravity-workflow` d'ajuster d
 
 ## 5. Convergence UI/UX vers `gravity` (`SPI-1`)
 
-En `v0.3.0` :
+En `v0.4.0` :
 - `gravity` (`core`) porte `ui: {"mode": "core", "target": "gravity"}` et héberge la **MCP App native unifiée** (`plugin/mcp_config.json`, `plugin/mcp/server.py`, `plugin/mcp/widget_html.py`, façade `plugin/dashboard/api.py`, outils `open_gravity_dashboard` + `gravity_get_*` + `gravity_metrics_action` + `gravity_read_audit`) à `4` onglets dédiés (**`Session`**, **`Projets`**, **`Historique`**, **`Système`** + modules OCP), découplée des stockages compagnons via **`SPI-1`** (`scripts/dashboard_provider.py`).
 - `gravity-metrics` porte `ui: {"mode": "none", "target": "gravity"}` et expose ses données et actions de cycle de vie via `SPI-1` (`views`: `metrics`, `session-detail`, `audit-detail`, `health`, `live-meta` ; `actions`: `record`, `update`, `update-meta`, `ignore`, `unignore`, `remove`).
 - `gravity-workflow` porte `ui: {"mode": "none", "target": "gravity"}` et expose ses données temps réel et sa santé via `SPI-1` (`views`: `workflow`, `health`) pour l'onglet **`Session`** et `/gravity doctor`.

@@ -1,4 +1,4 @@
-# Gravity Core Plugin (`v0.3.0`)
+# Gravity Core Plugin (`v0.4.0`)
 
 Plugin maître de l'écosystème **Gravity** pour **Google Antigravity**, 100 % bibliothèque standard Python 3.10+.
 
@@ -21,10 +21,10 @@ Plugin maître de l'écosystème **Gravity** pour **Google Antigravity**, 100 % 
 
 | Module (`id`) | Plugin | Commande(s) | Rôle |
 |---|---|---|---|
-| `core` | `gravity` (`v0.3.0`) | `/gravity` | Environnement unifié, registre modules, SSOT `_shared/` et hôte UI unifié (`SPI-1`) |
-| `architect` | `gravity-architect` (`v0.5.1`) | `/gravity-architect` | Conception, intégrité écosystème, stockage Hot/Cold, `waves.py` et veille |
-| `workflow` | `gravity-workflow` (`v0.4.0`) | `/gravity-workflow`, `/caveman` | Harnais multi-agents (Swarm par défaut), garde-fous, evals et routage |
-| `metrics` | `gravity-metrics` (`v0.5.1`) | `/gravity-metrics` | Métriques Antigravity, coûts/tokens et signaux `signal_bus` (`SPI-3`) |
+| `core` | `gravity` (`v0.4.0`) | `/gravity` | Environnement unifié, registre modules, SSOT `_shared/` et hôte UI unifié (`SPI-1`) |
+| `architect` | `gravity-architect` (`v0.6.0`) | `/gravity-architect` | Conception, intégrité écosystème, stockage Hot/Cold, `waves.py` et veille |
+| `workflow` | `gravity-workflow` (`v0.5.0`) | `/gravity-workflow`, `/caveman` | Harnais multi-agents (Swarm par défaut), garde-fous, evals et routage |
+| `metrics` | `gravity-metrics` (`v0.6.0`) | `/gravity-metrics` | Métriques Antigravity, coûts/tokens et signaux `signal_bus` (`SPI-3`) |
 
 ## Utilisation CLI
 

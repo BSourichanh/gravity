@@ -1,7 +1,7 @@
 {
   "name": "gravity",
   "displayName": "Gravity",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Socle central Gravity : environnement ~/.gemini/gravity/, registre modules et UI MCP App unifiée (open_gravity_dashboard, SPI-1).",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [

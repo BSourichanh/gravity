@@ -16,7 +16,13 @@
 
 ---
 
-## `v0.3.0` — Shared Kernel, contrats `SPI-1..4` & découplage complet *(actuelle, post-M6)*
+## `v0.3.0` — Audit multi-dépôts, guides UX & providers initiaux *(livrée)*
+
+- Détecteur de dérive multi-dépôts (`scripts/audit_ecosystem.py`), 4 guides UX (`docs/`), `/gravity help` (`--guide`) et providers lecture seule initiaux.
+
+---
+
+## `v0.4.0` — Shared Kernel, contrats `SPI-1..4` & découplage complet *(actuelle)*
 
 - **Shared Kernel (`SPI-4`) :** socle 100 % stdlib `shared/gravity_shared/` (`9` modules) projeté en lecture seule vers `*/plugin/_shared/` avec manifeste SHA-256 `plugin/.shared_manifest.json` (`scripts/sync_shared.py --check`).
 - **Convergence UI complète (`SPI-1`) :** les 3 compagnons portent `ui.mode: "none"` et exposent leurs vues (`architect`, `workflow`, `metrics`, `session-detail`, `audit-detail`, `health`, `live-meta`) et actions via `scripts/dashboard_provider.py` dans les 4 onglets unifiés de `gravity` (**`Session`**, **`Projets`**, **`Historique`**, **`Système`** + modules OCP).
@@ -25,7 +31,7 @@
 
 ---
 
-## `v0.4.0+` — Perspectives
+## `v0.5.0+` — Perspectives
 
 - Extension de nouveaux modules OCP tiers via `config/module.json` (`SPI-1..3`) sans modifier Core.
 - Enrichissement progressif des profils adaptatifs `evo` et des contrôles d'intégrité continus.

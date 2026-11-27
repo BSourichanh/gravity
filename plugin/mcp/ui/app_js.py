@@ -283,7 +283,7 @@ const sc=extractStructured(m.params);if(sc)hydrateInitialPayload(sc);else loadOv
 });
 async function initBridge(){
 try{
-const res=await sendRequest("ui/initialize",{appInfo:{name:"gravity",version:"0.3.0"},appCapabilities:{},protocolVersion:PROTOCOL_VERSION});
+const res=await sendRequest("ui/initialize",{appInfo:{name:"gravity",version:"0.4.0"},appCapabilities:{},protocolVersion:PROTOCOL_VERSION});
 state.hostCaps=(res&&res.hostCapabilities)||{};applyHostContext((res&&res.hostContext)||{});sendNotification("ui/notifications/initialized",{});
 if(!state.hasToolResult)fallbackTimer=setTimeout(()=>{if(!state.hasToolResult&&state.hostCaps.serverTools)loadOverview(false);else if(!state.hasToolResult){state.loading=false;render()}},450);
 livePollTimer=setInterval(()=>{if(document.visibilityState==="visible"&&state.hostCaps.serverTools&&!state.inflight.live&&!state.liveUi.paused&&getActiveTabObj().kind==="live")loadLiveSession(true)},LIVE_POLL_MS);

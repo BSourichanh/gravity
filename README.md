@@ -1,6 +1,6 @@
 # Gravity — Socle Central & Écosystème Modulaire
 
-**Gravity** (`BSourichanh/gravity`, v0.3.0, licence MIT) est le **plugin cœur** de l'écosystème modulaire **Gravity** pour **Google Antigravity**.
+**Gravity** (`BSourichanh/gravity`, v0.4.0, licence MIT) est le **plugin cœur** de l'écosystème modulaire **Gravity** pour **Google Antigravity**.
 Il unifie l'environnement centralisé (`~/.gemini/gravity/`), le socle partagé SSOT (`shared/gravity_shared/` projeté vers `*/plugin/_shared/` avec vérification SHA-256), la découverte et validation des modules via `config/module.json` v1 (`core/modules.json`), la vue d'ensemble 0-token (`/gravity` via `PreInvocation`) ainsi que l'interface utilisateur **MCP App unifiée** (`gravity_dashboard`, `SPI-1`).
 
 > **Clarification importante :**
@@ -14,10 +14,10 @@ Tous les plugins de la suite reposent sur une pile **100 % bibliothèque standar
 
 | Module (`id`) | Plugin & Dépôt | Commande(s) | Stockage centralisé (`$GRAVITY_HOME/...`) | Rôle |
 |---|---|---|---|---|
-| `core` | [**Gravity**](https://github.com/BSourichanh/gravity) (`gravity` v0.3.0) | `/gravity` | `core/` (`$GRAVITY_CORE_HOME`) | Environnement `$GRAVITY_HOME`, registre `core/modules.json`, SSOT `shared/gravity_shared/` et hôte UI unifié (`SPI-1`) |
-| `architect` | [**Gravity Architect**](https://github.com/BSourichanh/gravity-architect) (`gravity-architect` v0.5.1) | `/gravity-architect` | `architect/` (`$GRAVITY_ARCHITECT_HOME`) | Conception, intégrité écosystème, stockage Hot/Cold, `waves.py`, veille et `SPI-1`/`SPI-2` |
-| `workflow` | [**Gravity Workflow**](https://github.com/BSourichanh/gravity-workflow) (`gravity-workflow` v0.4.0) | `/gravity-workflow`, `/caveman` | `workflow/` (`$GRAVITY_WORKFLOW_HOME`) | Harnais multi-agents (Swarm par défaut), garde-fous fail-closed, evals, routage adaptatif et `SPI-1`/`SPI-3` |
-| `metrics` | [**Gravity Metrics**](https://github.com/BSourichanh/gravity-metrics) (`gravity-metrics` v0.5.1) | `/gravity-metrics` | `metrics/` (`$GRAVITY_METRICS_HOME`) | Collecte coûts/tokens/jalons, signaux `signal_bus` (`SPI-3`), `capture_policy` (`SPI-2`) et `SPI-1` |
+| `core` | [**Gravity**](https://github.com/BSourichanh/gravity) (`gravity` v0.4.0) | `/gravity` | `core/` (`$GRAVITY_CORE_HOME`) | Environnement `$GRAVITY_HOME`, registre `core/modules.json`, SSOT `shared/gravity_shared/` et hôte UI unifié (`SPI-1`) |
+| `architect` | [**Gravity Architect**](https://github.com/BSourichanh/gravity-architect) (`gravity-architect` v0.6.0) | `/gravity-architect` | `architect/` (`$GRAVITY_ARCHITECT_HOME`) | Conception, intégrité écosystème, stockage Hot/Cold, `waves.py`, veille et `SPI-1`/`SPI-2` |
+| `workflow` | [**Gravity Workflow**](https://github.com/BSourichanh/gravity-workflow) (`gravity-workflow` v0.5.0) | `/gravity-workflow`, `/caveman` | `workflow/` (`$GRAVITY_WORKFLOW_HOME`) | Harnais multi-agents (Swarm par défaut), garde-fous fail-closed, evals, routage adaptatif et `SPI-1`/`SPI-3` |
+| `metrics` | [**Gravity Metrics**](https://github.com/BSourichanh/gravity-metrics) (`gravity-metrics` v0.6.0) | `/gravity-metrics` | `metrics/` (`$GRAVITY_METRICS_HOME`) | Collecte coûts/tokens/jalons, signaux `signal_bus` (`SPI-3`), `capture_policy` (`SPI-2`) et `SPI-1` |
 
 ## Installation & prise en main
 
@@ -28,7 +28,7 @@ python install.py --check
 # Installer globalement (~/.gemini/config/plugins/gravity)
 python install.py
 
-# Remplacer une ancienne installation du harnais 'gravity' par Gravity Core v0.3.0
+# Remplacer une ancienne installation du harnais 'gravity' par Gravity Core v0.4.0
 python install.py --force
 
 # Installer dans un workspace dédié (.agents/plugins/gravity)
