@@ -88,6 +88,59 @@ def _write_spi_plugin(
     return mod_dir
 
 
+_LIVE_META_SPI_SCRIPT = """\
+import argparse, hashlib, json, os, pathlib, sys
+p = argparse.ArgumentParser()
+p.add_argument("--view", default="")
+p.add_argument("--since-signature", default="")
+p.add_argument("--json", action="store_true")
+a = p.parse_args()
+req = json.loads(sys.stdin.read() or "{}")
+ctx = req.get("context") or {}
+if a.view == "live-meta":
+    m_raw = ctx.get("metrics_home") or os.environ.get("GRAVITY_METRICS_HOME") or ""
+    if not m_raw:
+        g_raw = os.environ.get("GRAVITY_HOME") or ""
+        m_raw = str(pathlib.Path(g_raw) / "metrics") if g_raw else "."
+    m_home = pathlib.Path(m_raw)
+    cap_f, meta_f = m_home / "active_captures.json", m_home / "session_meta.json"
+    caps = json.loads(cap_f.read_text(encoding="utf-8")).get("captures", {}) if cap_f.is_file() else {}
+    meta = json.loads(meta_f.read_text(encoding="utf-8")).get("sessions", {}) if meta_f.is_file() else {}
+    sig = hashlib.sha256(json.dumps({"c": caps, "m": meta}, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    print(json.dumps({"ok": True, "active_captures": caps, "session_meta": meta, "signature": sig}))
+else:
+    print(json.dumps({"available": True, "changed": True, "unchanged": False, "signature": "met-stub", "records": []}))
+"""
+
+_WF_LIVE_SPI_SCRIPT = """\
+import argparse, json, os, pathlib, sys
+p = argparse.ArgumentParser()
+p.add_argument("--view", default="")
+p.add_argument("--since-signature", default="")
+p.add_argument("--json", action="store_true")
+a = p.parse_args()
+req = json.loads(sys.stdin.read() or "{}")
+ctx = req.get("context") or {}
+ws = str((req.get("params") or {}).get("ws") or "").strip()
+wf_raw = ctx.get("workflow_home") or os.environ.get("GRAVITY_WORKFLOW_HOME") or ""
+if not wf_raw:
+    g_raw = os.environ.get("GRAVITY_HOME") or ""
+    wf_raw = str(pathlib.Path(g_raw) / "workflow") if g_raw else "."
+wf_home = pathlib.Path(wf_raw)
+reg_f = wf_home / "live_workspaces.json"
+if reg_f.is_file():
+    entries = json.loads(reg_f.read_text(encoding="utf-8")).get("workspaces") or []
+    for entry in entries:
+        wp = str(entry.get("workspace_path") or "")
+        sp = pathlib.Path(str(entry.get("state_path") or ""))
+        if sp.is_file() and (not ws or wp == ws or pathlib.Path(wp).name == ws):
+            st = json.loads(sp.read_text(encoding="utf-8"))
+            print(json.dumps({"available": True, "changed": True, "unchanged": False, "signature": f"wf:{st.get('stage')}:{st.get('progress')}", **st}))
+            sys.exit(0)
+print(json.dumps({"available": False, "changed": True, "unchanged": False, "signature": "wf-idle", "stage": "idle", "progress": "0/0", "tasks": [], "events": []}))
+"""
+
+
 class TestLiveProvider(unittest.TestCase):
     def setUp(self) -> None:
         live_provider.reset_live_cache()
@@ -267,8 +320,19 @@ class TestLiveProvider(unittest.TestCase):
                 json.dumps({"workspaces": [{"workspace_path": str(atelier), "state_path": str(ws_state_file), "updated_at": "2026-11-25T11:00:25Z"}]}),
                 encoding="utf-8",
             )
+            plugins_root = tmp_path / "plugins"
+            _write_spi_plugin(
+                plugins_root, mod_id="metrics", plugin_name="gravity-metrics",
+                script_body=_LIVE_META_SPI_SCRIPT, views=["metrics", "live-meta"], actions=[],
+            )
+            _write_spi_plugin(
+                plugins_root, mod_id="workflow", plugin_name="gravity-workflow",
+                script_body=_WF_LIVE_SPI_SCRIPT, views=["workflow"], actions=[],
+            )
 
-            state = api.get_live_session_state(gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home)
+            state = api.get_live_session_state(
+                gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root]
+            )
             self.assertEqual([s["conversation_id"] for s in state["sessions"]], [root_cid])
             self.assertEqual(state["workflow"]["stage"], "build")
             self.assertEqual(state["workflow"]["progress"], "4/8")
@@ -407,26 +471,37 @@ class TestLiveProvider(unittest.TestCase):
                 json.dumps({"schema_version": 1, "captures": {cap_stale_cid: {"label": "cap-stale", "start_step": 0}}}),
                 encoding="utf-8",
             )
+            plugins_root = tmp_path / "plugins"
+            _write_spi_plugin(
+                plugins_root, mod_id="metrics", plugin_name="gravity-metrics",
+                script_body=_LIVE_META_SPI_SCRIPT, views=["metrics", "live-meta"], actions=[],
+            )
 
-            st1 = api.get_live_session_state(gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home)
+            st1 = api.get_live_session_state(
+                gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root]
+            )
             self.assertEqual([s["conversation_id"] for s in st1["sessions"]], [cap_stale_cid, fresh_cid])
             self.assertFalse(st1["sessions"][0]["archived"])
             self.assertFalse(st1["sessions"][1]["archived"])
 
             (m_home / "active_captures.json").write_text(json.dumps({"schema_version": 1, "captures": {}}), encoding="utf-8")
-            st_fresh = api.get_live_session_state(gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home)
+            st_fresh = api.get_live_session_state(
+                gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root]
+            )
             self.assertEqual([s["conversation_id"] for s in st_fresh["sessions"]], [fresh_cid])
             self.assertFalse(st_fresh["sessions"][0]["archived"])
 
             st_exp = api.get_live_session_state(
-                session_id=arch_cid, gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home
+                session_id=arch_cid, gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root]
             )
             self.assertEqual([s["conversation_id"] for s in st_exp["sessions"]], [arch_cid])
             self.assertTrue(st_exp["sessions"][0]["archived"])
 
             os.utime(brain / fresh_cid / ".system_generated" / "logs" / "transcript.jsonl", ns=(old_ns, old_ns))
             os.utime(brain / fresh_cid, ns=(old_ns, old_ns))
-            st_none = api.get_live_session_state(gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home)
+            st_none = api.get_live_session_state(
+                gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root]
+            )
             self.assertFalse(st_none["available"])
             self.assertEqual(st_none["sessions"], [])
 
@@ -714,12 +789,124 @@ class TestLiveProvider(unittest.TestCase):
                 json.dumps({"schema_version": 1, "sessions": {root_cid: {"cwd": str(product_repo), "project": "gravity"}}}),
                 encoding="utf-8",
             )
-            st = api.get_live_session_state(gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home)
+            plugins_root = tmp_path / "plugins"
+            _write_spi_plugin(
+                plugins_root, mod_id="metrics", plugin_name="gravity-metrics",
+                script_body=_LIVE_META_SPI_SCRIPT, views=["metrics", "live-meta"], actions=[],
+            )
+            _write_spi_plugin(
+                plugins_root, mod_id="workflow", plugin_name="gravity-workflow",
+                script_body=_WF_LIVE_SPI_SCRIPT, views=["workflow"], actions=[],
+            )
+            st = api.get_live_session_state(
+                gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root]
+            )
             self.assertEqual(live_provider.MAX_RECENT_EVENTS, 80)
+            self.assertEqual(st["selected_session"]["project"], "gravity")
             self.assertEqual(st["selected_session"]["workspace_kind"], "code")
             self.assertFalse(st["workflow"]["is_active"])
             self.assertEqual(st["workflow"]["stage"], "idle")
             self.assertEqual(st["workflow"]["progress"], "0/0")
+
+    def test_spi_live_meta_decoupling_neutral_fallback_and_dead_code_removed(self) -> None:
+        from dashboard import providers as providers_pkg
+
+        for removed_prog in ("read_workflow_live_c8_ro", "_workspace_slug_hash", "_norm_ws_key", "_select_c8_workspace", "MAX_WORKFLOW_EVENTS"):
+            self.assertFalse(hasattr(live_progress, removed_prog), f"{removed_prog} should be removed from live_progress")
+        for removed_md in ("classify_verdict_tone", "clean_md_inline", "extract_md_excerpt", "extract_md_title", "extract_md_verdict"):
+            self.assertFalse(hasattr(providers_pkg, removed_md), f"{removed_md} should be removed from dashboard.providers")
+
+        for rel in ("plugin/dashboard/providers/live_provider.py", "plugin/dashboard/providers/live_progress.py"):
+            src = (REPO_ROOT / rel).read_text(encoding="utf-8")
+            for forbidden in ("active_captures.json", "session_meta.json", "live_workspaces.json", "live_state.json", "resolve_module_home"):
+                self.assertNotIn(forbidden, src, f"{forbidden} must not appear in {rel}")
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, _clean_env(), clear=True):
+            tmp_path = Path(tmp)
+            brain = tmp_path / "brain"
+            g_home = tmp_path / "gravity"
+            m_home = g_home / "metrics"
+            wf_home = g_home / "workflow"
+            m_home.mkdir(parents=True)
+            wf_home.mkdir(parents=True)
+
+            root_cid = "88888888-aaaa-bbbb-cccc-111111111111"
+            _write_jsonl(
+                brain / root_cid / ".system_generated" / "logs" / "transcript.jsonl",
+                [{"step_index": 0, "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": "2026-11-27T10:00:00Z"}],
+            )
+            (m_home / "active_captures.json").write_text(
+                json.dumps({"schema_version": 1, "captures": {root_cid: {"label": "leaked-cap", "project": "leaked-proj"}}}),
+                encoding="utf-8",
+            )
+            (m_home / "session_meta.json").write_text(
+                json.dumps({"schema_version": 1, "sessions": {root_cid: {"cwd": "/tmp/leaked-ws", "project": "leaked-proj"}}}),
+                encoding="utf-8",
+            )
+            ws_state = wf_home / "workspaces" / "leaked" / "live_state.json"
+            ws_state.parent.mkdir(parents=True)
+            ws_state.write_text(json.dumps({"stage": "build", "progress": "7/8"}), encoding="utf-8")
+            (wf_home / "live_workspaces.json").write_text(
+                json.dumps({"workspaces": [{"workspace_path": "/tmp/leaked-ws", "state_path": str(ws_state)}]}),
+                encoding="utf-8",
+            )
+
+            st_no_spi = api.get_live_session_state(
+                gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[]
+            )
+            self.assertTrue(st_no_spi["available"])
+            self.assertFalse(st_no_spi["selected_session"]["captured"])
+            self.assertEqual(st_no_spi["selected_session"]["project"], "workspace")
+            self.assertFalse(st_no_spi["workflow"]["available"])
+            self.assertEqual(st_no_spi["workflow"]["stage"], "idle")
+            self.assertEqual(st_no_spi["workflow"]["progress"], "0/0")
+            self.assertFalse(st_no_spi["workflow"]["is_active"])
+
+            plugins_root = tmp_path / "plugins"
+            err_script = (
+                "import argparse, json\n"
+                "p = argparse.ArgumentParser()\n"
+                "p.add_argument('--view', default='')\n"
+                "p.add_argument('--since-signature', default='')\n"
+                "p.add_argument('--json', action='store_true')\n"
+                "p.parse_args()\n"
+                "print(json.dumps({'ok': False, 'error': 'simulated failure'}))\n"
+            )
+            _write_spi_plugin(
+                plugins_root, mod_id="metrics", plugin_name="gravity-metrics",
+                script_body=err_script, views=["metrics", "live-meta"], actions=[],
+            )
+            st_err = api.get_live_session_state(
+                gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root]
+            )
+            self.assertFalse(st_err["selected_session"]["captured"])
+            self.assertEqual(st_err["selected_session"]["project"], "workspace")
+
+            _write_spi_plugin(
+                plugins_root, mod_id="metrics", plugin_name="gravity-metrics",
+                script_body=_LIVE_META_SPI_SCRIPT, views=["metrics", "live-meta"], actions=[],
+            )
+            st_v1 = api.get_live_session_state(
+                gravity_home=g_home, brain_dir=brain, metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root]
+            )
+            self.assertTrue(st_v1["selected_session"]["captured"])
+            self.assertEqual(st_v1["selected_session"]["label"], "leaked-cap")
+            self.assertTrue(
+                api.get_live_session_state(
+                    since_signature=st_v1["signature"], gravity_home=g_home, brain_dir=brain,
+                    metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root],
+                )["unchanged"]
+            )
+            (m_home / "active_captures.json").write_text(
+                json.dumps({"schema_version": 1, "captures": {root_cid: {"label": "updated-cap", "project": "leaked-proj"}}}),
+                encoding="utf-8",
+            )
+            st_v2 = api.get_live_session_state(
+                since_signature=st_v1["signature"], gravity_home=g_home, brain_dir=brain,
+                metrics_home=m_home, workflow_home=wf_home, plugin_roots=[plugins_root],
+            )
+            self.assertTrue(st_v2["changed"])
+            self.assertEqual(st_v2["selected_session"]["label"], "updated-cap")
 
 
 class TestLiveProgressAndGenericSpi(unittest.TestCase):

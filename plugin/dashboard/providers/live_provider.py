@@ -16,14 +16,14 @@ from _shared.transcript_reader import (
     extract_shell_nonzero_code, is_worktree_path, normalize_worktree_path,
     parse_iso_ts, read_jsonl_incremental, strip_file_uri,
 )
-from core.registry import resolve_gravity_home, resolve_module_home
+from core.registry import resolve_gravity_home
 from dashboard.providers import (
     enforce_payload_budget, normalize_plugin_roots, read_json_ro, short_digest, stat_token, truncate_preview, unchanged_response,
 )
 from dashboard.providers.live_progress import (
     build_live_progress, collect_descendant_sig_tokens, collect_wf_refs_from_obj,
     discover_live_tree, find_cycle_root_overrides, parse_wf_agent_refs,
-    read_workflow_live_c8_ro, update_termination_acc,
+    update_termination_acc,
 )
 from dashboard.providers.spi import invoke_dashboard_provider, resolve_dashboard_provider
 
@@ -503,12 +503,28 @@ def get_live_session_state(
     else:
         env_b = os.environ.get("GRAVITY_BRAIN_DIR", "").strip()
         b_dir = Path(env_b).expanduser().resolve() if env_b else (safe_home_dir() / ".gemini" / "antigravity" / "brain").resolve()
-    m_home = Path(metrics_home).expanduser().resolve() if metrics_home is not None else resolve_module_home("metrics", env_override="GRAVITY_METRICS_HOME", gravity_home=eff_gravity, home_dir=home_dir)
-    cap_path, meta_path = m_home / "active_captures.json", m_home / "session_meta.json"
-    cap_raw, meta_raw = _read_json_cached(cap_path), _read_json_cached(meta_path)
-    active_captures = cap_raw.get("captures") if isinstance(cap_raw, dict) and isinstance(cap_raw.get("captures"), dict) else {}
-    session_meta = meta_raw.get("sessions") if isinstance(meta_raw, dict) and isinstance(meta_raw.get("sessions"), dict) else {}
-    archived_map, archived_sig_tokens = _load_archived_status_ro(gravity_home=eff_gravity, metrics_home=m_home, plugin_roots=eff_roots, home_dir=home_dir)
+    meta_res = invoke_dashboard_provider(
+        "metrics",
+        view="live-meta",
+        ctx={"metrics_home": metrics_home} if metrics_home is not None else None,
+        gravity_home=eff_gravity,
+        plugin_roots=eff_roots,
+        home_dir=home_dir,
+    )
+    if (
+        isinstance(meta_res, dict)
+        and not meta_res.get("spi_fallback")
+        and meta_res.get("ok") is not False
+        and not meta_res.get("error")
+    ):
+        raw_caps = meta_res.get("active_captures")
+        raw_meta = meta_res.get("session_meta")
+        active_captures = raw_caps if isinstance(raw_caps, dict) else {}
+        session_meta = raw_meta if isinstance(raw_meta, dict) else {}
+        live_meta_sig = str(meta_res.get("signature") or "")
+    else:
+        active_captures, session_meta, live_meta_sig = {}, {}, ""
+    archived_map, archived_sig_tokens = _load_archived_status_ro(gravity_home=eff_gravity, metrics_home=metrics_home, plugin_roots=eff_roots, home_dir=home_dir)
     q_cid = session_id.strip().lower()
     roots = _discover_brain_sessions(b_dir, active_captures, session_meta, archived_map, explicit_cid=q_cid)
     selected = roots[0] if roots else None
@@ -518,20 +534,26 @@ def get_live_session_state(
     root_ws = str((sel_cap or {}).get("project") or sel_meta.get("project") or _normalize_repo_name(root_cwd) or "workspace") if selected is not None else ""
     effective_ws = ws.strip() or (root_cwd or (root_ws if root_ws and root_ws != "workspace" else ""))
 
-    wf_state: Optional[dict[str, Any]] = None
+    wf_state: dict[str, Any] = {
+        "available": False,
+        "stage": "idle",
+        "progress": "0/0",
+        "wave_name": "",
+        "tasks": [],
+        "events": [],
+        "signature": "",
+    }
     if resolve_dashboard_provider("workflow", gravity_home=eff_gravity, plugin_roots=eff_roots, home_dir=home_dir).get("ok"):
         cand_wf = invoke_dashboard_provider("workflow", view="workflow", params={"ws": effective_ws}, ctx={"workflow_home": workflow_home}, gravity_home=eff_gravity, plugin_roots=eff_roots, home_dir=home_dir)
-        if not cand_wf.get("spi_fallback"):
+        if isinstance(cand_wf, dict) and not cand_wf.get("spi_fallback"):
             wf_state = cand_wf
-    if wf_state is None:
-        wf_state = read_workflow_live_c8_ro(ws=effective_ws, gravity_home=eff_gravity, workflow_home=workflow_home, registry_path=registry_path, home_dir=home_dir)
 
     progress_info = build_live_progress(wf_state)
     wf_slim = {k: wf_state.get(k) for k in ("available", "stage", "progress", "mode", "level", "preset_profile", "suggested_profile", "guard_status", "nodes", "selected_workspace")}
     wf_slim["progress"], wf_slim["progress_detail"] = progress_info["label"], progress_info
     wf_slim["is_active"] = str(wf_slim.get("stage") or "").strip().lower() not in ("", "idle")
 
-    sig_parts: list[Any] = [str(b_dir), q_cid, bool(include_events), stat_token(cap_path), stat_token(meta_path), archived_sig_tokens, wf_state.get("signature", ""), [(r["cid"], r["mtime_ns"], bool(r.get("archived"))) for r in roots]]
+    sig_parts: list[Any] = [str(b_dir), q_cid, bool(include_events), live_meta_sig, archived_sig_tokens, wf_state.get("signature", ""), [(r["cid"], r["mtime_ns"], bool(r.get("archived"))) for r in roots]]
     root_task_logs_count = 0
     if selected is not None:
         desc_tokens, root_task_logs_count = collect_descendant_sig_tokens(

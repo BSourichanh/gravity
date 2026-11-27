@@ -1,23 +1,18 @@
-"""Live agent tree, clean termination, C8 workflow reader, and progress aggregation (100% stdlib)."""
+"""Live agent tree, clean termination, and workflow progress aggregation (100% stdlib)."""
 
 from __future__ import annotations
 
 from collections import deque
 from datetime import datetime, timezone
-import hashlib
-import os
 from pathlib import Path
 import re
 from typing import Any, Callable, Optional
 
 from _shared.path_safety import is_symlink_or_junction
 from _shared.transcript_reader import extract_shell_nonzero_code, parse_iso_ts
-from core.registry import resolve_module_home
-from dashboard.providers import read_json_ro, short_digest, stat_token
 
 TERMINAL_TOOLS: frozenset[str] = frozenset({"finish", "post_message", "swarm_wait", "send_message"})
 TERMINAL_ERROR_STATUSES: frozenset[str] = frozenset({"ERROR", "INVALID", "FAILED"})
-MAX_WORKFLOW_EVENTS = 50
 WF_AGENT_REF_RE = re.compile(
     r"\[agent:([^\]]+)\]\s*([^\n]*?)\s*\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)"
 )
@@ -30,7 +25,6 @@ _WF_STATUS_WORDS: frozenset[str] = frozenset(
 )
 _WF_ALLOWED_TRANSCRIPT_TYPES: frozenset[str] = frozenset({"SYSTEM_MESSAGE", "GENERIC"})
 _WF_IGNORED_OUTPUT_MARKERS: tuple[str, ...] = ("Showing lines ", "Command output:", "Command exited with code ")
-_SLUG_RE = re.compile(r"[^a-z0-9]+")
 _PROGRESS_RATIO_RE = re.compile(r"^\s*(\d+)\s*/\s*(\d+)\s*$")
 _DONE_STATES: frozenset[str] = frozenset({"done", "completed", "complete", "passed", "ok", "closed", "finished"})
 
@@ -432,109 +426,6 @@ def find_cycle_root_overrides(
     return overrides
 
 
-def _workspace_slug_hash(workspace_root: Path) -> str:
-    resolved = workspace_root.resolve()
-    slug = _SLUG_RE.sub("-", resolved.name.lower()).strip("-")[:32] or "workspace"
-    return f"{slug}-{hashlib.sha256(os.path.normcase(str(resolved)).encode('utf-8')).hexdigest()[:8]}"
-
-
-def _norm_ws_key(raw: str) -> str:
-    try:
-        return os.path.normcase(str(Path(raw).expanduser().resolve()))
-    except OSError:
-        return os.path.normcase(raw)
-
-
-def _select_c8_workspace(ws: str, workspaces: list[dict[str, Any]], wf_home: Path) -> Optional[Path]:
-    query = ws.strip()
-    if not query:
-        return Path(workspaces[0]["state_path"]) if workspaces else None
-    if query.isdigit() and 0 <= int(query) < len(workspaces):
-        return Path(workspaces[int(query)]["state_path"])
-    norm_q = _norm_ws_key(query)
-    for item in workspaces:
-        ws_val, st_val = str(item.get("workspace_path") or ""), str(item.get("state_path") or "")
-        if query in (ws_val, st_val) or (ws_val and _norm_ws_key(ws_val) == norm_q):
-            return Path(st_val)
-    for item in workspaces:
-        ws_val = str(item.get("workspace_path") or "")
-        if ws_val and Path(ws_val).name.casefold() == query.casefold():
-            return Path(item["state_path"])
-    ws_dir = Path(query).expanduser()
-    if ws_dir.is_dir() and not is_symlink_or_junction(ws_dir):
-        r_ws = ws_dir.resolve()
-        for cand in (
-            wf_home / "workspaces" / _workspace_slug_hash(r_ws) / "live_state.json",
-            r_ws / ".agents" / "gravity-workflow" / "observability" / "live_state.json",
-        ):
-            if cand.is_file() and not is_symlink_or_junction(cand):
-                return cand.resolve()
-    return None
-
-
-def read_workflow_live_c8_ro(
-    ws: str = "", *, gravity_home: Optional[Path] = None,
-    workflow_home: Optional[Path] = None, registry_path: Optional[Path] = None, home_dir: Optional[Path] = None,
-) -> dict[str, Any]:
-    """Read C8 (`live_workspaces.json` + `live_state.json`) read-only with `"0/0"` default."""
-    wf_home = Path(workflow_home).expanduser().resolve() if workflow_home is not None else resolve_module_home("workflow", env_override="GRAVITY_WORKFLOW_HOME", gravity_home=gravity_home, home_dir=home_dir)
-    reg_file = Path(registry_path).expanduser().resolve() if registry_path is not None else (wf_home / "live_workspaces.json").resolve()
-    out: dict[str, Any] = {
-        "available": False, "stage": "idle", "progress": "0/0", "mode": "evo", "level": "standard",
-        "preset_profile": "standard", "suggested_profile": "standard", "guard_status": "ON",
-        "nodes": {"planner": "", "builder": "", "reviewer": ""}, "events": [],
-        "selected_workspace": None, "waves": [], "tasks": [], "warnings": [],
-    }
-    if is_symlink_or_junction(wf_home) or is_symlink_or_junction(reg_file):
-        out["warnings"].append("Refused symlink or junction workflow path.")
-        out["signature"] = short_digest([ws.strip(), str(wf_home), "symlink"])
-        return out
-
-    workspaces: list[dict[str, Any]] = []
-    if reg_file.is_file():
-        reg_data, reg_warn = read_json_ro(reg_file)
-        if reg_warn:
-            out["warnings"].append(reg_warn)
-        entries = reg_data.get("workspaces") if isinstance(reg_data, dict) and isinstance(reg_data.get("workspaces"), list) else []
-        for entry in entries:
-            sp = Path(str(entry.get("state_path") or "").strip()).expanduser() if isinstance(entry, dict) and str(entry.get("state_path") or "").strip() else None
-            if sp is not None and sp.name == "live_state.json" and not is_symlink_or_junction(sp):
-                ws_p = str(entry.get("workspace_path") or entry.get("workspace") or str(sp.parent)).strip()
-                workspaces.append({"workspace_path": ws_p, "state_path": str(sp), "updated_at": str(entry.get("updated_at") or "")})
-        workspaces.sort(key=lambda item: item["updated_at"], reverse=True)
-    if not workspaces and (wf_home / "workspaces").is_dir() and not is_symlink_or_junction(wf_home / "workspaces"):
-        try:
-            for sub in sorted((wf_home / "workspaces").iterdir(), key=lambda p: p.name):
-                sf = sub / "live_state.json"
-                if not is_symlink_or_junction(sub) and sub.is_dir() and not is_symlink_or_junction(sf) and sf.is_file():
-                    workspaces.append({"workspace_path": sub.name, "state_path": str(sf.resolve()), "updated_at": ""})
-        except OSError:
-            pass
-
-    selected_file = _select_c8_workspace(ws, workspaces, wf_home)
-    if selected_file is not None and (selected_file.name != "live_state.json" or is_symlink_or_junction(selected_file)):
-        selected_file = None
-    out["signature"] = short_digest([ws.strip(), str(wf_home), stat_token(reg_file), stat_token(selected_file), len(workspaces)])
-    if selected_file is not None and selected_file.is_file():
-        raw_state, st_warn = read_json_ro(selected_file)
-        if st_warn:
-            out["warnings"].append(st_warn)
-        if isinstance(raw_state, dict):
-            out["available"] = True
-            for key in ("stage", "progress", "mode", "level", "preset_profile", "suggested_profile", "guard_status"):
-                if isinstance(raw_state.get(key), str) and raw_state[key].strip():
-                    out[key] = raw_state[key].strip()
-            if isinstance(raw_state.get("nodes"), dict):
-                out["nodes"] = {str(k): str(v) for k, v in raw_state["nodes"].items() if isinstance(k, str) and isinstance(v, str)}
-            if isinstance(raw_state.get("events"), list):
-                out["events"] = [e for e in raw_state["events"][-MAX_WORKFLOW_EVENTS:] if isinstance(e, dict)]
-            for k in ("waves", "tasks"):
-                if isinstance(raw_state.get(k), (list, dict)):
-                    out[k] = raw_state[k]
-            out["selected_workspace"] = str(selected_file.parent)
-    return out
-
-
 def _is_item_done(item: Any) -> bool:
     if item is True:
         return True
@@ -586,5 +477,5 @@ def build_live_progress(wf_state: Optional[dict[str, Any]]) -> dict[str, Any]:
 __all__ = [
     "TERMINAL_ERROR_STATUSES", "TERMINAL_TOOLS", "WF_AGENT_REF_RE", "build_live_progress", "collect_descendant_sig_tokens",
     "collect_wf_refs_from_obj", "compute_termination_flags", "derive_agent_status", "discover_live_tree", "extract_shell_nonzero_code",
-    "find_cycle_root_overrides", "merge_wf_ref", "parse_iso_ts", "parse_wf_agent_refs", "read_workflow_live_c8_ro", "update_termination_acc",
+    "find_cycle_root_overrides", "merge_wf_ref", "parse_iso_ts", "parse_wf_agent_refs", "update_termination_acc",
 ]
