@@ -75,3 +75,21 @@ En `v0.2.0` :
 - `gravity-metrics` porte `ui: {"mode": "transition-mcp", "target": "gravity"}` (son widget MCP App reste disponible durant la transition ; les écritures `archive`/`remove` restent sous `/gravity-metrics`).
 - `gravity-workflow` porte `ui: {"mode": "transition-sidecar", "target": "gravity"}` (son sidecar HTTP `4789` reste fonctionnel durant la transition ; la vue `Workflow Live` dans `gravity` lit `live_workspaces.json`/`live_state.json`).
 - `gravity-architect` porte `ui: {"mode": "none", "target": "gravity"}` et dispose de son onglet dédié lecture seule dans `gravity` (**`Architect`** sur l'atelier Hot/Cold + `audits/code/` hors `audits/agents/`).
+
+---
+
+## 6. Lecture DDD & Architecture Hexagonale pragmatique
+
+L'écosystème Gravity applique de fait les frontières du **Domain-Driven Design (DDD)** et de l'**Architecture Hexagonale (Ports & Adapters)** sans surcouche abstraite superflue :
+
+| Concept DDD / Hexagonal | Traduction concrète dans Gravity |
+|---|---|
+| **Bounded Contexts** | 4 contextes autonomes (`core` `gravity`, `architect` `gravity-architect`, `workflow` `gravity-workflow`, `metrics` `gravity-metrics`) + plan de pilotage séparé `gravity-workshop` |
+| **Shared Kernel** | `shared/gravity_shared/` (`atomic_io`, `file_lock`, `path_safety`, `hook_runtime`, `installer_core`, `validator_core`, `transcript_reader`, `signal_bus`) projeté en lecture seule vers `*/plugin/_shared/` |
+| **Ports entrants / sortants (SPI)** | Contrats [`module.json`](module-contract.md) (`SPI-1..4`), `scripts/dashboard_provider.py` (`SPI-1`), `capture_policy` (`SPI-2`), enveloppe `signal_v1` (`SPI-3`), schéma `wave_plan_v1` |
+| **Adapteurs primaires & secondaires** | **Entrants :** CLI (`init_env.py`, `cli.py`, `sync_tracking.py`), serveur MCP (`mcp/server.py`), hooks Antigravity (`hooks/*.py`). **Sortants :** stockage `$GRAVITY_HOME/<module>/`, fichiers JSONL/transcripts, `git worktree` |
+
+### Règle de proportionnalité KISS / YAGNI
+
+- **Appliquer** dès qu'un composant porte des règles métier riches, plusieurs adapteurs I/O (CLI, MCP, hooks) ou une frontière partagée (`SPI`, contrat JSON).
+- **S'abstenir** sur les scripts utilitaires linéaires, wrappers minces ou helpers mono-usage : ne jamais introduire de hiérarchie d'interfaces ou de *repositories* spéculative sans second adapteur ou besoin de test isolé avéré.

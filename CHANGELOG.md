@@ -58,6 +58,10 @@ Format basé sur *Keep a Changelog* et *Semantic Versioning*.
   - Suppression complète du fournisseur SQLite legacy `plugin/dashboard/providers/bridge_provider.py` (`450` L) et ajout de `TestBridgeRetirement` dans `tests/test_dashboard_providers.py` (vérification de l'absence du fichier, du `ModuleNotFoundError` à l'import et du retrait de `get_bridge_state` / `open_sqlite_ro` / paramètres `bridge*` de la façade).
 
 ### Added
+- **[TASK-DOC-01b] Documentation DDD & Architecture Hexagonale pragmatique (`SPEC-DOC-01`) :**
+  - [`docs/architecture.md`](docs/architecture.md) : ajout de la section `## 6. Lecture DDD & Architecture Hexagonale pragmatique` cartographiant *Bounded Contexts*, *Shared Kernel* (`shared/gravity_shared/` → `plugin/_shared/`), ports `SPI-1..4`, adapteurs entrants/sortants et règle de proportionnalité KISS/YAGNI.
+  - [`docs/repo-standard.md`](docs/repo-standard.md) : ajout d'une puce pragmatique Architecture Hexagonale & DDD (KISS/YAGNI) sous `## 3. Règles d'ingénierie & qualité logicielle`.
+  - [`docs/README.md`](docs/README.md) : mise à jour de la description de [`docs/architecture.md`](docs/architecture.md).
 - **[TASK-CORE-04] Manifeste `plugin/hooks.json` (`SPEC-CORE-02`) :**
   - Ajout de `plugin/hooks.json` (`enabled: true`) câblant le hook `PreInvocation` 0-token sur `python3 hooks/pre_invocation_gravity.py` (timeout `10` s), adapté à l'installation sous Windows via `validate.py --fix-python-cmd`.
 - **[TASK-CORE-03b] Portage `core/bundle.py` (`EC-4`) & `core/updater.py` (`_shared` sync check) (`SPEC-CORE-02`) :**

@@ -55,6 +55,7 @@ Interdits : `$schema`, `license`, `keywords` ou tout champ non officiel, ainsi q
 ## 3. Règles d'ingénierie & qualité logicielle
 
 - **Principes obligatoires :** **KISS**, **YAGNI**, **DRY**, **SOLID**, **CUPID**.
+- **Architecture Hexagonale & DDD pragmatique :** structurer domaine, ports (`config/module.json`, `SPI-1..4`) et adapteurs (CLI, MCP, hooks, `$GRAVITY_HOME`) lorsque la complexité métier ou la pluralité d'adapteurs le justifie (voir [`architecture.md`](architecture.md)) ; proscrire toute abstraction spéculative sur les scripts simples (**KISS/YAGNI**).
 - **Pile 100 % Python 3.10+ stdlib :** aucune dépendance tierce dans `plugin/`, `scripts/`, `install.py` et `tests/`.
 - **Encodage & fins de ligne :** UTF-8 **sans BOM**, fins de ligne **LF** (`\n`).
 - **Portabilité Windows / POSIX :** conserver `"python3"` dans les manifests source (`hooks.json`, `mcp_config.json`, `sidecar.json`) ; l'adaptation éventuelle ne s'applique qu'à la copie installée sous Windows via `install.py`.
