@@ -8,10 +8,10 @@ L'écosystème **Gravity** repose sur quatre plugins **Google Antigravity** auto
 
 | `id` | Plugin | Commande(s) | Responsabilité unique |
 |---|---|---|---|
-| `core` | `gravity` (`v0.3.0`) | `/gravity` | Initialisation de `$GRAVITY_HOME`, découverte/validation `config/module.json`, registre `core/modules.json`, hôte UI unifié (SPI) |
-| `architect` | `gravity-architect` (`v0.5.0`) | `/gravity-architect` | Atelier Hot/Cold générique, intégrité écosystème, veille plateforme et audit de mise à niveau |
-| `workflow` | `gravity-workflow` (`v0.3.0`) | `/gravity-workflow`, `/caveman` | Harnais multi-agents, workflows orchestrateurs, garde-fous `PreToolUse` fail-closed, evals et routage adaptatif |
-| `metrics` | `gravity-metrics` (`v0.5.0`) | `/gravity-metrics` | Collecte des métriques de sessions Antigravity, analytics tokens/coûts et émission de signaux |
+| `core` | `gravity` (`v0.3.0`) | `/gravity` | Initialisation de `$GRAVITY_HOME`, découverte/validation `config/module.json`, registre `core/modules.json`, hôte UI unifié (`SPI-1`) et projection `_shared/` (`SPI-4`) |
+| `architect` | `gravity-architect` (`v0.5.1`) | `/gravity-architect` | Atelier Hot/Cold générique, intégrité écosystème, veille plateforme et audit de mise à niveau |
+| `workflow` | `gravity-workflow` (`v0.4.0`) | `/gravity-workflow`, `/caveman` | Harnais multi-agents, workflows orchestrateurs, garde-fous `PreToolUse` fail-closed, evals et routage adaptatif (`evo`) |
+| `metrics` | `gravity-metrics` (`v0.5.1`) | `/gravity-metrics` | Collecte des métriques de sessions Antigravity, analytics tokens/coûts et émission de signaux (`SPI-3`) |
 
 ---
 
@@ -31,7 +31,8 @@ Aucun module Gravity ne pollue les dépôts ou workspaces utilisateur avec des f
 ```text
 $GRAVITY_HOME (défaut : ~/.gemini/gravity/)
 ├── core/
-│   └── modules.json        # Registre atomique des modules découverts
+│   └── modules.json        # Registre atomique des modules découverts (incl. blocs SPI-1/SPI-2)
+├── signals/                # Bus de signaux inter-modules SPI-3 (enveloppe signal_v1, ex. session-metrics.json)
 ├── architect/              # Données centralisées architect ($GRAVITY_ARCHITECT_HOME)
 ├── workflow/               # Registres live & profils globaux ($GRAVITY_WORKFLOW_HOME)
 └── metrics/                # history.jsonl, METRICS.md, reports/ ($GRAVITY_METRICS_HOME)
@@ -47,15 +48,15 @@ Les anciens répertoires éventuels (`~/.gemini/gravity-metrics`, `~/.gemini/gra
 
 ---
 
-## 4. Flux de signaux (`metrics -> workflow auto`)
+## 4. Flux de signaux (`metrics -> workflow evo`)
 
-Chaque module déclare dans `config/module.json` les signaux qu'il produit (`signals.produces`) et consomme (`signals.consumes`) :
+Chaque module déclare dans `config/module.json` les signaux qu'il produit (`signals.produces`) et consomme (`signals.consumes`), relayés sans couplage via **`$GRAVITY_HOME/signals/`** (`SPI-3`, enveloppe `signal_v1` dans `_shared.signal_bus`) :
 
 ```text
 gravity-metrics                        gravity-workflow
   produces:                              consumes:
-   - session-metrics  ---------------->   - session-metrics (mode auto / routage)
-   - cost-telemetry                      produces:
+   - session-metrics  --[signals/]-->     - session-metrics (mode evo / routage)
+                                         produces:
                                           - workflow-state
                                           - routing-profile
          \                                      /
@@ -64,17 +65,17 @@ gravity-metrics                        gravity-workflow
                      produces: ["environment-state"]
 ```
 
-La boucle **`metrics -> workflow auto`** permettra à `gravity-workflow` d'ajuster dynamiquement les profils de routage, les presets de réflexion/effort et le mode `/caveman` à partir des données objectives mesurées par `gravity-metrics`, tout en restant 100 % optionnelle et découplée via les contrats de modules.
+La boucle **`metrics -> workflow evo`** permet à `gravity-workflow` d'ajuster dynamiquement les profils de routage, les presets de réflexion/effort et le mode `/caveman` à partir du signal `session-metrics` émis par `gravity-metrics`, tout en restant 100 % optionnelle et découplée via les contrats de modules.
 
 ---
 
-## 5. Convergence UI/UX vers `gravity`
+## 5. Convergence UI/UX vers `gravity` (`SPI-1`)
 
-En `v0.2.0` :
-- `gravity` (`core`) porte `ui: {"mode": "core", "target": "gravity"}` et héberge la **MCP App native unifiée** (`plugin/mcp_config.json`, `plugin/mcp/server.py`, `plugin/mcp/widget_html.py`, façade `plugin/dashboard/api.py`, outils `open_gravity_dashboard` + `gravity_get_*`) en lecture seule.
-- `gravity-metrics` porte `ui: {"mode": "transition-mcp", "target": "gravity"}` (son widget MCP App reste disponible durant la transition ; les écritures `archive`/`remove` restent sous `/gravity-metrics`).
-- `gravity-workflow` porte `ui: {"mode": "transition-sidecar", "target": "gravity"}` (son sidecar HTTP `4789` reste fonctionnel durant la transition ; la vue `Workflow Live` dans `gravity` lit `live_workspaces.json`/`live_state.json`).
-- `gravity-architect` porte `ui: {"mode": "none", "target": "gravity"}` et dispose de son onglet dédié lecture seule dans `gravity` (**`Architect`** sur l'atelier Hot/Cold + `audits/code/` hors `audits/agents/`).
+En `v0.3.0` :
+- `gravity` (`core`) porte `ui: {"mode": "core", "target": "gravity"}` et héberge la **MCP App native unifiée** (`plugin/mcp_config.json`, `plugin/mcp/server.py`, `plugin/mcp/widget_html.py`, façade `plugin/dashboard/api.py`, outils `open_gravity_dashboard` + `gravity_get_*` + `gravity_metrics_action` + `gravity_read_audit`) à `4` onglets dédiés (**`Session`**, **`Projets`**, **`Historique`**, **`Système`** + modules OCP), découplée des stockages compagnons via **`SPI-1`** (`scripts/dashboard_provider.py`).
+- `gravity-metrics` porte `ui: {"mode": "none", "target": "gravity"}` et expose ses données et actions de cycle de vie via `SPI-1` (`views`: `metrics`, `session-detail`, `audit-detail`, `health`, `live-meta` ; `actions`: `record`, `update`, `update-meta`, `ignore`, `unignore`, `remove`).
+- `gravity-workflow` porte `ui: {"mode": "none", "target": "gravity"}` et expose ses données temps réel et sa santé via `SPI-1` (`views`: `workflow`, `health`) pour l'onglet **`Session`** et `/gravity doctor`.
+- `gravity-architect` porte `ui: {"mode": "none", "target": "gravity"}` et expose ses ateliers Hot/Warm/Cold + `audits/code/` (hors `audits/agents/`) ainsi que sa santé via `SPI-1` (`views`: `architect`, `health`) pour l'onglet **`Projets`**, plus sa politique de capture `SPI-2` (`capture_policy`).
 
 ---
 

@@ -13,7 +13,7 @@ Exemple de référence (`gravity` Core) :
   "schema_version": 1,
   "id": "core",
   "plugin_name": "gravity",
-  "role": "Initialisation environnement Gravity, registre modules et future UI/UX unifiee",
+  "role": "Initialisation environnement Gravity, registre modules et hote UI/UX unifie (SPI-1)",
   "storage": {
     "subdir": "core",
     "env_override": "GRAVITY_CORE_HOME"
@@ -24,7 +24,9 @@ Exemple de référence (`gravity` Core) :
   "capabilities": [
     "env-init",
     "module-registry",
-    "ui-host"
+    "ui-host",
+    "spi-host",
+    "dashboard-spi-v1"
   ],
   "ui": {
     "mode": "core",
@@ -53,10 +55,14 @@ Exemple de référence (`gravity` Core) :
 | `storage.env_override` | `str` | Nom de variable d'environnement dédiée non vide (ex. `GRAVITY_METRICS_HOME`) |
 | `commands` | `list[str]` | Liste de chaînes non vides (ex. `["/gravity-workflow", "/caveman"]`) |
 | `capabilities` | `list[str]` | Liste de capacités déclarées (chaînes non vides) |
-| `ui.mode` | `str` | Mode UI non vide (`"core"`, `"none"`, `"transition-sidecar"`, `"transition-mcp"`, ou futur mode) |
+| `ui.mode` | `str` | Mode UI non vide (`"core"` pour l'hôte MCP App, `"none"` pour les compagnons délégués à `gravity`, ou futur mode) |
 | `ui.target` | `str` | Cible UI de convergence (ex. `"gravity"`) |
-| `signals.produces` | `list[str]` | Liste de signaux émis (peut être `[]`) |
-| `signals.consumes` | `list[str]` | Liste de signaux consommés (peut être `[]` ou `["*"]`) |
+| `signals.produces` | `list[str]` | Liste de signaux émis (`SPI-3`, peut être `[]`) |
+| `signals.consumes` | `list[str]` | Liste de signaux consommés (`SPI-3`, peut être `[]` ou `["*"]`) |
+| `dashboard.provider_script` | `str` *(opt.)* | Bloc **`SPI-1`** optionnel : chemin relatif sûr dans `plugin/` vers le provider (ex. `"scripts/dashboard_provider.py"`) |
+| `dashboard.views` | `list[str]` *(opt.)* | Vues `SPI-1` exposées par le provider (ex. `["metrics", "health", "live-meta"]`) |
+| `dashboard.actions` | `list[str]` *(opt.)* | Actions `SPI-1` exposées par le provider (peut être `[]`) |
+| `capture_policy` | `dict` *(opt.)* | Bloc **`SPI-2`** optionnel : `commands` (`list[str]`), `exclude_subcommands` (`list[str]`), `consultative_bypass` (`bool`), `label_prefix` (`str` non vide) |
 
 ---
 
@@ -73,12 +79,12 @@ Lors de l'exécution de `init_env.py` (hors `--check` et `--status`), Gravity Co
 
 ## 3. Contrats des 4 modules actuels
 
-| `id` | `plugin_name` | `storage.env_override` | `ui.mode` | `signals.produces` | `signals.consumes` |
-|---|---|---|---|---|---|
-| `core` | `gravity` | `GRAVITY_CORE_HOME` | `core` | `environment-state` | `*` |
-| `architect` | `gravity-architect` | `GRAVITY_ARCHITECT_HOME` | `none` | `ecosystem-health`, `upgrade-deltas` | `—` |
-| `workflow` | `gravity-workflow` | `GRAVITY_WORKFLOW_HOME` | `transition-sidecar` | `workflow-state`, `routing-profile` | `session-metrics` |
-| `metrics` | `gravity-metrics` | `GRAVITY_METRICS_HOME` | `transition-mcp` | `session-metrics`, `cost-telemetry` | `—` |
+| `id` | `plugin_name` | `storage.env_override` | `ui.mode` | `signals.produces` | `signals.consumes` | `SPI-1` / `SPI-2` |
+|---|---|---|---|---|---|---|
+| `core` | `gravity` | `GRAVITY_CORE_HOME` | `core` | `environment-state` | `*` | Hôte `SPI-1` |
+| `architect` | `gravity-architect` | `GRAVITY_ARCHITECT_HOME` | `none` | `ecosystem-health`, `upgrade-deltas` | `—` | `SPI-1` (`architect`, `health`) + `SPI-2` (`capture_policy`) |
+| `workflow` | `gravity-workflow` | `GRAVITY_WORKFLOW_HOME` | `none` | `workflow-state`, `routing-profile` | `session-metrics` | `SPI-1` (`workflow`, `health`) |
+| `metrics` | `gravity-metrics` | `GRAVITY_METRICS_HOME` | `none` | `session-metrics` | `—` | `SPI-1` (`metrics`, `session-detail`, `audit-detail`, `health`, `live-meta`) |
 
 ---
 

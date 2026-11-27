@@ -1,6 +1,6 @@
 # Feuille de route — Gravity Core & Écosystème
 
-## `v0.1.0` — Socle modulaire & unification des dépôts *(actuelle)*
+## `v0.1.0` — Socle modulaire & unification des dépôts *(livrée)*
 
 - Standardisation des 4 dépôts plugins sur `plugin/` + `plugin/config/module.json` v1 (`gravity`, `gravity-architect`, `gravity-workflow`, `gravity-metrics`).
 - Séparation complète de l'atelier de conception dans `gravity-workshop`.
@@ -9,23 +9,23 @@
 
 ---
 
-## `v0.2.0` — Interface MCP App unifiée & boucle `metrics -> workflow auto`
+## `v0.2.0` — Interface MCP App unifiée & boucle `metrics -> workflow` *(livrée)*
 
-### 1. Convergence UI/UX vers `gravity` (`ui-host`)
-- **Socle & MCP App unifiée livrés sur `dev` (Phase 4 / Lots 1A, 1B & 2) :** façade lecture seule `plugin/dashboard/`, serveur stdio MCP App (`plugin/mcp/server.py`, `open_gravity_dashboard` sur `aux_pane`/`global` + 7 outils `app`), UI HTML5/SVG SEP-1865 autonome sans `innerHTML` et diagnostic `init_env.py --dashboard`.
-- **Transition des interfaces existantes :**
-  - `gravity-metrics` (`ui.mode: "transition-mcp"`) : vue lecture seule coûts/tokens/cache/audits agents intégrée dans `gravity` (`archive`/`remove` conservés sous `/gravity-metrics`).
-  - `gravity-workflow` (`ui.mode: "transition-sidecar"`) : vue `Workflow Live` temps réel (`~1 500 ms`) intégrée dans `gravity` en lecture seule.
-  - `gravity-architect` : onglet dédié lecture seule (**`Architect`** sur l'atelier Hot/Cold + `audits/code/`).
-
-### 2. Boucle d'optimisation `metrics -> workflow auto`
-- Exploitation des signaux `session-metrics` et `cost-telemetry` produits par `gravity-metrics` comme entrées du routage adaptatif dans `gravity-workflow`.
-- Ajustement mesuré du mode `auto`, des presets d'effort/modèles et du ROI du mode `/caveman`.
-- Corrélation stricte via le contrat `config/module.json` et stockage `$GRAVITY_HOME`, sans couplage interne ni dépendance tierce.
+- **MCP App unifiée (`ui-host`) :** façade `plugin/dashboard/`, serveur stdio MCP App (`plugin/mcp/server.py`, `open_gravity_dashboard` sur `aux_pane`/`global` + outils `app`), UI HTML5/SVG SEP-1865 pure-DOM sans `innerHTML` et diagnostic `init_env.py --dashboard`.
+- **Outillage écosystème :** `/gravity update`, `/gravity export` / `/gravity import` et vérificateur `scripts/audit_ecosystem.py`.
 
 ---
 
-## `v0.3.0+` — Perspectives
+## `v0.3.0` — Shared Kernel, contrats `SPI-1..4` & découplage complet *(actuelle, post-M6)*
 
-- Bus de signaux léger inter-modules sous `$GRAVITY_HOME/core/`.
-- Méta-installeur et vérificateur de santé multi-modules orchestré depuis `gravity` Core.
+- **Shared Kernel (`SPI-4`) :** socle 100 % stdlib `shared/gravity_shared/` (`9` modules) projeté en lecture seule vers `*/plugin/_shared/` avec manifeste SHA-256 `plugin/.shared_manifest.json` (`scripts/sync_shared.py --check`).
+- **Convergence UI complète (`SPI-1`) :** les 3 compagnons portent `ui.mode: "none"` et exposent leurs vues (`architect`, `workflow`, `metrics`, `session-detail`, `audit-detail`, `health`, `live-meta`) et actions via `scripts/dashboard_provider.py` dans les 4 onglets unifiés de `gravity` (**`Session`**, **`Projets`**, **`Historique`**, **`Système`** + modules OCP).
+- **Politique de capture & bus de signaux (`SPI-2` / `SPI-3`) :** bloc déclaratif `capture_policy` dans `config/module.json` et bus `$GRAVITY_HOME/signals/` (`signal_v1`, signal `session-metrics` consommé par `/gravity-workflow evo`).
+- **Vérification parallèle & installée :** `scripts/audit_ecosystem.py --verify-parallel --strict --check-installed` et méta-installeur `scripts/ecosystem_install.py`.
+
+---
+
+## `v0.4.0+` — Perspectives
+
+- Extension de nouveaux modules OCP tiers via `config/module.json` (`SPI-1..3`) sans modifier Core.
+- Enrichissement progressif des profils adaptatifs `evo` et des contrôles d'intégrité continus.

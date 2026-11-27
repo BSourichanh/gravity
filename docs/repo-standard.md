@@ -20,6 +20,8 @@ Ce document définit le socle technique et organisationnel uniforme applicable �
 │   │   └── SKILL.md         # Frontmatter YAML (name, description <= 160 car.) et <= 6 000 o UTF-8 sans BOM, LF
 │   ├── scripts/
 │   │   └── validate.py      # Validateur autonome (--strict)
+│   ├── _shared/             # Projection RO de gravity/shared/gravity_shared/ (sync_shared.py)
+│   ├── .shared_manifest.json # Empreintes SHA-256 du Shared Kernel
 │   └── README.md            # Aligné sur le README racine
 ├── install.py               # Installeur/désinstalleur cross-platform (contrat CLI commun 11 drapeaux)
 ├── AGENTS.md                # Charte agent canonique (<= 2 500 octets, UTF-8 sans BOM, LF, 3 sections ; contrôlée par validate.py)
@@ -58,21 +60,25 @@ Interdits : `$schema`, `license`, `keywords` ou tout champ non officiel, ainsi q
 - **Architecture Hexagonale & DDD pragmatique :** structurer domaine, ports (`config/module.json`, `SPI-1..4`) et adapteurs (CLI, MCP, hooks, `$GRAVITY_HOME`) lorsque la complexité métier ou la pluralité d'adapteurs le justifie (voir [`architecture.md`](architecture.md)) ; proscrire toute abstraction spéculative sur les scripts simples (**KISS/YAGNI**).
 - **Pile 100 % Python 3.10+ stdlib :** aucune dépendance tierce dans `plugin/`, `scripts/`, `install.py` et `tests/`.
 - **Encodage & fins de ligne :** UTF-8 **sans BOM**, fins de ligne **LF** (`\n`).
-- **Portabilité Windows / POSIX :** conserver `"python3"` dans les manifests source (`hooks.json`, `mcp_config.json`, `sidecar.json`) ; l'adaptation éventuelle ne s'applique qu'à la copie installée sous Windows via `install.py`.
+- **Portabilité Windows / POSIX :** conserver `"python3"` dans les manifests source (`hooks.json`, `mcp_config.json`) ; l'adaptation éventuelle ne s'applique qu'à la copie installée sous Windows via `install.py`.
 - **Zéro pollution des workspaces cibles :** tout état applicatif vit sous `$GRAVITY_HOME/<module>/` (ou surcharge dédiée).
 - **Workflow Git :** développement exclusif sur `dev` (ou branche dédiée), *Conventional Commits*, fusion vers `main` et tag annoté `vX.Y.Z` réservés au chef d'orchestre sur accord utilisateur.
 
 ---
 
-## 4. Budgets `AGENTS.md` et modèle Hot / Cold
+## 4. Budgets `AGENTS.md`, `gravity_shared` et modèle Hot / Warm / Cold
 
 | Surface | Budget maximal | Contraintes |
 |---|---|---|
 | `AGENTS.md` (racine dépôt) | **<= 2 500 octets UTF-8** *(contrôlé par `validate.py`)* | UTF-8 sans BOM, LF, strictement 3 sections (`## Périmètre & Architecture`, `## Invariants` citant KISS/YAGNI/DRY/SOLID/CUPID, `## Vérifications obligatoires`) |
 | `plugin/rules/AGENTS.md` *(D4)* | **<= 600 octets UTF-8** *(cible éditoriale ; avertissement bloquant sous `--strict` au-delà)* / **<= 1 000 octets UTF-8** *(erreur bloquante)* | UTF-8 sans BOM, LF, **zéro frontmatter YAML** (`---`) |
 | `plugin/skills/<skill>/SKILL.md` *(routeur)* | **<= 6 000 octets UTF-8** *(contrôlé par `validate.py`)* | UTF-8 sans BOM, LF, frontmatter YAML (`name`, `description <= 160 car.`) |
-| `gravity-workshop` Hot *(référence)* | `ECOSYSTEM.md <= 6 000 o`, fiches `<= 3 500 o`, `IMPACT.md <= 6 000 o` | Données froides (`archives/`, `specs/archive/`, `tasks/archive/`) hors session courante |
+| `gravity-workshop` Hot *(référence)* | `ECOSYSTEM.md <= 6 000 o`, fiches `<= 3 500 o`, `IMPACT.md <= 6 000 o` | Données de pilotage actives chargées en session |
+| `gravity-workshop` Warm *(référence)* | `docs/**/*.md <= 4 000 o` *(hors `docs/conception/`)*, `tracking/TRACEABILITY.md` | Documentation technique et index chargés à la demande |
+| `gravity-workshop` Cold *(référence)* | `audits/`, `archives/`, `specs/archive/`, `tasks/archive/`, `tracking/antigravity/releases/` | Données froides hors session courante |
 
+> **Shared Kernel (`SPI-4`) :** `../gravity/shared/gravity_shared/` (`9` modules stdlib Python 3.10+) est projeté en lecture seule vers `*/plugin/_shared/` avec `plugin/.shared_manifest.json` (SHA-256), contrôlé par `python3 scripts/sync_shared.py --check`.
+>
 > **Exception SRP (`gravity-workflow`) :** `gravity-workflow/plugin/rules/` est volontairement absent afin de ne pas alourdir les sessions Antigravity hors harnais ; ses règles sont déployées uniquement dans `.agents/rules/` du workspace cible.
 >
 > **SRP `gravity init` :** `plugin/scripts/init_env.py` n'écrit ni ne modifie jamais de fichier `AGENTS.md` dans les workspaces utilisateur cibles.
@@ -84,7 +90,7 @@ Interdits : `$schema`, `license`, `keywords` ou tout champ non officiel, ainsi q
 - **`suggestedPrompts` (`plugin/plugin.json`) :** chaque entrée fait **`<= 100` caractères** ; si elle débute par `/`, elle doit contenir ` — ` ou ` - ` suivi d'un résumé non vide.
 - **Guides utilisateur `docs/` (`gravity`) :** les 4 guides (`getting-started.md`, `user-journey.md`, `command-cheatsheet.md`, `troubleshooting-and-lifecycle.md`) doivent chacun rester **`<= 15 360` octets UTF-8**, sans BOM et en fins de ligne LF.
 - **Liens Markdown relatifs intègres :** aucun lien relatif local cassé dans `plugin/README.md`, `plugin/skills/*/SKILL.md`, `README.md` et `docs/*.md` (contrôlé automatiquement par `plugin/scripts/validate.py`, hors URLs `http(s)://`, ancres `#`, `mailto:`, `customization://` et blocs de code).
-- **Skill `/gravity` :** toutes les sous-commandes officielles (`init`, `status`, `modules`, `doctor`, `dashboard`, `help`) doivent être documentées dans `SKILL.md`.
+- **Skill `/gravity` :** toutes les sous-commandes officielles (`init`, `status`, `modules`, `doctor`, `dashboard`, `update`, `export`, `import`, `help`) doivent être documentées dans `SKILL.md`.
 
 ---
 
@@ -119,8 +125,8 @@ python -m unittest discover -s tests -p "test_*.py" -v
 Pour contrôler la dérive inter-dépôts en **lecture seule stricte** (`gravity`, `gravity-workflow`, `gravity-metrics`, `gravity-architect`), exécuter depuis `gravity` :
 
 ```powershell
-python scripts/audit_ecosystem.py
-python scripts/audit_ecosystem.py --strict --json
+python scripts/audit_ecosystem.py --strict --check-installed
+python scripts/audit_ecosystem.py --verify-parallel --strict
 ```
 
-`scripts/audit_ecosystem.py` (`--repos-root`, `--repos`, `--json`, `--strict`) vérifie par inspection statique/AST sans exécution : le contrat CLI à 11 drapeaux de `install.py`, le contrat de `plugin/scripts/validate.py` (`--strict`, `plugin.json`, `config/module.json`, `stdlib-only`, UTF-8/LF et `--fix-python-cmd` si manifeste exécutable), les budgets `AGENTS.md` / D4 (exemption documentée `gravity-workflow/plugin/rules/`), la synchronisation `plugin.json` ↔ `CHANGELOG.md` + `suggestedPrompts` (`<= 100` car.) et la dette monolithique `plugin/**/*.py` (`> 800` L `warn`, `> 1 500` L `error`, exemption des bundles JS/CSS embarqués sous `plugin/mcp/ui/*.py`).
+`scripts/audit_ecosystem.py` (`--repos-root`, `--repos`, `--check-installed`, `--plugins-dir`, `--json`, `--strict`, `--verify-parallel`) vérifie par inspection statique/AST (et exécutions parallèles sous `--verify-parallel`) : le contrat CLI à 11 drapeaux de `install.py`, le contrat de `plugin/scripts/validate.py` (`--strict`, `plugin.json`, `config/module.json` `SPI-1..3`, `stdlib-only`, UTF-8/LF et `--fix-python-cmd` si manifeste exécutable), la parité SHA-256 `shared/gravity_shared/` ↔ `plugin/_shared/` (`check_shared_sync`), la copie installée (`--check-installed`, `INT-05`), les budgets `AGENTS.md` / D4 (exemption documentée `gravity-workflow/plugin/rules/`), la synchronisation `plugin.json` ↔ `CHANGELOG.md` + `suggestedPrompts` (`<= 100` car.) et la dette monolithique `plugin/**/*.py` (`> 800` L `warn`, `> 1 500` L `error`, exemption des bundles JS/CSS embarqués sous `plugin/mcp/ui/*.py`).
