@@ -8,10 +8,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 from pathlib import Path
+try:
+    import pwd as _pwd
+except ImportError:
+    _pwd = None  # type: ignore[assignment]
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any, Optional, Sequence
 
@@ -448,10 +453,27 @@ def _run_verify_cmd(cmd: list[str], cwd: Path, timeout_s: float) -> dict[str, An
     return result
 
 
+def _within_real_home(path: Path) -> bool:
+    if _pwd is not None and hasattr(os, "getuid"):
+        try:
+            real_home = Path(_pwd.getpwuid(os.getuid()).pw_dir).resolve()
+            return path.resolve().is_relative_to(real_home)
+        except (KeyError, OSError, ValueError):
+            pass
+    try:
+        return path.resolve().is_relative_to(Path.home().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _run_agy_verify(plugin_dir: Path, repo_dir: Path, resolved_agy: str, timeout_s: float) -> dict[str, Any]:
     is_snap = "/snap/" in resolved_agy or "/snap/" in os.path.realpath(resolved_agy)
-    has_hidden = any(part.startswith(".") for part in plugin_dir.resolve().parts if part not in ("/", ""))
-    if not (is_snap or has_hidden):
+    resolved_plugin = plugin_dir.resolve()
+    has_hidden = any(part.startswith(".") for part in resolved_plugin.parts if part not in ("/", ""))
+    tmp_base = os.path.abspath(tempfile.gettempdir())
+    in_posix_tmp = os.name != "nt" and resolved_plugin.parts[:2] == ("/", "tmp")
+    in_tmp = in_posix_tmp or str(resolved_plugin) == tmp_base or str(resolved_plugin).startswith(tmp_base.rstrip(os.sep) + os.sep)
+    if not (has_hidden or in_tmp or (is_snap and not _within_real_home(resolved_plugin))):
         return _run_verify_cmd([resolved_agy, "plugin", "validate", "./plugin", "--strict"], repo_dir, timeout_s)
     started = time.monotonic()
     res = run_agy_plugin_validate(plugin_dir, strict=True, agy_bin=resolved_agy, timeout_s=timeout_s)

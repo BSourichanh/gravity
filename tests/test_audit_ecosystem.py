@@ -11,10 +11,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AUDITOR = REPO_ROOT / "scripts" / "audit_ecosystem.py"
 REAL_SHARED_DIR = REPO_ROOT / "plugin" / "_shared"
+if str(REPO_ROOT / "scripts") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+import audit_ecosystem as ae  # noqa: E402
 
 ALL_FLAGS = (
     "--scope", "--workspace", "--target", "--method", "--force",
@@ -510,6 +515,69 @@ class TestAuditEcosystem(unittest.TestCase):
             contradictions = json.loads(p_bad.stdout)["cross_repo"]["contradictions"]
             self.assertTrue(any("audits/code/" in c and "audits/agents/" in c for c in contradictions), msg=contradictions)
             self.assertTrue(any("Bridge proactive" in c for c in contradictions), msg=contradictions)
+
+    def test_run_agy_verify_snap_real_home_direct_vs_staged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_root = Path(tmp_path.anchor) / "gravity_real_home_test"
+            real_home = fake_root / "alice"
+            outside_dir = fake_root / "opt_plugins"
+            repo_dir = real_home / "workspace" / "gravity"
+            plugin_dir = repo_dir / "plugin"
+            snap_agy = "/snap/bin/agy"
+            fake_pwd = mock.Mock(getpwuid=mock.Mock(return_value=mock.Mock(pw_dir=str(real_home))))
+
+            with (
+                mock.patch.dict(os.environ, {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}),
+                mock.patch.object(ae, "_pwd", fake_pwd),
+                mock.patch.object(os, "getuid", return_value=1000, create=True),
+            ):
+                self.assertTrue(ae._within_real_home(plugin_dir))
+                self.assertFalse(ae._within_real_home(outside_dir / "plugin"))
+
+                # Non-hidden, non-tmp, within real home -> direct execution even when $HOME is in tmp
+                with (
+                    mock.patch.object(ae, "_run_verify_cmd", return_value={"ok": True, "returncode": 0}) as m_direct,
+                    mock.patch.object(ae, "run_agy_plugin_validate") as m_stage,
+                ):
+                    res = ae._run_agy_verify(plugin_dir, repo_dir, snap_agy, 30.0)
+                self.assertTrue(res["ok"])
+                m_direct.assert_called_once_with([snap_agy, "plugin", "validate", "./plugin", "--strict"], repo_dir, 30.0)
+                m_stage.assert_not_called()
+
+                # Hidden segment -> must still stage via run_agy_plugin_validate
+                hidden_repo = real_home / ".gemini" / "gravity"
+                with (
+                    mock.patch.object(ae, "_run_verify_cmd") as m_direct,
+                    mock.patch.object(ae, "run_agy_plugin_validate", return_value={"rc": 0, "ok": True, "staged": True, "stdout": "ok", "stderr": ""}) as m_stage,
+                ):
+                    res_hidden = ae._run_agy_verify(hidden_repo / "plugin", hidden_repo, snap_agy, 30.0)
+                self.assertTrue(res_hidden["ok"])
+                self.assertTrue(res_hidden["staged"])
+                m_direct.assert_not_called()
+                m_stage.assert_called_once_with(hidden_repo / "plugin", strict=True, agy_bin=snap_agy, timeout_s=30.0)
+
+                # Inside temp dir -> must still stage via run_agy_plugin_validate (even for non-snap binary)
+                tmp_repo = tmp_path / "repo"
+                with (
+                    mock.patch.object(ae, "_run_verify_cmd") as m_direct,
+                    mock.patch.object(ae, "run_agy_plugin_validate", return_value={"rc": 0, "ok": True, "staged": True, "stdout": "ok", "stderr": ""}) as m_stage,
+                ):
+                    res_tmp = ae._run_agy_verify(tmp_repo / "plugin", tmp_repo, "/usr/local/bin/agy", 30.0)
+                self.assertTrue(res_tmp["ok"])
+                self.assertTrue(res_tmp["staged"])
+                m_direct.assert_not_called()
+                m_stage.assert_called_once_with(tmp_repo / "plugin", strict=True, agy_bin="/usr/local/bin/agy", timeout_s=30.0)
+
+                # Snap binary + outside real home -> must stage via run_agy_plugin_validate
+                with (
+                    mock.patch.object(ae, "_run_verify_cmd") as m_direct,
+                    mock.patch.object(ae, "run_agy_plugin_validate", return_value={"rc": 0, "ok": True, "staged": True, "stdout": "ok", "stderr": ""}) as m_stage,
+                ):
+                    res_out = ae._run_agy_verify(outside_dir / "plugin", outside_dir, snap_agy, 30.0)
+                self.assertTrue(res_out["ok"])
+                m_direct.assert_not_called()
+                m_stage.assert_called_once_with(outside_dir / "plugin", strict=True, agy_bin=snap_agy, timeout_s=30.0)
 
 
 if __name__ == "__main__":
