@@ -36,7 +36,7 @@ python scripts/init_env.py
 python scripts/init_env.py --status
 python scripts/init_env.py --check
 python scripts/init_env.py --overview
-python plugin/scripts/init_env.py --status --json
+python scripts/init_env.py --status --json
 python scripts/init_env.py --migration-plan --shell auto
 python scripts/init_env.py --dashboard
 python scripts/init_env.py --guide
